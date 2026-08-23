@@ -41,9 +41,29 @@ The test suite includes Secret sanitization/fingerprinting tests, compact LIST
 summary tests that reject heavyweight object content, and an in-process MCP
 transport test that verifies `k8s_get` is the only exposed tool.
 
+## CI and container publishing
+
+[`.github/workflows/container.yml`](.github/workflows/container.yml) builds and tests
+every pull request targeting `main`. After a successful push to `main`, it publishes
+the container to:
+
+```text
+ghcr.io/jghh42/kube-mcp:latest
+ghcr.io/jghh42/kube-mcp:main
+ghcr.io/jghh42/kube-mcp:sha-<commit>
+```
+
+Tags beginning with `v` also publish version tags. For example, Git tag `v1.2.3`
+produces container tags `v1.2.3`, `1.2.3`, and `1.2`. The workflow authenticates
+with its short-lived `GITHUB_TOKEN` and requires no repository secret.
+
+A newly created GHCR package is private by default. After the first successful
+publish, change the package visibility to public in its GitHub package settings so
+clusters can pull it without an image pull secret.
+
 ## End-to-end test with kind
 
-The integration harness builds and loads `kube-mcp:stage2.5`, generates an ephemeral
+The integration harness builds and loads a local test image, generates an ephemeral
 HMAC key, deploys the service, creates ConfigMap and Secret fixtures, and calls the
 running service through the official MCP client. It verifies compact Pod,
 Deployment, Service, ConfigMap, and Secret LIST output as well as detailed GET:
@@ -55,14 +75,12 @@ Deployment, Service, ConfigMap, and Secret LIST output as well as detailed GET:
 The fixture namespace is removed afterward. The tested `kube-mcp` deployment is
 left running in kind.
 
-## Manual kind deployment
+## Deploy the published image
 
-Build and load the image:
-
-```sh
-docker build --tag kube-mcp:stage2.5 .
-kind load docker-image kube-mcp:stage2.5 --name kind
-```
+The deployment manifest uses `ghcr.io/jghh42/kube-mcp:latest`. For a repeatable
+production deployment, replace `latest` with an immutable `sha-<commit>` tag.
+Ensure the GHCR package is public, or configure an appropriate Kubernetes image
+pull secret before deploying.
 
 Create the namespace and a stable, server-held HMAC key. Keep this key stable if
 fingerprints must remain comparable across restarts:
