@@ -64,14 +64,11 @@ Implement compact, resource-specific LIST responses to minimize agent context us
 3.
 Add CI/CD for building the container and pushing to a real container registry (ghcr)
 
-3.
-Add allowlisting for resource types and blacklisting for namespaces
-
-4. 
-Add simple token based auth
+4.
+Add allowlisting for resource types and (blacklisting for namespaces or whitelisting namespaces based on labels)
 
 5.
-Add Audit logging (based on the normal ILogger for now)
+Add simple token based auth and client credential flow. It should be configurable to either have no auth, simple token auth or client credential auth.
 
 6.
-Add clientcredential flow auth
+Add Audit logging (based on the normal ILogger for now)

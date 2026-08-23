@@ -13,8 +13,8 @@ metadata:
   labels:
     app.kubernetes.io/name: kube-mcp
 ---
-# Stage 1 intentionally grants broad read access. Later stages add application-level
-# resource and namespace restrictions; Kubernetes access remains GET/LIST-only.
+# RBAC mirrors the application's default resource allowlist. Namespace LIST is
+# used only when label-selector namespace policy mode is configured.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -22,8 +22,55 @@ metadata:
   labels:
     app.kubernetes.io/name: kube-mcp
 rules:
-  - apiGroups: ["*"]
-    resources: ["*"]
+  - apiGroups: [""]
+    resources:
+      - pods
+      - services
+      - endpoints
+      - configmaps
+      - secrets
+      - events
+      - persistentvolumeclaims
+      - replicationcontrollers
+      - limitranges
+      - resourcequotas
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters", "backups", "scheduledbackups", "poolers"]
+    verbs: ["get", "list"]
+  - apiGroups: ["traefik.io"]
+    resources:
+      - ingressroutes
+      - middlewares
+      - traefikservices
+      - tlsoptions
+      - tlsstores
+      - serverstransports
+      - ingressroutetcps
+      - middlewaretcps
+      - serverstransporttcps
+      - ingressrouteudps
     verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

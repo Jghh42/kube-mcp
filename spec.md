@@ -111,7 +111,7 @@ The service should not introduce a separate infrastructure pattern merely becaus
 │ • MCP HTTP transport        │
 │ • one MCP tool              │
 │ • resource allowlist        │
-│ • namespace allowlist       │
+│ • namespace access policy   │
 │ • GET/LIST only             │
 │ • Secret sanitization       │
 │ • HMAC fingerprints         │
@@ -174,7 +174,7 @@ Each instance may therefore have independent:
 * Kubernetes RBAC
 * HMAC key
 * resource allowlist
-* namespace allowlist
+* namespace access policy
 * Keycloak authorization policy
 * network policy
 * audit trail
@@ -337,7 +337,7 @@ Keycloak authentication
         ↓
 server resource allowlist
         ↓
-server namespace allowlist
+server namespace access policy
         ↓
 Kubernetes RBAC
 ```
@@ -555,9 +555,11 @@ The exact .NET representation of this mapping is an implementation detail.
 
 # 17. No Implicit Resource Discovery for Authorization
 
-Kubernetes API discovery may be useful internally, but it must not determine what the agent is authorized to access.
+Kubernetes API discovery may be useful internally, but it must not expand access
+while the default allowlist policy is active.
 
-Authorization is based on an explicit configured allowlist.
+Authorization is based on either an explicit configured allowlist or a deliberate
+server-side `AllowAll` policy opt-in.
 
 The server must never behave like:
 
@@ -575,15 +577,17 @@ resource explicitly configured
 therefore request may proceed
 ```
 
-Kubernetes discovery may later assist validation or resource resolution, but it must not expand the security boundary.
+In allowlist mode, Kubernetes discovery must not expand the security boundary.
+In explicit `AllowAll` mode, discovery defines the namespaced GET/LIST resources
+inside the deliberately expanded boundary. The caller still cannot supply an
+arbitrary API path, group, version, or HTTP operation.
 
 ---
 
-# 18. Resource Allowlist
+# 18. Resource Access Policy
 
-All Kubernetes resources are denied by default.
-
-A resource may only be requested if explicitly configured.
+All Kubernetes resources are denied by default. The default mode is `Allowlist`,
+where a resource may only be requested if explicitly configured.
 
 Conceptually:
 
@@ -606,9 +610,26 @@ secrets:
   resource: secrets
 ```
 
-A request for an unknown resource must be rejected before contacting Kubernetes.
+A request for an unknown resource must be rejected before contacting Kubernetes
+in allowlist mode.
 
-The allowlist also provides a convenient stable MCP vocabulary that does not need to exactly mirror arbitrary Kubernetes API naming.
+The allowlist also provides a convenient stable MCP vocabulary that does not need
+to exactly mirror arbitrary Kubernetes API naming.
+
+An explicit `AllowAll` mode may be configured for environments that intentionally
+want every namespaced resource supporting GET/LIST to be accessible. This mode:
+
+* is never the default
+* emits a startup warning
+* uses API discovery only for structured resource resolution
+* remains subject to namespace policy
+* retains mandatory Secret sanitization
+* remains subject to Kubernetes RBAC
+* does not permit arbitrary API paths or caller-selected HTTP verbs
+
+Kubernetes RBAC must be expanded separately if resources outside the default role
+are intended to work. This preserves an independent, deliberate authorization
+boundary.
 
 ---
 
@@ -618,17 +639,28 @@ A conservative initial troubleshooting set could contain:
 
 ```text
 pods
-deployments
-statefulsets
-daemonsets
-replicasets
 services
-endpointslices
-ingresses
+endpoints
 configmaps
 secrets
 events
 persistentvolumeclaims
+replicationcontrollers
+limitranges
+resourcequotas
+
+deployments
+statefulsets
+daemonsets
+replicasets
+
+jobs
+cronjobs
+endpointslices
+ingresses
+networkpolicies
+horizontalpodautoscalers
+poddisruptionbudgets
 ```
 
 Additional resources should be added only because an actual troubleshooting requirement exists.
@@ -642,32 +674,50 @@ scheduledbackups.postgresql.cnpg.io
 poolers.postgresql.cnpg.io
 ```
 
+For Traefik environments, useful namespaced CRDs include:
+
+```text
+ingressroutes.traefik.io
+middlewares.traefik.io
+traefikservices.traefik.io
+tlsoptions.traefik.io
+tlsstores.traefik.io
+serverstransports.traefik.io
+ingressroutetcps.traefik.io
+middlewaretcps.traefik.io
+serverstransporttcps.traefik.io
+ingressrouteudps.traefik.io
+```
+
 The principle is:
 
 > A Kubernetes resource is not exposed merely because it exists.
 
 ---
 
-# 20. Namespace Allowlist
+# 20. Namespace Access Policy
 
-Requests should normally require an explicit namespace.
+Requests must require an explicit namespace. There is no implicit all-namespaces
+operation.
 
-There should be no implicit:
+A static namespace allowlist is not suitable for environments where application
+namespaces are created frequently. The server must instead support two explicit
+policy modes:
 
 ```text
-all namespaces
+Blacklist:
+  allow namespaces by default
+  deny configured namespace names such as kube-system
+
+LabelSelector:
+  allow only namespaces matching a configured Kubernetes label selector
 ```
 
-operation in the initial version.
-
-The server should support an optional configured namespace allowlist.
-
-For example:
+Blacklist mode permits newly created namespaces automatically unless their names
+are denied. Label-selector mode supports dynamic grouping such as:
 
 ```text
-production
-database
-monitoring
+platform.example.com/group in (production,staging)
 ```
 
 A request therefore proceeds only when:
@@ -675,10 +725,12 @@ A request therefore proceeds only when:
 ```text
 resource allowed
 AND
-namespace allowed
+namespace policy permits the requested namespace
 ```
 
-This validation occurs before contacting Kubernetes.
+Blacklist validation occurs before contacting Kubernetes. Label-selector mode may
+query namespace metadata through the Kubernetes API, but this check must complete
+before the requested resource GET or LIST is sent.
 
 ---
 
@@ -729,7 +781,7 @@ required MCP permission?
 resource allowlisted?
         ↓ yes
 
-namespace allowlisted?
+namespace policy permits access?
         ↓ yes
 
 Kubernetes RBAC allows GET/LIST?
@@ -755,7 +807,7 @@ Mcp/
 Kubernetes/
     KubernetesReader
     ResourceAllowlist
-    NamespaceAllowlist
+    NamespaceAccessPolicy
 
 Security/
     SecretSanitizer
@@ -1462,7 +1514,7 @@ required scope/role
 Kubernetes kubeconfig location
 
 allowed resources
-allowed namespaces
+namespace blacklist or namespace label selector
 
 HMAC key/reference
 
@@ -1596,7 +1648,10 @@ Every Kubernetes action caused by MCP is either GET or LIST.
 
 ## Invariant 3
 
-Only explicitly configured Kubernetes resources can be accessed.
+Only explicitly configured Kubernetes resources can be accessed unless the server
+operator deliberately enables resource `AllowAll` mode. In that mode, access is
+limited to discovered namespaced resources supporting GET/LIST and remains bounded
+by namespace policy and Kubernetes RBAC.
 
 ## Invariant 4
 
@@ -1783,7 +1838,7 @@ operations:
   GET
 
 resource allowlist
-namespace allowlist
+namespace blacklist or label-selector policy
 
 one Kubernetes cluster per service instance
 

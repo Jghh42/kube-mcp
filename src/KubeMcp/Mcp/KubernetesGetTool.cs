@@ -17,7 +17,7 @@ public sealed class KubernetesGetTool(
         OpenWorld = false)]
     [Description("Gets one namespaced Kubernetes resource, or lists compact resource summaries when name is omitted.")]
     public async Task<string> GetAsync(
-        [Description("Kubernetes resource name, kind, short name, or resource.group name.")]
+        [Description("Configured Kubernetes resource name from the server allowlist.")]
         string resource,
         [Description("Kubernetes namespace. All-namespace requests are not supported.")]
         string @namespace,
