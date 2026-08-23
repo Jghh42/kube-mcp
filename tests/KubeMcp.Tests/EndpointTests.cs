@@ -47,6 +47,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     {
         var allowlist = factory.Services.GetRequiredService<ResourceAllowlist>();
 
+        Assert.False(allowlist.AllowsAll);
         Assert.Equal("pods", allowlist.Resolve("pods").QualifiedName);
         Assert.Equal(
             "clusters.postgresql.cnpg.io",

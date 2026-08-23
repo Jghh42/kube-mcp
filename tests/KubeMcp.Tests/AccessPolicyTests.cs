@@ -23,6 +23,19 @@ public sealed class ResourceAllowlistTests
     }
 
     [Fact]
+    public void AllowAllModeIsExplicitAndDoesNotRequireConfiguredMappings()
+    {
+        var allowlist = new ResourceAllowlist(Options.Create(OptionsWithResources(
+            [],
+            resourcePolicy: new ResourcePolicyOptions
+            {
+                Mode = ResourcePolicyMode.AllowAll
+            })));
+
+        Assert.True(allowlist.AllowsAll);
+    }
+
+    [Fact]
     public void ResolvesConfiguredCrdWithoutApiDiscovery()
     {
         var allowlist = new ResourceAllowlist(Options.Create(OptionsWithResources(
@@ -42,9 +55,11 @@ public sealed class ResourceAllowlistTests
 
     internal static KubeMcpOptions OptionsWithResources(
         Dictionary<string, KubernetesResourceOptions> resources,
-        NamespacePolicyOptions? namespacePolicy = null) => new()
+        NamespacePolicyOptions? namespacePolicy = null,
+        ResourcePolicyOptions? resourcePolicy = null) => new()
         {
             SecretHmacKey = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+            ResourcePolicy = resourcePolicy ?? new ResourcePolicyOptions(),
             AllowedResources = resources,
             NamespacePolicy = namespacePolicy ?? new NamespacePolicyOptions()
         };
@@ -133,6 +148,21 @@ public sealed class KubeMcpOptionsValidatorTests
     }
 
     [Fact]
+    public void AllowAllModeAcceptsAnEmptyConfiguredAllowlist()
+    {
+        var options = ResourceAllowlistTests.OptionsWithResources(
+            [],
+            resourcePolicy: new ResourcePolicyOptions
+            {
+                Mode = ResourcePolicyMode.AllowAll
+            });
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
+    }
+
+    [Fact]
     public void RejectsInvalidResourceMapping()
     {
         var options = ValidOptions().WithResources(new Dictionary<string, KubernetesResourceOptions>
@@ -195,10 +225,12 @@ file static class OptionsTestExtensions
         Dictionary<string, KubernetesResourceOptions> resources) => new()
         {
             SecretHmacKey = options.SecretHmacKey,
+            ResourcePolicy = options.ResourcePolicy,
             AllowedResources = resources,
             NamespacePolicy = options.NamespacePolicy,
             MaxListItems = options.MaxListItems,
             MaxResponseBytes = options.MaxResponseBytes,
-            KubernetesRequestTimeoutSeconds = options.KubernetesRequestTimeoutSeconds
+            KubernetesRequestTimeoutSeconds = options.KubernetesRequestTimeoutSeconds,
+            DiscoveryCacheSeconds = options.DiscoveryCacheSeconds
         };
 }

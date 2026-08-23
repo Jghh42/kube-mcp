@@ -1,0 +1,14 @@
+# Optional RBAC expansion for KubeMcp:ResourcePolicy:Mode=AllowAll.
+# This grants cluster-wide GET/LIST access to every Kubernetes resource. Apply it
+# only after deliberately opting into AllowAll mode. Reapply deployment.yaml to
+# restore the narrower default ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-mcp-reader
+  labels:
+    app.kubernetes.io/name: kube-mcp
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list"]

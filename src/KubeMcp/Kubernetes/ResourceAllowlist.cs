@@ -9,7 +9,8 @@ public sealed class ResourceAllowlist
 
     public ResourceAllowlist(IOptions<KubeMcpOptions> options)
     {
-        resources = options.Value.AllowedResources.ToDictionary(
+        AllowsAll = options.Value.ResourcePolicy.Mode == ResourcePolicyMode.AllowAll;
+        resources = (options.Value.AllowedResources ?? []).ToDictionary(
             entry => entry.Key,
             entry => new KubernetesResourceDescriptor(
                 entry.Value.Group,
@@ -18,6 +19,8 @@ public sealed class ResourceAllowlist
                 entry.Value.Kind),
             StringComparer.OrdinalIgnoreCase);
     }
+
+    public bool AllowsAll { get; }
 
     internal KubernetesResourceDescriptor Resolve(string requestedResource)
     {

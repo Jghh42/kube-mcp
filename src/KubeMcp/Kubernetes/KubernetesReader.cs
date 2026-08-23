@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using KubeMcp.Configuration;
 using KubeMcp.Security;
 using k8s;
+using k8s.Models;
 using Microsoft.Extensions.Options;
 
 namespace KubeMcp.Kubernetes;
@@ -18,6 +19,9 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     private readonly ResourceAllowlist resourceAllowlist;
     private readonly NamespaceAccessPolicy namespacePolicy;
     private readonly KubeMcpOptions options;
+    private readonly SemaphoreSlim discoveryLock = new(1, 1);
+    private IReadOnlyList<DiscoveredResource>? discoveredResources;
+    private DateTimeOffset discoveryExpiresAt;
 
     public KubernetesReader(
         SecretSanitizer secretSanitizer,
@@ -53,7 +57,9 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
             KubernetesNameValidator.ValidateResourceName(name);
         }
 
-        var descriptor = resourceAllowlist.Resolve(resource);
+        KubernetesResourceDescriptor? descriptor = resourceAllowlist.AllowsAll
+            ? null
+            : resourceAllowlist.Resolve(resource);
         namespacePolicy.EnsureStaticallyAllowed(@namespace);
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -62,6 +68,10 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         try
         {
             await EnsureNamespaceAllowedAsync(@namespace, timeout.Token);
+            descriptor ??= await ResolveDiscoveredResourceAsync(
+                resource,
+                requiredVerb: name is null ? "list" : "get",
+                timeout.Token);
 
             JsonNode safeResult = name is null
                 ? await ListAsync(descriptor, @namespace, timeout.Token)
@@ -139,6 +149,122 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         };
     }
 
+    private async Task<KubernetesResourceDescriptor> ResolveDiscoveredResourceAsync(
+        string requestedResource,
+        string requiredVerb,
+        CancellationToken cancellationToken)
+    {
+        var resources = await GetDiscoveredResourcesAsync(cancellationToken);
+        var matches = resources
+            .Where(resource => resource.Aliases.Contains(
+                requestedResource,
+                StringComparer.OrdinalIgnoreCase))
+            .Where(resource => resource.Verbs.Contains(
+                requiredVerb,
+                StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+
+        if (matches.Length == 0)
+        {
+            throw new KubernetesReadException(
+                $"Resource \"{requestedResource}\" was not found among namespaced Kubernetes resources supporting {requiredVerb.ToUpperInvariant()}.");
+        }
+
+        if (matches.Length > 1)
+        {
+            var names = string.Join(", ", matches
+                .Select(match => match.Descriptor.QualifiedName)
+                .Order());
+            throw new KubernetesReadException(
+                $"Resource \"{requestedResource}\" is ambiguous; use one of: {names}.");
+        }
+
+        return matches[0].Descriptor;
+    }
+
+    private async Task<IReadOnlyList<DiscoveredResource>> GetDiscoveredResourcesAsync(
+        CancellationToken cancellationToken)
+    {
+        if (discoveredResources is not null && DateTimeOffset.UtcNow < discoveryExpiresAt)
+        {
+            return discoveredResources;
+        }
+
+        await discoveryLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (discoveredResources is not null && DateTimeOffset.UtcNow < discoveryExpiresAt)
+            {
+                return discoveredResources;
+            }
+
+            var discovered = new List<DiscoveredResource>();
+            var coreResources = await client.CoreV1.GetAPIResourcesAsync(cancellationToken);
+            AddDiscoveredResources(discovered, string.Empty, "v1", coreResources.Resources);
+
+            var apiGroups = await client.Apis.GetAPIVersionsAsync(cancellationToken);
+            foreach (var group in apiGroups.Groups)
+            {
+                if (group.PreferredVersion is null)
+                {
+                    continue;
+                }
+
+                var groupResources = await client.CustomObjects.GetAPIResourcesAsync(
+                    group.Name,
+                    group.PreferredVersion.Version,
+                    cancellationToken);
+                AddDiscoveredResources(
+                    discovered,
+                    group.Name,
+                    group.PreferredVersion.Version,
+                    groupResources.Resources);
+            }
+
+            discoveredResources = discovered;
+            discoveryExpiresAt = DateTimeOffset.UtcNow.AddSeconds(options.DiscoveryCacheSeconds);
+            return discoveredResources;
+        }
+        finally
+        {
+            discoveryLock.Release();
+        }
+    }
+
+    private static void AddDiscoveredResources(
+        ICollection<DiscoveredResource> destination,
+        string group,
+        string version,
+        IEnumerable<V1APIResource> resources)
+    {
+        foreach (var resource in resources)
+        {
+            if (!resource.Namespaced || resource.Name.Contains('/'))
+            {
+                continue;
+            }
+
+            var descriptor = new KubernetesResourceDescriptor(
+                group,
+                version,
+                resource.Name,
+                resource.Kind);
+            var aliases = new List<string>
+            {
+                resource.Name,
+                resource.SingularName,
+                resource.Kind,
+                descriptor.QualifiedName
+            };
+            aliases.AddRange(resource.ShortNames ?? []);
+
+            destination.Add(new DiscoveredResource(
+                descriptor,
+                aliases.Where(alias => !string.IsNullOrWhiteSpace(alias)).Distinct().ToArray(),
+                (resource.Verbs ?? []).ToArray()));
+        }
+    }
+
     private async Task EnsureNamespaceAllowedAsync(
         string @namespace,
         CancellationToken cancellationToken)
@@ -195,5 +321,11 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     public void Dispose()
     {
         client.Dispose();
+        discoveryLock.Dispose();
     }
+
+    private sealed record DiscoveredResource(
+        KubernetesResourceDescriptor Descriptor,
+        IReadOnlyList<string> Aliases,
+        IReadOnlyList<string> Verbs);
 }

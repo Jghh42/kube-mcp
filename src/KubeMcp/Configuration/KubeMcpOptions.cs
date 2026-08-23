@@ -11,6 +11,8 @@ public sealed class KubeMcpOptions
 
     public string? KubeConfigPath { get; init; }
 
+    public ResourcePolicyOptions ResourcePolicy { get; init; } = new();
+
     public Dictionary<string, KubernetesResourceOptions> AllowedResources { get; init; } = [];
 
     public NamespacePolicyOptions NamespacePolicy { get; init; } = new();
@@ -23,6 +25,20 @@ public sealed class KubeMcpOptions
 
     [Range(1, 120)]
     public int KubernetesRequestTimeoutSeconds { get; init; } = 15;
+
+    [Range(1, 3600)]
+    public int DiscoveryCacheSeconds { get; init; } = 300;
+}
+
+public sealed class ResourcePolicyOptions
+{
+    public ResourcePolicyMode Mode { get; init; } = ResourcePolicyMode.Allowlist;
+}
+
+public enum ResourcePolicyMode
+{
+    Allowlist,
+    AllowAll
 }
 
 public sealed class KubernetesResourceOptions

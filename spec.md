@@ -555,9 +555,11 @@ The exact .NET representation of this mapping is an implementation detail.
 
 # 17. No Implicit Resource Discovery for Authorization
 
-Kubernetes API discovery may be useful internally, but it must not determine what the agent is authorized to access.
+Kubernetes API discovery may be useful internally, but it must not expand access
+while the default allowlist policy is active.
 
-Authorization is based on an explicit configured allowlist.
+Authorization is based on either an explicit configured allowlist or a deliberate
+server-side `AllowAll` policy opt-in.
 
 The server must never behave like:
 
@@ -575,15 +577,17 @@ resource explicitly configured
 therefore request may proceed
 ```
 
-Kubernetes discovery may later assist validation or resource resolution, but it must not expand the security boundary.
+In allowlist mode, Kubernetes discovery must not expand the security boundary.
+In explicit `AllowAll` mode, discovery defines the namespaced GET/LIST resources
+inside the deliberately expanded boundary. The caller still cannot supply an
+arbitrary API path, group, version, or HTTP operation.
 
 ---
 
-# 18. Resource Allowlist
+# 18. Resource Access Policy
 
-All Kubernetes resources are denied by default.
-
-A resource may only be requested if explicitly configured.
+All Kubernetes resources are denied by default. The default mode is `Allowlist`,
+where a resource may only be requested if explicitly configured.
 
 Conceptually:
 
@@ -606,9 +610,26 @@ secrets:
   resource: secrets
 ```
 
-A request for an unknown resource must be rejected before contacting Kubernetes.
+A request for an unknown resource must be rejected before contacting Kubernetes
+in allowlist mode.
 
-The allowlist also provides a convenient stable MCP vocabulary that does not need to exactly mirror arbitrary Kubernetes API naming.
+The allowlist also provides a convenient stable MCP vocabulary that does not need
+to exactly mirror arbitrary Kubernetes API naming.
+
+An explicit `AllowAll` mode may be configured for environments that intentionally
+want every namespaced resource supporting GET/LIST to be accessible. This mode:
+
+* is never the default
+* emits a startup warning
+* uses API discovery only for structured resource resolution
+* remains subject to namespace policy
+* retains mandatory Secret sanitization
+* remains subject to Kubernetes RBAC
+* does not permit arbitrary API paths or caller-selected HTTP verbs
+
+Kubernetes RBAC must be expanded separately if resources outside the default role
+are intended to work. This preserves an independent, deliberate authorization
+boundary.
 
 ---
 
@@ -1627,7 +1648,10 @@ Every Kubernetes action caused by MCP is either GET or LIST.
 
 ## Invariant 3
 
-Only explicitly configured Kubernetes resources can be accessed.
+Only explicitly configured Kubernetes resources can be accessed unless the server
+operator deliberately enables resource `AllowAll` mode. In that mode, access is
+limited to discovered namespaced resources supporting GET/LIST and remains bounded
+by namespace policy and Kubernetes RBAC.
 
 ## Invariant 4
 

@@ -126,9 +126,24 @@ public sealed class KindIntegrationTests
             Assert.NotEqual(password, data.GetProperty("username").GetString());
         }
 
+        var resourcePolicyMode = Environment.GetEnvironmentVariable("KUBE_MCP_RESOURCE_POLICY_MODE");
         var unknownResource = await CallAsync(client, "definitely-not-a-resource");
         Assert.True(unknownResource.IsError);
-        Assert.Contains("not included in the configured resource allowlist", Text(unknownResource));
+        Assert.Contains(
+            resourcePolicyMode == "AllowAll"
+                ? "was not found among namespaced Kubernetes resources"
+                : "not included in the configured resource allowlist",
+            Text(unknownResource));
+
+        if (resourcePolicyMode == "AllowAll")
+        {
+            var discoveredResource = await CallAsync(
+                client,
+                "leases.coordination.k8s.io");
+            Assert.NotEqual(true, discoveredResource.IsError);
+            using var json = ParseText(discoveredResource);
+            Assert.Equal("leases.coordination.k8s.io", json.RootElement.GetProperty("resource").GetString());
+        }
 
         var policyMode = Environment.GetEnvironmentVariable("KUBE_MCP_NAMESPACE_POLICY_MODE");
         var deniedNamespace = await CallAsync(client, "pods", @namespace: "kube-system");

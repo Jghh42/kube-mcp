@@ -16,13 +16,26 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
             return ValidateOptionsResult.Fail(hmacValidation);
         }
 
-        if (options.AllowedResources is null || options.AllowedResources.Count == 0)
+        if (options.ResourcePolicy is null)
         {
             return ValidateOptionsResult.Fail(
-                $"{KubeMcpOptions.SectionName}:AllowedResources must contain at least one resource.");
+                $"{KubeMcpOptions.SectionName}:ResourcePolicy is required.");
         }
 
-        foreach (var (configuredName, resource) in options.AllowedResources)
+        if (!Enum.IsDefined(options.ResourcePolicy.Mode))
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:ResourcePolicy:Mode must be Allowlist or AllowAll.");
+        }
+
+        if (options.ResourcePolicy.Mode == ResourcePolicyMode.Allowlist &&
+            (options.AllowedResources is null || options.AllowedResources.Count == 0))
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:AllowedResources must contain at least one resource when ResourcePolicy:Mode is Allowlist.");
+        }
+
+        foreach (var (configuredName, resource) in options.AllowedResources ?? [])
         {
             var validation = ValidateResource(configuredName, resource);
             if (validation is not null)

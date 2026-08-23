@@ -66,7 +66,7 @@ The integration harness builds and loads a local test image, generates an epheme
 HMAC key, deploys the service, creates ConfigMap and Secret fixtures, and calls the
 running service through the official MCP client. It verifies compact Pod,
 Deployment, Service, ConfigMap, and Secret LIST output, detailed GET, resource
-denials, and both namespace policy modes:
+denials, both namespace policy modes, and explicit resource `AllowAll` mode:
 
 ```sh
 ./tests/integration/run-kind.sh
@@ -122,13 +122,15 @@ use double underscores, for example `KubeMcp__SecretHmacKey`.
 | --- | ---: | --- |
 | `KubeMcp:SecretHmacKey` | required | Base64-encoded HMAC key of at least 32 bytes |
 | `KubeMcp:KubeConfigPath` | automatic | Optional kubeconfig path; in-cluster configuration is detected automatically |
-| `KubeMcp:AllowedResources` | see `appsettings.json` | Explicit MCP name to Kubernetes group/version/resource/kind mappings |
+| `KubeMcp:ResourcePolicy:Mode` | `Allowlist` | `Allowlist` or the explicit `AllowAll` opt-in |
+| `KubeMcp:AllowedResources` | see `appsettings.json` | Explicit MCP name to Kubernetes group/version/resource/kind mappings in allowlist mode |
 | `KubeMcp:NamespacePolicy:Mode` | `Blacklist` | `Blacklist` or `LabelSelector` |
 | `KubeMcp:NamespacePolicy:DeniedNamespaces` | Kubernetes system namespaces | Names denied in blacklist mode |
 | `KubeMcp:NamespacePolicy:LabelSelector` | none | Required Kubernetes label selector in label-selector mode |
 | `KubeMcp:MaxListItems` | `100` | Maximum objects returned by LIST |
 | `KubeMcp:MaxResponseBytes` | `1048576` | Maximum serialized tool response size |
 | `KubeMcp:KubernetesRequestTimeoutSeconds` | `15` | Kubernetes operation timeout |
+| `KubeMcp:DiscoveryCacheSeconds` | `300` | API discovery cache lifetime when resource `AllowAll` mode is enabled |
 
 Resources are denied unless their MCP name has an explicit mapping. The defaults
 cover common namespaced Kubernetes resources plus CloudNativePG and Traefik CRDs.
@@ -151,6 +153,24 @@ A custom mapping looks like:
 }
 ```
 
+To allow every discoverable namespaced resource supporting GET/LIST, explicitly
+opt in with:
+
+```text
+KubeMcp__ResourcePolicy__Mode=AllowAll
+```
+
+`AllowAll` restores Kubernetes API discovery for resource resolution and emits a
+startup warning. Namespace policy, GET/LIST-only behavior, Secret sanitization,
+response limits, and Kubernetes RBAC continue to apply. To expand the supplied
+ClusterRole as well, deliberately apply the separate high-privilege manifest:
+
+```sh
+kubectl apply --filename deployment-allow-all-rbac.yaml
+```
+
+Reapply `deployment.yaml` to restore the default narrow ClusterRole.
+
 Namespace blacklist mode allows new namespaces automatically while denying the
 configured names. The defaults deny `kube-system`, `kube-public`, and
 `kube-node-lease`. Label-selector mode instead allows only namespaces matching a
@@ -166,7 +186,11 @@ should provide it through the organization’s normal secret-management system.
 
 ## Kubernetes RBAC
 
-The `ClusterRole` grants only `get` and `list` for the default resource allowlist.
-It additionally grants namespace `list` so Kubernetes can evaluate label-selector
-namespace policy. It grants no wildcard resources and no create, update, patch,
-delete, watch, exec, or proxy operations.
+The default `ClusterRole` grants only `get` and `list` for the default resource
+allowlist. It additionally grants namespace `list` so Kubernetes can evaluate
+label-selector namespace policy. It grants no wildcard resources and no create,
+update, patch, delete, watch, exec, or proxy operations.
+
+`deployment-allow-all-rbac.yaml` is a separate, explicit opt-in that changes this
+identity to cluster-wide wildcard GET/LIST access. Application resource mode and
+Kubernetes RBAC are independent: enabling only one does not bypass the other.

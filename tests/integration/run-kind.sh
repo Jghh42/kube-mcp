@@ -11,11 +11,19 @@ test_image=kube-mcp:stage4-test
 port_forward_log=$(mktemp)
 deployment_manifest=$(mktemp)
 port_forward_pid=
+defaults_need_restore=false
 
 cleanup() {
   if [[ -n "$port_forward_pid" ]]; then
     kill "$port_forward_pid" 2>/dev/null || true
     wait "$port_forward_pid" 2>/dev/null || true
+  fi
+  if [[ "$defaults_need_restore" == "true" ]]; then
+    kubectl apply --filename "$deployment_manifest" >/dev/null 2>&1 || true
+    kubectl set env deployment/kube-mcp --namespace kube-mcp \
+      KubeMcp__ResourcePolicy__Mode- \
+      KubeMcp__NamespacePolicy__Mode- \
+      KubeMcp__NamespacePolicy__LabelSelector- >/dev/null 2>&1 || true
   fi
   rm -f "$port_forward_log" "$deployment_manifest"
   kubectl delete namespace "$fixture_namespace" --ignore-not-found --wait=false >/dev/null
@@ -136,10 +144,34 @@ KUBE_MCP_NAMESPACE_POLICY_MODE=LabelSelector \
     --filter 'FullyQualifiedName~KindIntegrationTests' \
     --logger 'console;verbosity=normal'
 
+kill "$port_forward_pid" 2>/dev/null || true
+wait "$port_forward_pid" 2>/dev/null || true
+port_forward_pid=
+
+defaults_need_restore=true
+kubectl apply --filename deployment-allow-all-rbac.yaml >/dev/null
 kubectl set env deployment/kube-mcp --namespace kube-mcp \
+  KubeMcp__ResourcePolicy__Mode=AllowAll >/dev/null
+kubectl rollout status deployment/kube-mcp --namespace kube-mcp --timeout=120s
+start_port_forward
+
+echo "Running AllowAll resource policy integration tests..."
+KUBE_MCP_INTEGRATION_ENDPOINT="http://127.0.0.1:$local_port/mcp" \
+KUBE_MCP_NAMESPACE_POLICY_MODE=LabelSelector \
+KUBE_MCP_RESOURCE_POLICY_MODE=AllowAll \
+  dotnet test KubeMcp.slnx \
+    --configuration Release \
+    --filter 'FullyQualifiedName~KindIntegrationTests' \
+    --logger 'console;verbosity=normal'
+
+kubectl apply --filename "$deployment_manifest" >/dev/null
+kubectl set env deployment/kube-mcp --namespace kube-mcp \
+  KubeMcp__ResourcePolicy__Mode- \
   KubeMcp__NamespacePolicy__Mode- \
   KubeMcp__NamespacePolicy__LabelSelector- >/dev/null
 kubectl rollout status deployment/kube-mcp --namespace kube-mcp --timeout=120s
+defaults_need_restore=false
+[[ $(kubectl auth can-i list roles --namespace kube-mcp --as "$service_account") == "no" ]]
 kubectl label namespace kube-mcp kube-mcp.io/agent-access- >/dev/null
 
-echo "Stage 4 integration tests passed in blacklist and label-selector modes. kube-mcp remains running in default blacklist mode."
+echo "Stage 4 integration tests passed for allowlist, AllowAll, blacklist, and label-selector modes. kube-mcp remains running with narrow defaults."

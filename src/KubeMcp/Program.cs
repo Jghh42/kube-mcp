@@ -30,6 +30,13 @@ builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
+if (app.Services.GetRequiredService<IOptions<KubeMcpOptions>>().Value.ResourcePolicy.Mode ==
+    ResourcePolicyMode.AllowAll)
+{
+    app.Logger.LogWarning(
+        "Resource policy AllowAll is enabled. Every namespaced Kubernetes resource supporting GET or LIST may be requested, subject to namespace policy and Kubernetes RBAC.");
+}
+
 app.MapGet("/", () => Results.Ok(new
 {
     service = "kube-mcp",
