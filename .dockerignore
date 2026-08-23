@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+.git/
+.gitignore
+.vscode/
+.idea/
+README.md
+spec.md
+stages.md
+tests/
+k8s/
