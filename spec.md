@@ -111,7 +111,7 @@ The service should not introduce a separate infrastructure pattern merely becaus
 │ • MCP HTTP transport        │
 │ • one MCP tool              │
 │ • resource allowlist        │
-│ • namespace allowlist       │
+│ • namespace access policy   │
 │ • GET/LIST only             │
 │ • Secret sanitization       │
 │ • HMAC fingerprints         │
@@ -174,7 +174,7 @@ Each instance may therefore have independent:
 * Kubernetes RBAC
 * HMAC key
 * resource allowlist
-* namespace allowlist
+* namespace access policy
 * Keycloak authorization policy
 * network policy
 * audit trail
@@ -337,7 +337,7 @@ Keycloak authentication
         ↓
 server resource allowlist
         ↓
-server namespace allowlist
+server namespace access policy
         ↓
 Kubernetes RBAC
 ```
@@ -618,17 +618,28 @@ A conservative initial troubleshooting set could contain:
 
 ```text
 pods
-deployments
-statefulsets
-daemonsets
-replicasets
 services
-endpointslices
-ingresses
+endpoints
 configmaps
 secrets
 events
 persistentvolumeclaims
+replicationcontrollers
+limitranges
+resourcequotas
+
+deployments
+statefulsets
+daemonsets
+replicasets
+
+jobs
+cronjobs
+endpointslices
+ingresses
+networkpolicies
+horizontalpodautoscalers
+poddisruptionbudgets
 ```
 
 Additional resources should be added only because an actual troubleshooting requirement exists.
@@ -642,32 +653,50 @@ scheduledbackups.postgresql.cnpg.io
 poolers.postgresql.cnpg.io
 ```
 
+For Traefik environments, useful namespaced CRDs include:
+
+```text
+ingressroutes.traefik.io
+middlewares.traefik.io
+traefikservices.traefik.io
+tlsoptions.traefik.io
+tlsstores.traefik.io
+serverstransports.traefik.io
+ingressroutetcps.traefik.io
+middlewaretcps.traefik.io
+serverstransporttcps.traefik.io
+ingressrouteudps.traefik.io
+```
+
 The principle is:
 
 > A Kubernetes resource is not exposed merely because it exists.
 
 ---
 
-# 20. Namespace Allowlist
+# 20. Namespace Access Policy
 
-Requests should normally require an explicit namespace.
+Requests must require an explicit namespace. There is no implicit all-namespaces
+operation.
 
-There should be no implicit:
+A static namespace allowlist is not suitable for environments where application
+namespaces are created frequently. The server must instead support two explicit
+policy modes:
 
 ```text
-all namespaces
+Blacklist:
+  allow namespaces by default
+  deny configured namespace names such as kube-system
+
+LabelSelector:
+  allow only namespaces matching a configured Kubernetes label selector
 ```
 
-operation in the initial version.
-
-The server should support an optional configured namespace allowlist.
-
-For example:
+Blacklist mode permits newly created namespaces automatically unless their names
+are denied. Label-selector mode supports dynamic grouping such as:
 
 ```text
-production
-database
-monitoring
+platform.example.com/group in (production,staging)
 ```
 
 A request therefore proceeds only when:
@@ -675,10 +704,12 @@ A request therefore proceeds only when:
 ```text
 resource allowed
 AND
-namespace allowed
+namespace policy permits the requested namespace
 ```
 
-This validation occurs before contacting Kubernetes.
+Blacklist validation occurs before contacting Kubernetes. Label-selector mode may
+query namespace metadata through the Kubernetes API, but this check must complete
+before the requested resource GET or LIST is sent.
 
 ---
 
@@ -729,7 +760,7 @@ required MCP permission?
 resource allowlisted?
         ↓ yes
 
-namespace allowlisted?
+namespace policy permits access?
         ↓ yes
 
 Kubernetes RBAC allows GET/LIST?
@@ -755,7 +786,7 @@ Mcp/
 Kubernetes/
     KubernetesReader
     ResourceAllowlist
-    NamespaceAllowlist
+    NamespaceAccessPolicy
 
 Security/
     SecretSanitizer
@@ -1462,7 +1493,7 @@ required scope/role
 Kubernetes kubeconfig location
 
 allowed resources
-allowed namespaces
+namespace blacklist or namespace label selector
 
 HMAC key/reference
 
@@ -1783,7 +1814,7 @@ operations:
   GET
 
 resource allowlist
-namespace allowlist
+namespace blacklist or label-selector policy
 
 one Kubernetes cluster per service instance
 

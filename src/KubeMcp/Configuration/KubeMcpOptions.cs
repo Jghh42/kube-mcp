@@ -11,6 +11,10 @@ public sealed class KubeMcpOptions
 
     public string? KubeConfigPath { get; init; }
 
+    public Dictionary<string, KubernetesResourceOptions> AllowedResources { get; init; } = [];
+
+    public NamespacePolicyOptions NamespacePolicy { get; init; } = new();
+
     [Range(1, 1000)]
     public int MaxListItems { get; init; } = 100;
 
@@ -19,7 +23,31 @@ public sealed class KubeMcpOptions
 
     [Range(1, 120)]
     public int KubernetesRequestTimeoutSeconds { get; init; } = 15;
+}
 
-    [Range(1, 3600)]
-    public int DiscoveryCacheSeconds { get; init; } = 300;
+public sealed class KubernetesResourceOptions
+{
+    public string Group { get; init; } = string.Empty;
+
+    public string Version { get; init; } = string.Empty;
+
+    public string Resource { get; init; } = string.Empty;
+
+    public string Kind { get; init; } = string.Empty;
+}
+
+public sealed class NamespacePolicyOptions
+{
+    public NamespacePolicyMode Mode { get; init; } = NamespacePolicyMode.Blacklist;
+
+    public string[] DeniedNamespaces { get; init; } =
+        ["kube-system", "kube-public", "kube-node-lease"];
+
+    public string? LabelSelector { get; init; }
+}
+
+public enum NamespacePolicyMode
+{
+    Blacklist,
+    LabelSelector
 }

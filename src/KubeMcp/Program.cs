@@ -18,6 +18,8 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<SecretFingerprinter>();
 builder.Services.AddSingleton<SecretSanitizer>();
 builder.Services.AddSingleton<KubernetesListSummarizer>();
+builder.Services.AddSingleton<ResourceAllowlist>();
+builder.Services.AddSingleton<NamespaceAccessPolicy>();
 builder.Services.AddSingleton<IKubernetesReader, KubernetesReader>();
 
 builder.Services

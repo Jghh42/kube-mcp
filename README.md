@@ -16,10 +16,9 @@ name/namespace/kind/age fallback for other resources. GET remains detailed.
 Kubernetes Secrets are never returned raw: LIST returns safe discovery fields and
 key names, while GET replaces each value with a keyed HMAC-SHA256 fingerprint.
 
-> **Stage 2 development warning:** authentication and resource/namespace policy
-> are not implemented yet. API discovery currently permits all namespaced resource
-> types that Kubernetes RBAC allows. Do not expose this version outside a trusted
-> development environment.
+> **Development warning:** authentication is not implemented yet. Resource and
+> namespace access policies are enforced, but this version should still not be
+> exposed outside a trusted development environment.
 
 ## Prerequisites
 
@@ -66,7 +65,8 @@ clusters can pull it without an image pull secret.
 The integration harness builds and loads a local test image, generates an ephemeral
 HMAC key, deploys the service, creates ConfigMap and Secret fixtures, and calls the
 running service through the official MCP client. It verifies compact Pod,
-Deployment, Service, ConfigMap, and Secret LIST output as well as detailed GET:
+Deployment, Service, ConfigMap, and Secret LIST output, detailed GET, resource
+denials, and both namespace policy modes:
 
 ```sh
 ./tests/integration/run-kind.sh
@@ -122,16 +122,51 @@ use double underscores, for example `KubeMcp__SecretHmacKey`.
 | --- | ---: | --- |
 | `KubeMcp:SecretHmacKey` | required | Base64-encoded HMAC key of at least 32 bytes |
 | `KubeMcp:KubeConfigPath` | automatic | Optional kubeconfig path; in-cluster configuration is detected automatically |
+| `KubeMcp:AllowedResources` | see `appsettings.json` | Explicit MCP name to Kubernetes group/version/resource/kind mappings |
+| `KubeMcp:NamespacePolicy:Mode` | `Blacklist` | `Blacklist` or `LabelSelector` |
+| `KubeMcp:NamespacePolicy:DeniedNamespaces` | Kubernetes system namespaces | Names denied in blacklist mode |
+| `KubeMcp:NamespacePolicy:LabelSelector` | none | Required Kubernetes label selector in label-selector mode |
 | `KubeMcp:MaxListItems` | `100` | Maximum objects returned by LIST |
 | `KubeMcp:MaxResponseBytes` | `1048576` | Maximum serialized tool response size |
 | `KubeMcp:KubernetesRequestTimeoutSeconds` | `15` | Kubernetes operation timeout |
-| `KubeMcp:DiscoveryCacheSeconds` | `300` | API discovery cache lifetime |
+
+Resources are denied unless their MCP name has an explicit mapping. The defaults
+cover common namespaced Kubernetes resources plus CloudNativePG and Traefik CRDs.
+The mapping is resolved before any Kubernetes request and API discovery cannot
+expand it. Custom mappings also require corresponding read-only Kubernetes RBAC.
+A custom mapping looks like:
+
+```json
+{
+  "KubeMcp": {
+    "AllowedResources": {
+      "widgets.example.com": {
+        "Group": "example.com",
+        "Version": "v1",
+        "Resource": "widgets",
+        "Kind": "Widget"
+      }
+    }
+  }
+}
+```
+
+Namespace blacklist mode allows new namespaces automatically while denying the
+configured names. The defaults deny `kube-system`, `kube-public`, and
+`kube-node-lease`. Label-selector mode instead allows only namespaces matching a
+normal Kubernetes label selector. For example:
+
+```text
+KubeMcp__NamespacePolicy__Mode=LabelSelector
+KubeMcp__NamespacePolicy__LabelSelector=platform.example.com/group in (production,staging)
+```
 
 The HMAC key must not be committed to source control. Production environments
 should provide it through the organization’s normal secret-management system.
 
 ## Kubernetes RBAC
 
-The current `ClusterRole` deliberately allows only `get` and `list`, but allows
-those verbs on all Kubernetes resource types as required by the staged plan. It
-grants no create, update, patch, delete, watch, exec, or proxy operations.
+The `ClusterRole` grants only `get` and `list` for the default resource allowlist.
+It additionally grants namespace `list` so Kubernetes can evaluate label-selector
+namespace policy. It grants no wildcard resources and no create, update, patch,
+delete, watch, exec, or proxy operations.

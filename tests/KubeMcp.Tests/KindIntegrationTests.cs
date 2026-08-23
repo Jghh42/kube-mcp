@@ -128,7 +128,25 @@ public sealed class KindIntegrationTests
 
         var unknownResource = await CallAsync(client, "definitely-not-a-resource");
         Assert.True(unknownResource.IsError);
-        Assert.Contains("not found in Kubernetes API discovery", Text(unknownResource));
+        Assert.Contains("not included in the configured resource allowlist", Text(unknownResource));
+
+        var policyMode = Environment.GetEnvironmentVariable("KUBE_MCP_NAMESPACE_POLICY_MODE");
+        var deniedNamespace = await CallAsync(client, "pods", @namespace: "kube-system");
+        Assert.True(deniedNamespace.IsError);
+        Assert.Contains(
+            policyMode == "LabelSelector"
+                ? "does not match the configured namespace label selector"
+                : "denied by the configured namespace blacklist",
+            Text(deniedNamespace));
+
+        if (policyMode == "LabelSelector")
+        {
+            var unlabelledNamespace = await CallAsync(client, "configmaps", @namespace: "default");
+            Assert.True(unlabelledNamespace.IsError);
+            Assert.Contains(
+                "does not match the configured namespace label selector",
+                Text(unlabelledNamespace));
+        }
 
         var invalidNamespace = await client.CallToolAsync(
             "k8s_get",

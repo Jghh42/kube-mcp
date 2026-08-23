@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
+using KubeMcp.Kubernetes;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
 
 namespace KubeMcp.Tests;
@@ -38,6 +40,21 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("Healthy", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public void DefaultAllowlistIncludesCoreCnpgAndTraefikResources()
+    {
+        var allowlist = factory.Services.GetRequiredService<ResourceAllowlist>();
+
+        Assert.Equal("pods", allowlist.Resolve("pods").QualifiedName);
+        Assert.Equal(
+            "clusters.postgresql.cnpg.io",
+            allowlist.Resolve("clusters.postgresql.cnpg.io").QualifiedName);
+        Assert.Equal(
+            "ingressroutes.traefik.io",
+            allowlist.Resolve("ingressroutes.traefik.io").QualifiedName);
+        Assert.Throws<KubernetesReadException>(() => allowlist.Resolve("namespaces"));
     }
 
     [Fact]

@@ -4,9 +4,7 @@ internal sealed record KubernetesResourceDescriptor(
     string Group,
     string Version,
     string Resource,
-    string Kind,
-    IReadOnlyList<string> Aliases,
-    IReadOnlyList<string> Verbs)
+    string Kind)
 {
     public string QualifiedName => string.IsNullOrEmpty(Group)
         ? Resource

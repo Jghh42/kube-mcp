@@ -232,9 +232,7 @@ public sealed class KubernetesListSummarizerTests : IDisposable
             group,
             "v1",
             resource,
-            kind,
-            [resource],
-            ["get", "list"]);
+            kind);
         return JsonSerializer.SerializeToElement(summarizer.Summarize(item, descriptor));
     }
 
