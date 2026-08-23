@@ -1161,17 +1161,63 @@ GET is optimized for:
 detailed inspection
 ```
 
-A Deployment LIST should therefore return compact identifying/status information instead of every full Deployment manifest.
+LIST responses must return compact, resource-specific summaries instead of full manifests or complete Kubernetes `.status` objects.
 
-For example:
+Responses should remain structured JSON rather than formatted terminal tables, while exposing fields comparable to useful `kubectl get -o wide` output. For example, a Pod LIST could return:
 
-```text
-NAME              READY   REPLICAS
-payments-api      3/3     3
-payments-worker   2/2     2
+```json
+{
+  "operation": "LIST",
+  "resource": "pods",
+  "namespace": "kube-mcp",
+  "items": [
+    {
+      "name": "kube-mcp-88f475c56-8r77x",
+      "ready": "1/1",
+      "status": "Running",
+      "restarts": 0,
+      "age": "57m",
+      "ip": "10.244.0.12",
+      "node": "kind-control-plane"
+    }
+  ],
+  "count": 1,
+  "limited": false
+}
 ```
 
-The exact fields may vary by resource.
+The exact summary fields should vary by resource. Examples include:
+
+```text
+Pods:
+  name, ready, status, restarts, age, IP, node
+
+Deployments and StatefulSets:
+  name, ready, replicas, available, age
+
+DaemonSets:
+  name, desired, current, ready, available, age
+
+Services:
+  name, type, cluster IP, external IPs, ports, age
+
+ConfigMaps:
+  name, key count or key names, age
+
+Secrets:
+  name, type, key names, age
+```
+
+For an allowed CRD without a resource-specific summarizer, the fallback should contain only compact discovery fields such as:
+
+```text
+name
+namespace
+kind
+age or creation timestamp
+```
+
+A LIST response should not include complete `.spec`, `.status`, `managedFields`, container status arrays, or other full-object structures merely because they were returned by Kubernetes. The agent should use LIST for discovery and then explicitly GET an interesting object for detailed inspection.
 
 The service should prefer useful compact information over generic serialization of entire lists.
 

@@ -49,6 +49,18 @@ Setup dev env, create a basic .net project with a dockerfile + deployment.yaml +
 2.
 Implement the MCP + Kubernetes part with the secret value hashing (no auth, audit logging, allowlisting for now)
 
+2.5.
+Implement compact, resource-specific LIST responses to minimize agent context use.
+
+- Return structured JSON summaries comparable to useful `kubectl get -o wide` output rather than terminal-formatted tables.
+- Do not return complete `.spec`, `.status`, `managedFields`, container status arrays, or other full-object structures from LIST.
+- Include useful Pod fields such as name, ready, status, restarts, age, IP, and node.
+- Add suitable compact summaries for common workloads, Services, ConfigMaps, and Secrets.
+- Use a minimal name/namespace/kind/age fallback for CRDs without a resource-specific summarizer.
+- Preserve LIST limits and the explicit `limited` indicator.
+- Keep GET responses detailed so the agent can explicitly inspect objects discovered through LIST.
+- Add unit and end-to-end tests that assert LIST responses remain compact and exclude heavyweight object content.
+
 3.
 Add CI/CD for building the container and pushing to a real container registry (ghcr)
 

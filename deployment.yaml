@@ -65,8 +65,14 @@ spec:
           type: RuntimeDefault
       containers:
         - name: kube-mcp
-          image: kube-mcp:stage1
+          image: kube-mcp:stage2
           imagePullPolicy: IfNotPresent
+          env:
+            - name: KubeMcp__SecretHmacKey
+              valueFrom:
+                secretKeyRef:
+                  name: kube-mcp-hmac
+                  key: key
           ports:
             - name: http
               containerPort: 8080
@@ -75,12 +81,18 @@ spec:
             httpGet:
               path: /readyz
               port: http
+              httpHeaders:
+                - name: Host
+                  value: kube-mcp
             initialDelaySeconds: 2
             periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
+              httpHeaders:
+                - name: Host
+                  value: kube-mcp
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
