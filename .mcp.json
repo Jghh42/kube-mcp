@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "kube-mcp": {
+      "url": "http://127.0.0.1:18080/mcp",
+      "protocolVersion": "auto",
+      "lifecycle": "lazy",
+      "requestTimeoutMs": 30000
+    }
+  }
+}
