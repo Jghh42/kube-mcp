@@ -11,15 +11,12 @@ deployment with read-only service-account RBAC.
 - kind
 - kubectl
 
-On this development machine, use `/usr/bin/dotnet`: `/usr/local/bin/dotnet`
-currently points at a separate .NET 9 installation.
-
 ## Build and test
 
 ```sh
-/usr/bin/dotnet restore
-/usr/bin/dotnet build --configuration Release --no-restore
-/usr/bin/dotnet test --configuration Release --no-build
+dotnet restore
+dotnet build --configuration Release --no-restore
+dotnet test --configuration Release --no-build
 ```
 
 ## Build and deploy to kind
