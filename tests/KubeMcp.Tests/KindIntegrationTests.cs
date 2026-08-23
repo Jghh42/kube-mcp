@@ -31,13 +31,66 @@ public sealed class KindIntegrationTests
 
         var configMapList = await CallAsync(client, "configmaps");
         Assert.NotEqual(true, configMapList.IsError);
-        using (var json = ParseText(configMapList))
+        var configMapListText = Text(configMapList);
+        Assert.DoesNotContain("integration", configMapListText);
+        Assert.DoesNotContain("\"data\"", configMapListText);
+        using (var json = JsonDocument.Parse(configMapListText))
         {
-            var items = json.RootElement.GetProperty("items");
+            var root = json.RootElement;
+            var items = root.GetProperty("items");
             var item = Assert.Single(items.EnumerateArray(), item =>
-                item.GetProperty("metadata").GetProperty("name").GetString() == "stage-two");
-            Assert.Equal("v1", item.GetProperty("apiVersion").GetString());
-            Assert.Equal("ConfigMap", item.GetProperty("kind").GetString());
+                item.GetProperty("name").GetString() == "stage-two");
+            Assert.Equal("test", Assert.Single(item.GetProperty("keys").EnumerateArray()).GetString());
+            Assert.Equal(1, item.GetProperty("keyCount").GetInt32());
+            Assert.True(item.TryGetProperty("age", out _));
+            Assert.Equal(items.GetArrayLength(), root.GetProperty("count").GetInt32());
+            Assert.False(root.GetProperty("limited").GetBoolean());
+        }
+
+        var podList = await CallAsync(client, "pods", @namespace: "kube-mcp");
+        Assert.NotEqual(true, podList.IsError);
+        var podListText = Text(podList);
+        Assert.DoesNotContain("\"spec\"", podListText);
+        Assert.DoesNotContain("containerStatuses", podListText);
+        Assert.DoesNotContain("managedFields", podListText);
+        using (var json = JsonDocument.Parse(podListText))
+        {
+            var item = Assert.Single(
+                json.RootElement.GetProperty("items").EnumerateArray(),
+                item => item.GetProperty("name").GetString()!.StartsWith("kube-mcp-", StringComparison.Ordinal));
+            Assert.Equal(JsonValueKind.String, item.GetProperty("ready").ValueKind);
+            Assert.Equal(JsonValueKind.String, item.GetProperty("status").ValueKind);
+            Assert.True(item.TryGetProperty("restarts", out _));
+            Assert.True(item.TryGetProperty("ip", out _));
+            Assert.True(item.TryGetProperty("node", out _));
+        }
+
+        var deploymentList = await CallAsync(client, "deployments", @namespace: "kube-mcp");
+        Assert.NotEqual(true, deploymentList.IsError);
+        var deploymentListText = Text(deploymentList);
+        Assert.DoesNotContain("\"spec\"", deploymentListText);
+        Assert.DoesNotContain("conditions", deploymentListText);
+        using (var json = JsonDocument.Parse(deploymentListText))
+        {
+            var item = Assert.Single(
+                json.RootElement.GetProperty("items").EnumerateArray(),
+                item => item.GetProperty("name").GetString() == "kube-mcp");
+            Assert.True(item.TryGetProperty("ready", out _));
+            Assert.True(item.TryGetProperty("replicas", out _));
+            Assert.True(item.TryGetProperty("available", out _));
+            Assert.True(item.TryGetProperty("age", out _));
+        }
+
+        var serviceList = await CallAsync(client, "services", @namespace: "kube-mcp");
+        Assert.NotEqual(true, serviceList.IsError);
+        using (var json = ParseText(serviceList))
+        {
+            var item = Assert.Single(
+                json.RootElement.GetProperty("items").EnumerateArray(),
+                item => item.GetProperty("name").GetString() == "kube-mcp");
+            Assert.Equal("ClusterIP", item.GetProperty("type").GetString());
+            Assert.True(item.TryGetProperty("clusterIp", out _));
+            Assert.Equal(JsonValueKind.Array, item.GetProperty("ports").ValueKind);
         }
 
         var configMapGet = await CallAsync(client, "configmaps", "stage-two");
@@ -92,12 +145,13 @@ public sealed class KindIntegrationTests
     private static ValueTask<CallToolResult> CallAsync(
         McpClient client,
         string resource,
-        string? name = null)
+        string? name = null,
+        string @namespace = Namespace)
     {
         var arguments = new Dictionary<string, object?>
         {
             ["resource"] = resource,
-            ["namespace"] = Namespace
+            ["namespace"] = @namespace
         };
         if (name is not null)
         {

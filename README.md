@@ -10,7 +10,10 @@ k8s_get(resource, namespace, name?)
 ```
 
 Omitting `name` performs a compact namespaced LIST. Supplying `name` performs a
-namespaced GET. Kubernetes Secrets are never returned raw: LIST returns names and
+namespaced GET. LIST uses resource-specific structured summaries (for Pods,
+workloads, Services, ConfigMaps, Secrets, Jobs, and CronJobs) and a minimal
+name/namespace/kind/age fallback for other resources. GET remains detailed.
+Kubernetes Secrets are never returned raw: LIST returns safe discovery fields and
 key names, while GET replaces each value with a keyed HMAC-SHA256 fingerprint.
 
 > **Stage 2 development warning:** authentication and resource/namespace policy
@@ -34,14 +37,16 @@ dotnet build --configuration Release --no-restore
 dotnet test --configuration Release --no-build
 ```
 
-The test suite includes Secret sanitization/fingerprinting tests and an in-process
-MCP transport test that verifies `k8s_get` is the only exposed tool.
+The test suite includes Secret sanitization/fingerprinting tests, compact LIST
+summary tests that reject heavyweight object content, and an in-process MCP
+transport test that verifies `k8s_get` is the only exposed tool.
 
 ## End-to-end test with kind
 
-The integration harness builds and loads `kube-mcp:stage2`, generates an ephemeral
+The integration harness builds and loads `kube-mcp:stage2.5`, generates an ephemeral
 HMAC key, deploys the service, creates ConfigMap and Secret fixtures, and calls the
-running service through the official MCP client:
+running service through the official MCP client. It verifies compact Pod,
+Deployment, Service, ConfigMap, and Secret LIST output as well as detailed GET:
 
 ```sh
 ./tests/integration/run-kind.sh
@@ -55,8 +60,8 @@ left running in kind.
 Build and load the image:
 
 ```sh
-docker build --tag kube-mcp:stage2 .
-kind load docker-image kube-mcp:stage2 --name kind
+docker build --tag kube-mcp:stage2.5 .
+kind load docker-image kube-mcp:stage2.5 --name kind
 ```
 
 Create the namespace and a stable, server-held HMAC key. Keep this key stable if
