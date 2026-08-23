@@ -15,6 +15,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
 
     private readonly IKubernetes client;
     private readonly SecretSanitizer secretSanitizer;
+    private readonly KubernetesListSummarizer listSummarizer;
     private readonly KubeMcpOptions options;
     private readonly SemaphoreSlim discoveryLock = new(1, 1);
     private IReadOnlyList<KubernetesResourceDescriptor>? discoveredResources;
@@ -22,9 +23,11 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
 
     public KubernetesReader(
         SecretSanitizer secretSanitizer,
+        KubernetesListSummarizer listSummarizer,
         IOptions<KubeMcpOptions> options)
     {
         this.secretSanitizer = secretSanitizer;
+        this.listSummarizer = listSummarizer;
         this.options = options.Value;
 
         var configuration = string.IsNullOrWhiteSpace(this.options.KubeConfigPath)
@@ -120,9 +123,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         var items = new JsonArray();
         foreach (var item in list.Items.Take(options.MaxListItems))
         {
-            items.Add(descriptor.IsSecret
-                ? secretSanitizer.SanitizeListItem(item)
-                : CompactListItem(item, descriptor));
+            items.Add(listSummarizer.Summarize(item, descriptor));
         }
 
         return new JsonObject
@@ -266,54 +267,6 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         }
 
         return result;
-    }
-
-    private static JsonObject CompactListItem(
-        DynamicKubernetesObject item,
-        KubernetesResourceDescriptor descriptor)
-    {
-        var apiVersion = string.IsNullOrWhiteSpace(item.ApiVersion)
-            ? string.IsNullOrEmpty(descriptor.Group)
-                ? descriptor.Version
-                : $"{descriptor.Group}/{descriptor.Version}"
-            : item.ApiVersion;
-        var kind = string.IsNullOrWhiteSpace(item.Kind) ? descriptor.Kind : item.Kind;
-        var result = new JsonObject
-        {
-            ["apiVersion"] = apiVersion,
-            ["kind"] = kind
-        };
-
-        if (item.Properties.TryGetValue("metadata", out var metadata) &&
-            metadata.ValueKind == JsonValueKind.Object)
-        {
-            var safeMetadata = new JsonObject();
-            CopyProperty(metadata, safeMetadata, "name");
-            CopyProperty(metadata, safeMetadata, "namespace");
-            CopyProperty(metadata, safeMetadata, "creationTimestamp");
-            CopyProperty(metadata, safeMetadata, "labels");
-            result["metadata"] = safeMetadata;
-        }
-
-        if (item.Properties.TryGetValue("status", out var status))
-        {
-            result["status"] = JsonNode.Parse(status.GetRawText());
-        }
-
-        if (item.Properties.TryGetValue("type", out var type))
-        {
-            result["type"] = JsonNode.Parse(type.GetRawText());
-        }
-
-        return result;
-    }
-
-    private static void CopyProperty(JsonElement source, JsonObject target, string propertyName)
-    {
-        if (source.TryGetProperty(propertyName, out var value))
-        {
-            target[propertyName] = JsonNode.Parse(value.GetRawText());
-        }
     }
 
     private static bool HasContinueToken(JsonElement metadata)

@@ -25,9 +25,9 @@ kind get clusters | grep -Fxq "$cluster_name" || {
   exit 1
 }
 
-echo "Building kube-mcp:stage2..."
-docker build --tag kube-mcp:stage2 .
-kind load docker-image kube-mcp:stage2 --name "$cluster_name"
+echo "Building kube-mcp:stage2.5..."
+docker build --tag kube-mcp:stage2.5 .
+kind load docker-image kube-mcp:stage2.5 --name "$cluster_name"
 
 kubectl create namespace kube-mcp --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 hmac_key=$(openssl rand -base64 32)
@@ -91,4 +91,4 @@ KUBE_MCP_INTEGRATION_ENDPOINT="http://127.0.0.1:$local_port/mcp" \
     --filter 'FullyQualifiedName~KindIntegrationTests' \
     --logger 'console;verbosity=normal'
 
-echo "Stage 2 integration tests passed. kube-mcp remains running in kind."
+echo "Stage 2.5 integration tests passed. kube-mcp remains running in kind."

@@ -52,7 +52,6 @@ public sealed class SecretSanitizer(SecretFingerprinter fingerprinter)
         return new JsonObject
         {
             ["name"] = MetadataString(secret, "name"),
-            ["namespace"] = MetadataString(secret, "namespace"),
             ["type"] = StringProperty(secret, "type") ?? "Opaque",
             ["keys"] = keyArray
         };

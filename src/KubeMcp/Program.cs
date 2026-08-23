@@ -14,8 +14,10 @@ builder.Services
     .ValidateOnStart();
 builder.Services.AddSingleton<IValidateOptions<KubeMcpOptions>, KubeMcpOptionsValidator>();
 
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<SecretFingerprinter>();
 builder.Services.AddSingleton<SecretSanitizer>();
+builder.Services.AddSingleton<KubernetesListSummarizer>();
 builder.Services.AddSingleton<IKubernetesReader, KubernetesReader>();
 
 builder.Services
