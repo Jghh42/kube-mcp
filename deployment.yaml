@@ -65,8 +65,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: kube-mcp
-          image: kube-mcp:stage2.5
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/jghh42/kube-mcp:latest
+          imagePullPolicy: Always
           env:
             - name: KubeMcp__SecretHmacKey
               valueFrom:

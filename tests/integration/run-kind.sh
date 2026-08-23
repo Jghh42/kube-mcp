@@ -7,7 +7,9 @@ cd "$repo_root"
 cluster_name=${KIND_CLUSTER_NAME:-kind}
 local_port=${KUBE_MCP_TEST_PORT:-18082}
 fixture_namespace=kube-mcp-e2e
+test_image=kube-mcp:stage3-test
 port_forward_log=$(mktemp)
+deployment_manifest=$(mktemp)
 port_forward_pid=
 
 cleanup() {
@@ -15,7 +17,7 @@ cleanup() {
     kill "$port_forward_pid" 2>/dev/null || true
     wait "$port_forward_pid" 2>/dev/null || true
   fi
-  rm -f "$port_forward_log"
+  rm -f "$port_forward_log" "$deployment_manifest"
   kubectl delete namespace "$fixture_namespace" --ignore-not-found --wait=false >/dev/null
 }
 trap cleanup EXIT
@@ -25,9 +27,18 @@ kind get clusters | grep -Fxq "$cluster_name" || {
   exit 1
 }
 
-echo "Building kube-mcp:stage2.5..."
-docker build --tag kube-mcp:stage2.5 .
-kind load docker-image kube-mcp:stage2.5 --name "$cluster_name"
+echo "Building $test_image..."
+docker build --tag "$test_image" .
+kind load docker-image "$test_image" --name "$cluster_name"
+
+sed \
+  -e "s|image: ghcr.io/jghh42/kube-mcp:latest|image: $test_image|" \
+  -e "s|imagePullPolicy: Always|imagePullPolicy: IfNotPresent|" \
+  deployment.yaml >"$deployment_manifest"
+grep -Fq "image: $test_image" "$deployment_manifest" || {
+  echo "failed to replace the published image in the integration manifest" >&2
+  exit 1
+}
 
 kubectl create namespace kube-mcp --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 hmac_key=$(openssl rand -base64 32)
@@ -36,7 +47,7 @@ kubectl create secret generic kube-mcp-hmac \
   --from-literal="key=$hmac_key" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-kubectl apply --filename deployment.yaml >/dev/null
+kubectl apply --filename "$deployment_manifest" >/dev/null
 kubectl rollout restart deployment/kube-mcp --namespace kube-mcp >/dev/null
 kubectl rollout status deployment/kube-mcp --namespace kube-mcp --timeout=120s
 
@@ -91,4 +102,4 @@ KUBE_MCP_INTEGRATION_ENDPOINT="http://127.0.0.1:$local_port/mcp" \
     --filter 'FullyQualifiedName~KindIntegrationTests' \
     --logger 'console;verbosity=normal'
 
-echo "Stage 2.5 integration tests passed. kube-mcp remains running in kind."
+echo "Stage 3 integration tests passed. kube-mcp remains running in kind."
