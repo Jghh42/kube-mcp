@@ -12,15 +12,14 @@ public sealed class KindIntegrationTests
     private const string Namespace = "kube-mcp-e2e";
     private const string SecretValue = "correct-horse-battery-staple";
 
-    [Fact]
+    [IntegrationTest]
     [Trait("Category", "Integration")]
     public async Task McpReadsRealKindResourcesAndSanitizesSecrets()
     {
-        var endpoint = Environment.GetEnvironmentVariable("KUBE_MCP_INTEGRATION_ENDPOINT");
-        if (string.IsNullOrWhiteSpace(endpoint))
-        {
-            return;
-        }
+        var endpoint = Environment.GetEnvironmentVariable(IntegrationTestAttribute.EndpointVariable);
+        Assert.False(string.IsNullOrWhiteSpace(endpoint),
+            $"{IntegrationTestAttribute.EndpointVariable} must be set when this test runs; " +
+            "if you see this, the skip attribute was bypassed.");
 
         var accessToken = Environment.GetEnvironmentVariable("KUBE_MCP_INTEGRATION_ACCESS_TOKEN");
         using var httpClient = new HttpClient();

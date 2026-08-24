@@ -9,31 +9,49 @@ on:
       - main
     tags:
       - "v*"
+  workflow_dispatch:
 
 concurrency:
   group: container-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Supply-chain posture (review finding P3-02):
+#   * All third-party actions are pinned to a full commit SHA with the release
+#     version in a comment. Bump by updating the SHA (and version comment);
+#     do not switch back to a mutable tag.
+#   * Docker base images are digest-pinned in Dockerfile (see comments there).
+#   * NuGet dependencies are locked via committed packages.lock.json files and
+#     restored with --locked-mode in CI and the image build.
+#   * NuGet and container vulnerability scans run before publication on every
+#     event. Clean push builds also publish a CycloneDX SBOM plus provenance and
+#     SBOM attestations with the image in GHCR.
+#   * Published containers are linux/amd64 only (documented inline); arm64 is
+#     not published untested.
 permissions:
   contents: read
 
 jobs:
   test:
-    name: Build and test
-    runs-on: ubuntu-latest
+    name: Build, test and scan dependencies
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
+      # actions/checkout v5.1.0
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
+      # actions/setup-dotnet v5.4.0
       - name: Set up .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
         with:
           global-json-file: global.json
 
-      - name: Restore dependencies
-        run: dotnet restore KubeMcp.slnx
+      # Locked restore: fails if packages.lock.json is out of date with the
+      # project files, so a dependency change cannot ship without a refreshed
+      # (reviewed) lock file.
+      - name: Restore dependencies (locked)
+        run: dotnet restore KubeMcp.slnx --locked-mode
 
       - name: Build
         run: dotnet build KubeMcp.slnx --configuration Release --no-restore
@@ -41,33 +59,62 @@ jobs:
       - name: Run tests
         run: dotnet test KubeMcp.slnx --configuration Release --no-build
 
+      # Dependency scanning against the NuGet vulnerability database. Fails the
+      # job on any known-vulnerable (direct or transitive) package. The
+      # integration test is reported as Skipped, not Passed, when no kind
+      # endpoint is configured (see KindIntegrationTests.cs).
+      - name: Scan NuGet dependencies for known vulnerabilities
+        run: |
+          set -euo pipefail
+          dotnet list KubeMcp.slnx package --no-restore --vulnerable --include-transitive --format json > vuln-scan.json
+          python3 - <<'PY'
+          import json, sys
+          data = json.load(open("vuln-scan.json"))
+          vulns = []
+          def walk(o):
+              if isinstance(o, dict):
+                  if "severity" in o:
+                      vulns.append(o)
+                  for v in o.values():
+                      walk(v)
+              elif isinstance(o, list):
+                  for x in o:
+                      walk(x)
+          walk(data)
+          if vulns:
+              for v in vulns:
+                  print(f"::error::Known NuGet vulnerability: severity={v.get('severity','?')} "
+                        f"cve={v.get('cve','?')} url={v.get('url','')}")
+              print(f"::error::{len(vulns)} known-vulnerable package(s) found; failing the build.")
+              sys.exit(1)
+          print("No known vulnerable NuGet packages found.")
+          PY
+
   container:
     name: Build and publish image
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
+      security-events: write
 
     steps:
+      # actions/checkout v5.1.0
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
+      # docker/setup-buildx-action v4.3.0
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
 
-      - name: Log in to GHCR
-        if: github.event_name == 'push'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
+      # docker/metadata-action v6.2.0
       - name: Generate image metadata
         id: metadata
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302
         with:
           images: ghcr.io/jghh42/kube-mcp
           tags: |
@@ -83,14 +130,159 @@ jobs:
             org.opencontainers.image.description=Tiny read-only Kubernetes MCP service
             org.opencontainers.image.source=https://github.com/Jghh42/kube-mcp
 
-      - name: Build and optionally publish image
-        uses: docker/build-push-action@v7
+      # docker/build-push-action v7.3.0
+      #
+      # linux/amd64 only: the app and its kind integration matrix target
+      # linux/amd64. Do NOT add linux/arm64 here without first adding a QEMU
+      # build step and an arm64 test job, so published arm64 images are never
+      # untested. Load the candidate locally so every PR and push is scanned
+      # before any registry authentication or publication occurs.
+      - name: Build local image for scanning
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         with:
           context: .
           file: Dockerfile
           platforms: linux/amd64
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.metadata.outputs.tags }}
+          load: true
+          provenance: false
+          tags: kube-mcp:ci-scan-${{ github.sha }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # aquasecurity/trivy-action v0.36.0
+      - name: Scan candidate image for vulnerabilities (SARIF)
+        id: trivy-scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: image
+          image-ref: kube-mcp:ci-scan-${{ github.sha }}
+          severity: HIGH,CRITICAL
+          limit-severities-for-sarif: true
+          ignore-unfixed: true
+          exit-code: '1'
+          format: sarif
+          output: trivy-results.sarif
+
+      # Generate the SBOM from the same clean candidate that was scanned. It is
+      # needed only on pushes, where it will be attested to the published digest.
+      # aquasecurity/trivy-action v0.36.0
+      - name: Generate image SBOM (CycloneDX)
+        if: github.event_name == 'push'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: image
+          image-ref: kube-mcp:ci-scan-${{ github.sha }}
+          format: cyclonedx
+          output: sbom.cdx.json
+
+      # Authenticate only after the candidate has passed vulnerability scanning.
+      # docker/login-action v4.6.0
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Re-export the cache-backed clean build to GHCR. provenance is generated
+      # explicitly below to avoid duplicate attestations.
+      # docker/build-push-action v7.3.0
+      - name: Publish scanned image
+        if: github.event_name == 'push'
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha
+
+      # actions/attest-build-provenance v4.2.2
+      - name: Attest build provenance
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-name: ghcr.io/jghh42/kube-mcp
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # actions/attest v4.1.0 (the attest-sbom wrapper is deprecated)
+      - name: Attest SBOM
+        if: github.event_name == 'push'
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
+        with:
+          subject-name: ghcr.io/jghh42/kube-mcp
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: sbom.cdx.json
+          push-to-registry: true
+
+      # Upload after the gating scan and publication so a code-scanning outage
+      # cannot cause an unscanned image to be pushed. hashFiles avoids trying to
+      # upload when an earlier build/setup failure produced no SARIF document.
+      # github/codeql-action v3.37.8 (upload-sarif)
+      - name: Upload Trivy SARIF to code scanning
+        if: always() && github.event_name == 'push' && hashFiles('trivy-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@42947a340483f03ba47bb1a039b2c519aab3df85
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-container
+
+  kind-integration:
+    name: kind integration tests
+    needs: test
+    # Runs on push (main / tags) and manual dispatch. It is intentionally not
+    # on pull_request to keep PR feedback fast; the hardened harness
+    # (tests/integration/run-kind.sh) restores cluster state on any failure.
+    # Remove this `if` to run the real Kubernetes boundary on PRs too.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      # actions/checkout v5.1.0
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      # actions/setup-dotnet v5.4.0
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          global-json-file: global.json
+
+      - name: Restore dependencies (locked)
+        run: dotnet restore KubeMcp.slnx --locked-mode
+
+      # Install kind v0.27.0 with a checksum-pinned binary download.
+      - name: Install kind
+        run: |
+          set -euo pipefail
+          curl -fsSLo kind "https://github.com/kubernetes-sigs/kind/releases/download/v0.27.0/kind-linux-amd64"
+          echo "a6875aaea358acf0ac07786b1a6755d08fd640f4c79b7a2e46681cc13f49a04b  kind" | sha256sum -c -
+          chmod +x kind
+          sudo mv kind /usr/local/bin/kind
+          kind version
+
+      # Use the node image recommended by kind v0.27.0, pinned by digest.
+      - name: Create kind cluster
+        run: |
+          kind create cluster \
+            --name kind \
+            --image kindest/node:v1.32.2@sha256:f226345927d7e348497136874b6d207e0b32cc52154ad8323129352923a3142f \
+            --wait 60s
+          kubectl version --client=true
+          kubectl get nodes
+
+      - name: Run kind integration harness
+        run: tests/integration/run-kind.sh
+
+      - name: Delete kind cluster
+        if: always()
+        run: kind delete cluster --name kind || true

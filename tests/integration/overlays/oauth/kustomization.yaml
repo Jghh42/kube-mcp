@@ -1,0 +1,28 @@
+# Kustomize overlay used by tests/integration/run-kind.sh to turn the reference
+# deployment.yaml into an authenticated, locally-built kind test fixture.
+#
+# This replaces the previous indentation-sensitive `sed` manifest construction.
+# The harness builds this overlay with:
+#   kubectl kustomize --load-restrictor LoadRestrictionsNone tests/integration/overlays/oauth/
+# `--load-restrictor LoadRestrictionsNone` is required because deployment.yaml
+# lives at the repository root, four levels above this overlay directory.
+#
+# The overlay only mutates the kube-mcp Deployment (image, imagePullPolicy,
+# authentication mode and OAuth env vars). All other resources in
+# deployment.yaml (Namespace, ServiceAccount, ClusterRole, ClusterRoleBinding
+# and Service) pass through unchanged, so the narrow default RBAC is preserved.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../deployment.yaml
+
+# Pin the kind test image to the locally-built kube-mcp:stage6-test image that
+# the harness loads into the kind node. Mirrors the `test_image` variable in
+# run-kind.sh; keep the two in sync.
+images:
+  - name: ghcr.io/jghh42/kube-mcp:latest
+    newName: kube-mcp
+    newTag: stage6-test
+
+patches:
+  - path: deployment-oauth-patch.yaml
