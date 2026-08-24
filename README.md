@@ -138,8 +138,10 @@ ghcr.io/jghh42/kube-mcp:sha-<commit>
 ```
 
 Tags beginning with `v` also publish version tags. For example, Git tag `v1.2.3`
-produces container tags `v1.2.3`, `1.2.3`, and `1.2`. The workflow authenticates
-with its short-lived `GITHUB_TOKEN` and requires no repository secret.
+produces container tags `v1.2.3`, `1.2.3`, and `1.2`. Release-tag builds never
+create or move `latest`; only an explicit successful push to the repository's
+default branch publishes that tag. The workflow authenticates with its short-lived
+`GITHUB_TOKEN` and requires no repository secret.
 
 A newly created GHCR package is private by default. After the first successful
 publish, change the package visibility to public in its GitHub package settings so
@@ -147,20 +149,26 @@ clusters can pull it without an image pull secret.
 
 ## End-to-end test with kind
 
-The integration harness builds and loads a local test image, generates an ephemeral
-HMAC key, and deploys a one-pod Keycloak development server with an imported test
-realm. It obtains a token through the real `client_credentials` grant and verifies
-invalid client secrets, audience/scope/role enforcement, compact LIST output,
-detailed GET, Secret sanitization, resource denials, both namespace policy modes,
-and explicit resource `AllowAll` mode:
+For a local run, the integration harness builds and loads a test image. In CI, the
+kind job instead builds one content-addressed image archive and hands that exact
+archive to the harness; after kind succeeds, the container job scans, SBOMs, and
+publishes the same payload without rebuilding it. The harness generates an
+ephemeral HMAC key and deploys a one-pod Keycloak development server with an
+imported test realm. It obtains a token through the real `client_credentials` grant
+and verifies invalid client secrets, audience/scope/role enforcement, compact LIST
+output, detailed GET, Secret sanitization, resource denials, both namespace policy
+modes, and explicit resource `AllowAll` mode:
 
 ```sh
 ./tests/integration/run-kind.sh
 ```
 
-The fixture namespace is removed afterward. The tested OAuth-protected `kube-mcp`
-deployment and local Keycloak remain running in kind. Keycloak uses ephemeral H2
-storage and fixed, local-only test credentials from
+Both harness-owned namespaces are removed afterward, so the tested
+OAuth-protected `kube-mcp` deployment, local Keycloak, Secrets, and fixture objects
+do not remain in kind. Any pre-existing `kube-mcp-reader` ClusterRole and
+ClusterRoleBinding are restored from exact snapshots (and removed again when they
+did not exist before the run). Keycloak uses ephemeral H2 storage and fixed,
+local-only test credentials from
 [`tests/integration/keycloak.yaml`](tests/integration/keycloak.yaml); it is not a
 production deployment.
 

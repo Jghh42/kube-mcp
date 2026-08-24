@@ -17,7 +17,9 @@ spec:
     spec:
       containers:
         - name: kube-mcp
-          imagePullPolicy: IfNotPresent
+          # The harness always loads the candidate into kind first. Never fall
+          # back to a registry image with the same tag.
+          imagePullPolicy: Never
           env:
             - name: KubeMcp__Authentication__Mode
               value: OAuthClientCredentials

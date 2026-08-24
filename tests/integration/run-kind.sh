@@ -11,7 +11,12 @@ fixture_namespace=kube-mcp-e2e
 local_port=${KUBE_MCP_TEST_PORT:-18082}
 keycloak_local_port=${KUBE_MCP_KEYCLOAK_TEST_PORT:-18083}
 secret_value=correct-horse-battery-staple
+secret_value_base64=$(printf '%s' "$secret_value" | base64 | tr -d '\n')
 test_image=kube-mcp:stage6-test
+test_image_archive=${KUBE_MCP_TEST_IMAGE_ARCHIVE:-}
+test_image_archive_sha256=${KUBE_MCP_TEST_IMAGE_ARCHIVE_SHA256:-}
+test_image_manifest_digest=${KUBE_MCP_TEST_IMAGE_MANIFEST_DIGEST:-}
+test_image_config_digest=${KUBE_MCP_TEST_IMAGE_CONFIG_DIGEST:-}
 
 if ! kubectl_command=$(command -v kubectl); then
   echo "kubectl is required" >&2
@@ -361,9 +366,33 @@ start_port_forward() {
 echo "Restoring integration test dependencies in locked mode..."
 dotnet restore KubeMcp.slnx --locked-mode
 
-echo "Building $test_image..."
-docker build --tag "$test_image" .
-kind load docker-image "$test_image" --name "$cluster_name"
+if [[ -n "$test_image_archive" ]]; then
+  for required_value in \
+    "$test_image_archive_sha256" \
+    "$test_image_manifest_digest" \
+    "$test_image_config_digest"; do
+    if [[ -z "$required_value" ]]; then
+      echo "archive SHA256, manifest digest, and config digest are required with KUBE_MCP_TEST_IMAGE_ARCHIVE" >&2
+      exit 1
+    fi
+  done
+  actual_archive_sha256=$(sha256sum "$test_image_archive" | cut -d' ' -f1)
+  if [[ "$actual_archive_sha256" != "$test_image_archive_sha256" ]]; then
+    echo "test image archive SHA256 does not match the expected content address" >&2
+    exit 1
+  fi
+  python3 tests/integration/verify-image-archive.py \
+    "$test_image_archive" \
+    --image "$test_image" \
+    --expected-manifest-digest "$test_image_manifest_digest" \
+    --expected-config-digest "$test_image_config_digest" >/dev/null
+  echo "Loading tested candidate $test_image from the verified image archive..."
+  kind load image-archive "$test_image_archive" --name "$cluster_name"
+else
+  echo "Building $test_image..."
+  docker build --tag "$test_image" .
+  kind load docker-image "$test_image" --name "$cluster_name"
+fi
 
 # Build the authenticated kind test fixture from the checked-in kustomize
 # overlay instead of the previous indentation-sensitive sed insertion.
@@ -435,6 +464,21 @@ kubectl set env deployment/kube-mcp --namespace kube-mcp \
 kubectl rollout restart deployment/kube-mcp --namespace kube-mcp >/dev/null
 kubectl rollout status deployment/kube-mcp --namespace kube-mcp --timeout=120s
 
+# A handed-in archive is content-addressed before loading. Kubernetes runtimes
+# report either its manifest or config digest as imageID; accept only those two
+# independently verified values, never an older local tag or registry fallback.
+if [[ -n "$test_image_manifest_digest" ]]; then
+  running_image_id=$(kubectl get pods --namespace kube-mcp \
+    --selector app.kubernetes.io/name=kube-mcp \
+    -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')
+  running_digest=${running_image_id##*@}
+  if [[ "$running_digest" != "$test_image_manifest_digest" &&
+        "$running_digest" != "$test_image_config_digest" ]]; then
+    echo "running kube-mcp image ID '$running_image_id' does not identify the tested candidate" >&2
+    exit 1
+  fi
+fi
+
 service_account=system:serviceaccount:kube-mcp:kube-mcp
 [[ $(kubectl auth can-i list pods --namespace kube-mcp --as "$service_account") == "yes" ]]
 [[ $(kubectl auth can-i list namespaces --as "$service_account" 2>/dev/null) == "yes" ]]
@@ -502,6 +546,10 @@ grep -Fq 'client=kube-mcp-e2e authentication=OAuthClientCredentials' <<<"$audit_
 grep -Fq 'operation=GET resource=secrets namespace=kube-mcp-e2e name=integration-secret result=success objectCount=1' <<<"$audit_logs"
 if grep -Fq "$secret_value" <<<"$audit_logs"; then
   echo "Secret value leaked into Kubernetes audit logs" >&2
+  exit 1
+fi
+if grep -Fq "$secret_value_base64" <<<"$audit_logs"; then
+  echo "base64-encoded Secret value leaked into Kubernetes audit logs" >&2
   exit 1
 fi
 if grep -Fq 'annotation-must-not-leak' <<<"$audit_logs"; then

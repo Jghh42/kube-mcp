@@ -12,8 +12,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: container-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Release tags share semver major/minor tags, so serialize all release runs.
+  # Other refs retain independent, cancelable feedback.
+  group: container-${{ github.workflow }}-${{ startsWith(github.ref, 'refs/tags/v') && 'release-tags' || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
 # Supply-chain posture (review finding P3-02):
 #   * All third-party actions are pinned to a full commit SHA with the release
@@ -22,6 +24,8 @@ concurrency:
 #   * Docker base images are digest-pinned in Dockerfile (see comments there).
 #   * NuGet dependencies are locked via committed packages.lock.json files and
 #     restored with --locked-mode in CI and the image build.
+#   * The kind job builds one content-addressed candidate archive. The container
+#     job scans, SBOMs, and publishes only that tested payload, with no rebuild.
 #   * NuGet and container vulnerability scans run before publication on every
 #     event. Clean push builds also publish a CycloneDX SBOM plus provenance and
 #     SBOM attestations with the image in GHCR.
@@ -91,10 +95,9 @@ jobs:
           PY
 
   container:
-    name: Build and publish image
-    # The candidate is not built, scanned, or published until the real kind
-    # boundary has passed. This direct dependency also prevents publication
-    # from racing the integration job on pushes.
+    name: Scan and publish kind-tested image
+    # kind-integration builds the candidate once and gates this job. This job
+    # only consumes that tested archive; it never rebuilds the image.
     needs: kind-integration
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -110,16 +113,61 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
-      # docker/setup-buildx-action v4.3.0
+      # actions/download-artifact v6.0.0
+      - name: Download kind-tested candidate
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        with:
+          name: ${{ needs.kind-integration.outputs.candidate_artifact }}
+          path: ${{ runner.temp }}/candidate
+
+      # Verify the content-addressed handoff before loading. Depending on the
+      # runner's Docker image store, .Id is either the manifest or config digest;
+      # both values are independently verified from the archive's OCI graph.
+      - name: Verify and load kind-tested candidate
+        env:
+          CANDIDATE_ARCHIVE: ${{ runner.temp }}/candidate/kube-mcp-candidate.tar
+          CANDIDATE_ARCHIVE_SHA256: ${{ needs.kind-integration.outputs.candidate_archive_sha256 }}
+          CANDIDATE_CONFIG_DIGEST: ${{ needs.kind-integration.outputs.candidate_config_digest }}
+          CANDIDATE_IMAGE: kube-mcp:stage6-test
+          CANDIDATE_MANIFEST_DIGEST: ${{ needs.kind-integration.outputs.candidate_manifest_digest }}
+        run: |
+          set -euo pipefail
+          echo "$CANDIDATE_ARCHIVE_SHA256  $CANDIDATE_ARCHIVE" | sha256sum -c -
+          python3 tests/integration/verify-image-archive.py \
+            "$CANDIDATE_ARCHIVE" \
+            --image "$CANDIDATE_IMAGE" \
+            --expected-manifest-digest "$CANDIDATE_MANIFEST_DIGEST" \
+            --expected-config-digest "$CANDIDATE_CONFIG_DIGEST" >/dev/null
+          docker load --input "$CANDIDATE_ARCHIVE"
+          candidate_id=$(docker image inspect --format '{{.Id}}' "$CANDIDATE_IMAGE")
+          if [[ "$candidate_id" != "$CANDIDATE_MANIFEST_DIGEST" &&
+                "$candidate_id" != "$CANDIDATE_CONFIG_DIGEST" ]]; then
+            echo "::error::Loaded image ID does not identify the verified candidate"
+            exit 1
+          fi
+          [[ $(docker image inspect --format '{{.Os}}/{{.Architecture}}' \
+            "$CANDIDATE_IMAGE") == linux/amd64 ]]
+
+      # docker/setup-buildx-action v4.3.0. Buildx and its BuildKit driver are
+      # version/digest pinned; Buildx is used below only for raw registry
+      # manifest verification, never to rebuild the candidate.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
+        with:
+          version: v0.36.1
+          driver-opts: |
+            image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
 
-      # docker/metadata-action v6.2.0
+      # docker/metadata-action v6.2.0. Disable metadata-action's implicit
+      # semver latest behavior: only the explicit default-branch rule may emit
+      # latest, so a release tag can never move it.
       - name: Generate image metadata
         id: metadata
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302
         with:
           images: ghcr.io/jghh42/kube-mcp
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -127,31 +175,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-          labels: |
-            org.opencontainers.image.title=kube-mcp
-            org.opencontainers.image.description=Tiny read-only Kubernetes MCP service
-            org.opencontainers.image.source=https://github.com/Jghh42/kube-mcp
-
-      # docker/build-push-action v7.3.0
-      #
-      # linux/amd64 only: the app and its kind integration matrix target
-      # linux/amd64. Do NOT add linux/arm64 here without first adding a QEMU
-      # build step and an arm64 test job, so published arm64 images are never
-      # untested. Load the candidate locally so every PR and push is scanned
-      # before any registry authentication or publication occurs.
-      - name: Build local image for scanning
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          load: true
-          provenance: false
-          tags: kube-mcp:ci-scan-${{ github.sha }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       # aquasecurity/trivy-action v0.36.0
       - name: Scan candidate image for vulnerabilities (SARIF)
@@ -159,7 +183,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           scan-type: image
-          image-ref: kube-mcp:ci-scan-${{ github.sha }}
+          input: ${{ runner.temp }}/candidate/kube-mcp-candidate.tar
           severity: HIGH,CRITICAL
           limit-severities-for-sarif: true
           ignore-unfixed: true
@@ -175,7 +199,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           scan-type: image
-          image-ref: kube-mcp:ci-scan-${{ github.sha }}
+          input: ${{ runner.temp }}/candidate/kube-mcp-candidate.tar
           format: cyclonedx
           output: sbom.cdx.json
 
@@ -189,56 +213,81 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Tag and push the already-loaded candidate; never invoke a second build
-      # after scanning. Verify every local tag still resolves to the candidate
-      # image ID and require GHCR to report one registry digest for all tags.
+      # Push first to a commit-unique staging tag and verify GHCR's raw manifest
+      # before any user-facing tag can move. The verifier requires the staged
+      # config and ordered layer descriptors to match kind's archive exactly,
+      # allowing only equivalent OCI/Docker media-type names. Final tags are
+      # then registry-side copies of that verified digest, never rebuilds.
       - name: Publish scanned image
         if: github.event_name == 'push'
         id: publish
         env:
-          CANDIDATE_IMAGE: kube-mcp:ci-scan-${{ github.sha }}
+          CANDIDATE_ARCHIVE: ${{ runner.temp }}/candidate/kube-mcp-candidate.tar
+          CANDIDATE_CONFIG_DIGEST: ${{ needs.kind-integration.outputs.candidate_config_digest }}
+          CANDIDATE_IMAGE: kube-mcp:stage6-test
+          CANDIDATE_MANIFEST_DIGEST: ${{ needs.kind-integration.outputs.candidate_manifest_digest }}
           PUBLISH_TAGS: ${{ steps.metadata.outputs.tags }}
+          STAGING_IMAGE: ghcr.io/jghh42/kube-mcp:ci-candidate-${{ github.sha }}
         run: |
           set -euo pipefail
           candidate_id=$(docker image inspect --format '{{.Id}}' "$CANDIDATE_IMAGE")
-          published_digest=
+          remote_manifest=$(mktemp)
+          trap 'rm -f "$remote_manifest"' EXIT
 
+          publish_tag_count=0
           while IFS= read -r tag; do
             [[ -n "$tag" ]] || continue
             if [[ "$tag" != ghcr.io/jghh42/kube-mcp:* ]]; then
               echo "::error::Refusing unexpected publication tag: $tag"
               exit 1
             fi
-
-            docker tag "$CANDIDATE_IMAGE" "$tag"
-            tagged_id=$(docker image inspect --format '{{.Id}}' "$tag")
-            if [[ "$tagged_id" != "$candidate_id" ]]; then
-              echo "::error::Tag $tag does not identify the scanned candidate"
-              exit 1
-            fi
-
-            if ! push_output=$(docker push "$tag" 2>&1); then
-              printf '%s\n' "$push_output"
-              exit 1
-            fi
-            printf '%s\n' "$push_output"
-            tag_digest=$(docker buildx imagetools inspect \
-              --format '{{.Manifest.Digest}}' "$tag")
-            if [[ ! "$tag_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-              echo "::error::Registry did not return a valid digest for $tag"
-              exit 1
-            fi
-            if [[ -n "$published_digest" && "$tag_digest" != "$published_digest" ]]; then
-              echo "::error::Published tags do not share the candidate digest"
-              exit 1
-            fi
-            published_digest=$tag_digest
+            ((publish_tag_count += 1))
           done <<<"$PUBLISH_TAGS"
-
-          if [[ -z "$published_digest" ]]; then
+          if ((publish_tag_count == 0)); then
             echo "::error::No image tags were provided for publication"
             exit 1
           fi
+
+          docker tag "$CANDIDATE_IMAGE" "$STAGING_IMAGE"
+          staging_id=$(docker image inspect --format '{{.Id}}' "$STAGING_IMAGE")
+          if [[ "$staging_id" != "$candidate_id" ]]; then
+            echo "::error::Staging tag does not identify the scanned candidate"
+            exit 1
+          fi
+          if ! push_output=$(docker push "$STAGING_IMAGE" 2>&1); then
+            printf '%s\n' "$push_output"
+            exit 1
+          fi
+          printf '%s\n' "$push_output"
+
+          docker buildx imagetools inspect --raw "$STAGING_IMAGE" >"$remote_manifest"
+          raw_digest="sha256:$(sha256sum "$remote_manifest" | cut -d' ' -f1)"
+          published_digest=$(docker buildx imagetools inspect \
+            --format '{{.Manifest.Digest}}' "$STAGING_IMAGE")
+          if [[ ! "$published_digest" =~ ^sha256:[0-9a-f]{64}$ ||
+                "$published_digest" != "$raw_digest" ]]; then
+            echo "::error::Registry digest verification failed for staging candidate"
+            exit 1
+          fi
+          python3 tests/integration/verify-image-archive.py \
+            "$CANDIDATE_ARCHIVE" \
+            --image "$CANDIDATE_IMAGE" \
+            --expected-manifest-digest "$CANDIDATE_MANIFEST_DIGEST" \
+            --expected-config-digest "$CANDIDATE_CONFIG_DIGEST" \
+            --remote-manifest "$remote_manifest" >/dev/null
+
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            docker buildx imagetools create \
+              --tag "$tag" "$STAGING_IMAGE@$published_digest"
+            docker buildx imagetools inspect --raw "$tag" >"$remote_manifest"
+            tag_digest="sha256:$(sha256sum "$remote_manifest" | cut -d' ' -f1)"
+            if [[ "$tag_digest" != "$published_digest" ]]; then
+              echo "::error::Published tag $tag does not resolve to the verified candidate digest"
+              exit 1
+            fi
+          done <<<"$PUBLISH_TAGS"
+
           echo "digest=$published_digest" >>"$GITHUB_OUTPUT"
           {
             echo '### Published image'
@@ -279,15 +328,20 @@ jobs:
           category: trivy-container
 
   kind-integration:
-    name: kind integration tests
+    name: Build candidate and run kind integration tests
     needs: test
     # Run the real Kubernetes boundary for PRs, pushes, and manual dispatches.
-    # The container job depends on this job, so no candidate can be built or
-    # published until integration succeeds.
+    # The candidate is built exactly once here; the container job cannot scan
+    # or publish its archive until this job and the real kind boundary pass.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      candidate_archive_sha256: ${{ steps.candidate.outputs.archive_sha256 }}
+      candidate_artifact: ${{ steps.candidate.outputs.artifact_name }}
+      candidate_config_digest: ${{ steps.candidate.outputs.config_digest }}
+      candidate_manifest_digest: ${{ steps.candidate.outputs.manifest_digest }}
 
     steps:
       # actions/checkout v5.1.0
@@ -313,6 +367,75 @@ jobs:
           sudo mv kind /usr/local/bin/kind
           kind version
 
+      # kubectl v1.32.2 embeds kustomize v5.5.0. The checksum below was
+      # verified against dl.k8s.io's v1.32.2 linux/amd64 checksum file.
+      - name: Install kubectl and kustomize
+        run: |
+          set -euo pipefail
+          curl -fsSLo kubectl "https://dl.k8s.io/release/v1.32.2/bin/linux/amd64/kubectl"
+          echo "4f6a959dcc5b702135f8354cc7109b542a2933c46b808b248a214c1f69f817ea  kubectl" | sha256sum -c -
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+          kubectl version --client=true -o yaml | tee kubectl-version.yaml
+          grep -Fq 'gitVersion: v1.32.2' kubectl-version.yaml
+          grep -Fq 'kustomizeVersion: v5.5.0' kubectl-version.yaml
+          rm kubectl-version.yaml
+
+      # docker/setup-buildx-action v4.3.0. Pin both the Buildx release and the
+      # full multi-platform digest of the BuildKit v0.32.2 driver image.
+      - name: Set up pinned Docker Buildx and BuildKit
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
+        with:
+          version: v0.36.1
+          driver-opts: |
+            image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+
+      # Build linux/amd64 once and export a Docker-compatible archive whose OCI
+      # config, manifest, and layer blobs are all content-addressed. The archive
+      # SHA becomes the artifact name and is checked again in both later users.
+      # Do NOT add arm64 without an arm64 kind test: only this exercised archive
+      # is eligible for scanning and publication.
+      - name: Build and export candidate image once
+        id: candidate
+        env:
+          CANDIDATE_ARCHIVE: ${{ runner.temp }}/kube-mcp-candidate.tar
+          CANDIDATE_IMAGE: kube-mcp:stage6-test
+        run: |
+          set -euo pipefail
+          buildkit_version=$(docker buildx inspect --bootstrap |
+            awk '$1 == "BuildKit" && $2 == "version:" { version=$3 } END { print version }')
+          if [[ "$buildkit_version" != v0.32.2 ]]; then
+            echo "::error::Expected BuildKit v0.32.2, got $buildkit_version"
+            exit 1
+          fi
+          docker buildx build \
+            --platform linux/amd64 \
+            --file Dockerfile \
+            --tag "$CANDIDATE_IMAGE" \
+            --label org.opencontainers.image.title=kube-mcp \
+            --label 'org.opencontainers.image.description=Tiny read-only Kubernetes MCP service' \
+            --label org.opencontainers.image.source=https://github.com/Jghh42/kube-mcp \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --provenance=false \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --output "type=docker,dest=$CANDIDATE_ARCHIVE" \
+            .
+          candidate_metadata=$(python3 tests/integration/verify-image-archive.py \
+            "$CANDIDATE_ARCHIVE" --image "$CANDIDATE_IMAGE")
+          mapfile -t metadata_lines <<<"$candidate_metadata"
+          if [[ ${#metadata_lines[@]} -ne 2 ]]; then
+            echo "::error::Candidate archive verifier returned unexpected metadata"
+            exit 1
+          fi
+          archive_sha256=$(sha256sum "$CANDIDATE_ARCHIVE" | cut -d' ' -f1)
+          {
+            echo "archive_sha256=$archive_sha256"
+            echo "artifact_name=kube-mcp-candidate-$archive_sha256"
+            echo "manifest_digest=${metadata_lines[0]}"
+            echo "config_digest=${metadata_lines[1]}"
+          } >>"$GITHUB_OUTPUT"
+
       # Use the node image recommended by kind v0.27.0, pinned by digest.
       - name: Create kind cluster
         run: |
@@ -323,8 +446,25 @@ jobs:
           kubectl --context kind-kind version --client=true
           kubectl --context kind-kind get nodes
 
-      - name: Run kind integration harness
+      - name: Run kind integration harness against candidate archive
+        env:
+          KUBE_MCP_TEST_IMAGE_ARCHIVE: ${{ runner.temp }}/kube-mcp-candidate.tar
+          KUBE_MCP_TEST_IMAGE_ARCHIVE_SHA256: ${{ steps.candidate.outputs.archive_sha256 }}
+          KUBE_MCP_TEST_IMAGE_CONFIG_DIGEST: ${{ steps.candidate.outputs.config_digest }}
+          KUBE_MCP_TEST_IMAGE_MANIFEST_DIGEST: ${{ steps.candidate.outputs.manifest_digest }}
         run: tests/integration/run-kind.sh
+
+      # Upload only after kind succeeds. The artifact name is the SHA256 of the
+      # archive payload; the consumer also verifies that hash and its OCI graph.
+      # actions/upload-artifact v4.6.2
+      - name: Upload kind-tested candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.candidate.outputs.artifact_name }}
+          path: ${{ runner.temp }}/kube-mcp-candidate.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
       - name: Delete kind cluster
         if: always()

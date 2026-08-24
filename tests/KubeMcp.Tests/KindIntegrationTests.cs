@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -122,6 +123,9 @@ public sealed class KindIntegrationTests
         Assert.Contains("integration-secret", secretListText);
         Assert.Contains("password", secretListText);
         Assert.DoesNotContain(SecretValue, secretListText);
+        Assert.DoesNotContain(
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(SecretValue)),
+            secretListText);
         Assert.DoesNotContain("hmac-sha256:", secretListText);
 
         var secretGet = await CallAsync(client, "secrets", "integration-secret");

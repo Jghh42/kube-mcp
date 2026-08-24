@@ -16,9 +16,9 @@ kind: Kustomization
 resources:
   - ../../../../deployment.yaml
 
-# Pin the kind test image to the locally-built kube-mcp:stage6-test image that
-# the harness loads into the kind node. Mirrors the `test_image` variable in
-# run-kind.sh; keep the two in sync.
+# Pin the kind test image to kube-mcp:stage6-test, which the harness loads from
+# either its local build or CI's verified candidate archive. Mirrors the
+# `test_image` default in run-kind.sh; keep the two in sync.
 images:
   - name: ghcr.io/jghh42/kube-mcp:latest
     newName: kube-mcp
