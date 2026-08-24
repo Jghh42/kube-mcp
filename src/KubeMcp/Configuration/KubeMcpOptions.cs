@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.HttpOverrides;
 
 namespace KubeMcp.Configuration;
 
@@ -18,6 +19,8 @@ public sealed class KubeMcpOptions
     public NamespacePolicyOptions NamespacePolicy { get; init; } = new();
 
     public KubeMcpAuthenticationOptions Authentication { get; init; } = new();
+
+    public KubeMcpForwardedHeadersOptions ForwardedHeaders { get; init; } = new();
 
     [Range(1, 1000)]
     public int MaxListItems { get; init; } = 100;
@@ -72,11 +75,36 @@ public enum NamespacePolicyMode
 
 public sealed class KubeMcpAuthenticationOptions
 {
-    public AuthenticationMode Mode { get; init; } = AuthenticationMode.None;
+    // Fail-closed default. The explicitly named Development settings override
+    // this to None for local development only.
+    public AuthenticationMode Mode { get; init; } = AuthenticationMode.ApiKey;
+
+    // Deliberate deployment-level opt-in that permits Mode=None in a
+    // non-Development environment. Intended only for an isolated development
+    // deployment; production must use ApiKey or OAuthClientCredentials.
+    public bool AllowUnauthenticated { get; init; }
 
     public string ApiKey { get; init; } = string.Empty;
 
     public OAuthOptions OAuth { get; init; } = new();
+}
+
+public sealed class KubeMcpForwardedHeadersOptions
+{
+    // Explicitly trusted reverse-proxy IP addresses. Empty by default, in which
+    // case only the loopback address is trusted. Never trust all proxies.
+    public string[] KnownProxies { get; init; } = [];
+
+    // Explicitly trusted reverse-proxy networks as CIDR strings, for example
+    // "10.0.0.0/8". Empty by default, in which case only the loopback network is
+    // trusted. Never trust all networks.
+    public string[] KnownNetworks { get; init; } = [];
+
+    // Which forwarded headers to honor from trusted proxies. Defaults to the
+    // client IP, scheme, and host so audit records and host filtering see the
+    // originating client and production hostname behind a reverse proxy.
+    public ForwardedHeaders AllowedForwardedHeaders { get; init; } =
+        ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
 }
 
 public sealed class OAuthOptions

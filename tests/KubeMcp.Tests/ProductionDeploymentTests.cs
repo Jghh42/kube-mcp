@@ -1,0 +1,210 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using ModelContextProtocol.Client;
+
+namespace KubeMcp.Tests;
+
+public sealed class ProductionDeploymentTests
+{
+    private const string TestHmacKey = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+    private const string ApiKey = "stage-five-test-api-key-32-bytes-minimum";
+
+    [Fact]
+    public void ReferenceDeploymentIsAuthenticatedAndNoneIsDevelopmentOnly()
+    {
+        var production = File.ReadAllText(RepositoryFile("deployment.yaml"));
+        var development = File.ReadAllText(RepositoryFile("deployment-development.yaml"));
+
+        Assert.Matches(
+            new Regex(
+                @"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: OAuthClientCredentials$"),
+            production);
+        Assert.DoesNotMatch(
+            new Regex(
+                @"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: None$"),
+            production);
+        Assert.Matches(
+            new Regex(
+                @"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: None$"),
+            development);
+        Assert.Matches(
+            new Regex(
+                "(?m)- name: KubeMcp__Authentication__AllowUnauthenticated\\s*\\r?\\n\\s*value: \"true\"$"),
+            development);
+    }
+
+    [Fact]
+    public void DefaultDeploymentExcludesOptionalCrdRbac()
+    {
+        var production = File.ReadAllText(RepositoryFile("deployment.yaml"));
+        var cnpgOverlay = File.ReadAllText(RepositoryFile("overlays/cnpg/rbac.yaml"));
+        var traefikOverlay = File.ReadAllText(RepositoryFile("overlays/traefik/rbac.yaml"));
+
+        Assert.DoesNotContain("postgresql.cnpg.io", production, StringComparison.Ordinal);
+        Assert.DoesNotContain("traefik.io", production, StringComparison.Ordinal);
+        Assert.Contains("postgresql.cnpg.io", cnpgOverlay, StringComparison.Ordinal);
+        Assert.Contains("traefik.io", traefikOverlay, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProductionDefaultsFailClosedWithoutAnApiKey()
+    {
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment(Environments.Production);
+            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
+        });
+
+        var exception = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+        AssertExceptionMessageContains(exception, "ApiKey must contain at least 32 bytes");
+    }
+
+    [Fact]
+    public void ProductionRejectsUnauthenticatedModeAtStartup()
+    {
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment(Environments.Production);
+            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
+            builder.UseSetting("KubeMcp:Authentication:Mode", "None");
+            // No AllowUnauthenticated opt-in.
+        });
+
+        var exception = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+        AssertExceptionMessageContains(
+            exception,
+            "not permitted outside the Development environment");
+        AssertExceptionMessageContains(exception, "AllowUnauthenticated=true");
+    }
+
+    [Fact]
+    public async Task ProductionAllowsNoneModeWithExplicitOptIn()
+    {
+        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment(Environments.Production);
+            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
+            builder.UseSetting("KubeMcp:Authentication:Mode", "None");
+            builder.UseSetting("KubeMcp:Authentication:AllowUnauthenticated", "true");
+        });
+        using var client = factory.CreateClient();
+
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/healthz")).StatusCode);
+        await AssertSingleToolAsync(client);
+    }
+
+    [Fact]
+    public async Task DevelopmentAllowsNoneModeWithoutOptIn()
+    {
+        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment(Environments.Development);
+            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
+            // appsettings.Development.json explicitly selects Mode=None.
+        });
+        using var client = factory.CreateClient();
+
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/healthz")).StatusCode);
+    }
+
+    [Fact]
+    public async Task ProductionOAuthManifestReturnsUnauthorizedWithoutCredentials()
+    {
+        // Mirrors the reference deployment.yaml OAuth configuration (placeholder
+        // Keycloak authority). The endpoint is fail-closed until valid OAuth
+        // settings are configured: /mcp returns 401 without a bearer token.
+        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment(Environments.Production);
+            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
+            builder.UseSetting("KubeMcp:Authentication:Mode", "OAuthClientCredentials");
+            builder.UseSetting("KubeMcp:Authentication:OAuth:Authority", "https://keycloak.example.internal/realms/kube-mcp");
+            builder.UseSetting("KubeMcp:Authentication:OAuth:Audience", "k-mcp");
+            builder.UseSetting("KubeMcp:Authentication:OAuth:RequiredScopes:0", "k-mcp:read");
+            builder.UseSetting("KubeMcp:Authentication:OAuth:RequiredRoles:0", "k-mcp:read");
+            builder.UseSetting("KubeMcp:Authentication:OAuth:RequireHttpsMetadata", "true");
+        });
+        using var client = factory.CreateClient();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(client));
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/healthz")).StatusCode);
+    }
+
+    [Fact]
+    public async Task ProductionApiKeyManifestReturnsUnauthorizedWithoutCredentials()
+    {
+        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment(Environments.Production);
+            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
+            builder.UseSetting("KubeMcp:Authentication:Mode", "ApiKey");
+            builder.UseSetting("KubeMcp:Authentication:ApiKey", ApiKey);
+        });
+        using var client = factory.CreateClient();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(client));
+
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "incorrect-api-key-that-is-long-enough");
+        Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(client));
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", ApiKey);
+        await AssertSingleToolAsync(client);
+    }
+
+    private static async Task<HttpStatusCode> PostMcpAsync(HttpClient client)
+    {
+        using var response = await client.PostAsync("/mcp", JsonContent.Create(new { }));
+        return response.StatusCode;
+    }
+
+    private static async Task AssertSingleToolAsync(HttpClient client)
+    {
+        await using var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri(client.BaseAddress!, "/mcp"),
+                Name = "production-deployment-test"
+            },
+            client,
+            loggerFactory: null,
+            ownsHttpClient: false);
+        await using var mcpClient = await McpClient.CreateAsync(transport);
+
+        Assert.Equal("k8s_get", Assert.Single(await mcpClient.ListToolsAsync()).Name);
+    }
+
+    private static string RepositoryFile(string relativePath)
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
+             directory is not null;
+             directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "KubeMcp.slnx")))
+            {
+                return Path.Combine(directory.FullName, relativePath);
+            }
+        }
+
+        throw new DirectoryNotFoundException("Could not locate the repository root.");
+    }
+
+    private static void AssertExceptionMessageContains(Exception? exception, string expected)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current.Message.Contains(expected, StringComparison.Ordinal))
+            {
+                return;
+            }
+        }
+
+        Assert.Fail($"Expected an exception whose message contains \"{expected}\". Actual: {exception}");
+    }
+}

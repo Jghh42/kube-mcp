@@ -68,7 +68,13 @@ public sealed class AuditLoggerTests
         var logger = new AuditLogger(
             sink,
             new HttpContextAccessor { HttpContext = new DefaultHttpContext() },
-            Options.Create(new KubeMcpOptions()),
+            Options.Create(new KubeMcpOptions
+            {
+                Authentication = new KubeMcpAuthenticationOptions
+                {
+                    Mode = AuthenticationMode.None
+                }
+            }),
             new FixedTimeProvider(DateTimeOffset.UnixEpoch));
 
         logger.LogKubernetesAccess(new KubernetesAuditEvent(

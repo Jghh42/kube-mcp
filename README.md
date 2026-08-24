@@ -16,12 +16,15 @@ name/namespace/kind/age fallback for other resources. GET remains detailed.
 Kubernetes Secrets are never returned raw: LIST returns safe discovery fields and
 key names, while GET replaces each value with a keyed HMAC-SHA256 fingerprint.
 
-Authentication is configurable per deployment: no authentication (the development
-default), a static bearer API key, or OAuth client credentials with JWT bearer
-validation. OAuth validates signature, issuer, audience, lifetime, all configured
-scopes, and all configured roles before MCP execution. Resource and namespace
-access policies are enforced independently. Do not expose the unauthenticated
-default configuration outside a trusted development environment.
+Authentication is configurable per deployment: a static bearer API key, OAuth
+client credentials with JWT bearer validation, or an explicitly selected
+unauthenticated development mode. The base configuration fails closed in API-key
+mode until a key is supplied, while `appsettings.Development.json` is the only
+application settings file that selects `None`. Outside the `Development`
+environment, `None` is rejected at startup unless the deployment deliberately sets
+`KubeMcp:Authentication:AllowUnauthenticated=true`. OAuth validates signature,
+issuer, audience, lifetime, all configured scopes, and all configured roles before
+MCP execution. Resource and namespace access policies are enforced independently.
 
 Every `k8s_get` attempt emits a structured audit event through the standard
 `ILogger` pipeline (console output by default). Events include UTC timestamp,
@@ -50,7 +53,8 @@ dotnet test --configuration Release --no-build
 ```
 
 The test suite includes Secret sanitization/fingerprinting tests, compact LIST
-summary tests that reject heavyweight object content, and an in-process MCP
+summary tests that reject heavyweight object content, production authentication
+fail-closed tests, trusted reverse-proxy/host/audit tests, and an in-process MCP
 transport test that verifies `k8s_get` is the only exposed tool.
 
 ## CI and container publishing
@@ -110,12 +114,31 @@ kubectl create secret generic kube-mcp-hmac \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
+The reference manifest is a **production, authenticated** deployment. Before
+applying it, replace the example OAuth authority, audience/scope/role values, and
+`k-mcp.example.internal` in `AllowedHosts` with values for your deployment. The
+MCP endpoint returns `401` when credentials are absent or invalid. A missing or
+invalid authentication configuration fails application startup rather than
+silently exposing `/mcp`.
+
 Deploy and wait for readiness:
 
 ```sh
 kubectl apply --filename deployment.yaml
 kubectl rollout status deployment/kube-mcp --namespace kube-mcp
 ```
+
+For an isolated local development cluster only, apply the explicitly named
+development overlay after the reference manifest. It sets both `Mode=None` and the
+non-production opt-in, making `/mcp` reachable without credentials:
+
+```sh
+kubectl apply --filename deployment.yaml
+kubectl apply --filename deployment-development.yaml
+```
+
+Never expose `deployment-development.yaml` on a shared or production network.
+Reapply `deployment.yaml` to restore authenticated mode.
 
 Access the service locally:
 
@@ -148,7 +171,8 @@ use double underscores, for example `KubeMcp__SecretHmacKey`.
 | `KubeMcp:MaxResponseBytes` | `1048576` | Maximum serialized tool response size |
 | `KubeMcp:KubernetesRequestTimeoutSeconds` | `15` | Kubernetes operation timeout |
 | `KubeMcp:DiscoveryCacheSeconds` | `300` | API discovery cache lifetime when resource `AllowAll` mode is enabled |
-| `KubeMcp:Authentication:Mode` | `None` | `None`, `ApiKey`, or `OAuthClientCredentials` |
+| `KubeMcp:Authentication:Mode` | `ApiKey` (`None` in `appsettings.Development.json`) | `None`, `ApiKey`, or `OAuthClientCredentials` |
+| `KubeMcp:Authentication:AllowUnauthenticated` | `false` | Deliberate deployment-level opt-in required for `None` outside the `Development` environment; never enable in production |
 | `KubeMcp:Authentication:ApiKey` | none | Static key of at least 32 bytes; sent as an `Authorization: Bearer` credential |
 | `KubeMcp:Authentication:OAuth:Authority` | none | Exact OIDC issuer/authority URL |
 | `KubeMcp:Authentication:OAuth:Audience` | none | Required JWT audience, normally `k-mcp` |
@@ -156,11 +180,17 @@ use double underscores, for example `KubeMcp__SecretHmacKey`.
 | `KubeMcp:Authentication:OAuth:RequiredRoles` | empty | Roles all accepted tokens must contain; top-level, Keycloak realm, and `resource_access` roles for the configured audience are supported |
 | `KubeMcp:Authentication:OAuth:RequireHttpsMetadata` | `true` | Require HTTPS for OIDC discovery; set false only for local HTTP testing |
 | `KubeMcp:Authentication:OAuth:ClockSkewSeconds` | `60` | JWT lifetime validation tolerance, from 0 to 300 seconds |
+| `KubeMcp:ForwardedHeaders:KnownProxies` | loopback only | Explicit trusted reverse-proxy IP addresses |
+| `KubeMcp:ForwardedHeaders:KnownNetworks` | loopback only | Explicit trusted reverse-proxy CIDRs |
+| `KubeMcp:ForwardedHeaders:AllowedForwardedHeaders` | `XForwardedFor, XForwardedProto, XForwardedHost` | Headers honored only from the trusted proxies/networks |
+| `AllowedHosts` | localhost and in-cluster service names | Semicolon-delimited ASP.NET Core host allowlist; production manifests must add their public hostname(s) |
 
 Resources are denied unless their MCP name has an explicit mapping. The defaults
-cover common namespaced Kubernetes resources plus CloudNativePG and Traefik CRDs.
-The mapping is resolved before any Kubernetes request and API discovery cannot
-expand it. Custom mappings also require corresponding read-only Kubernetes RBAC.
+cover common namespaced, built-in Kubernetes resources only. Optional
+CloudNativePG and Traefik resources and RBAC are separate, explicit overlays under
+[`overlays/`](overlays/README.md). The mapping is resolved before any Kubernetes
+request and API discovery cannot expand it. Custom mappings also require
+corresponding read-only Kubernetes RBAC.
 A custom mapping looks like:
 
 ```json
@@ -212,8 +242,9 @@ organization’s normal secret-management system.
 
 ### Authentication modes
 
-The checked-in deployment explicitly uses `None`. In static API-key mode, configure
-`KubeMcp__Authentication__Mode=ApiKey`, inject
+The checked-in production deployment explicitly uses
+`OAuthClientCredentials`; it never uses unauthenticated mode. In static API-key
+mode, configure `KubeMcp__Authentication__Mode=ApiKey`, inject
 `KubeMcp__Authentication__ApiKey` from a Kubernetes Secret, and send:
 
 ```http
@@ -247,12 +278,40 @@ middleware obtains signing keys through OIDC discovery/JWKS. HTTPS metadata rema
 mandatory by default; the kind harness disables it only for cluster-local testing.
 Health, readiness, and the informational root endpoint remain public in every mode.
 
+`None` is intended only for local development. It is selected by the explicitly
+named `appsettings.Development.json` and `deployment-development.yaml` examples.
+The validator rejects it in every other environment unless
+`KubeMcp__Authentication__AllowUnauthenticated=true` is also set by the deployment.
+That override exists for isolated development deployments, not production.
+
+### Reverse proxies and host filtering
+
+Forwarded client IP, scheme, and host are processed before authentication and MCP
+audit handling. They are accepted only when the immediate peer matches an explicit
+`KnownProxies` address or `KnownNetworks` CIDR; loopback is the only built-in trust.
+There is no trust-all setting. For example:
+
+```text
+KubeMcp__ForwardedHeaders__KnownProxies__0=10.0.0.5
+KubeMcp__ForwardedHeaders__KnownNetworks__0=10.42.0.0/16
+AllowedHosts=k-mcp.example.internal;kube-mcp;kube-mcp.kube-mcp.svc;localhost;127.0.0.1;[::1]
+```
+
+Use the narrowest ingress-controller address/network possible and never enter
+`0.0.0.0/0` or `::/0`. `AllowedHosts` values are semicolon-delimited and must
+include every external production hostname and any direct in-cluster hostname used
+by probes or proxy-to-service requests. With a trusted proxy, audit events record
+the forwarded originating client IP; forwarded values from untrusted peers are
+ignored.
+
 ## Kubernetes RBAC
 
-The default `ClusterRole` grants only `get` and `list` for the default resource
-allowlist. It additionally grants namespace `list` so Kubernetes can evaluate
-label-selector namespace policy. It grants no wildcard resources and no create,
-update, patch, delete, watch, exec, or proxy operations.
+The default `ClusterRole` grants only `get` and `list` for the core built-in
+resource allowlist. It additionally grants namespace `list` so Kubernetes can
+evaluate label-selector namespace policy. It grants no optional CloudNativePG or
+Traefik CRDs, wildcard resources, create, update, patch, delete, watch, exec, or
+proxy operations. Enable optional CRD mappings and their matching RBAC only through
+the documented [`overlays/`](overlays/README.md).
 
 `deployment-allow-all-rbac.yaml` is a separate, explicit opt-in that changes this
 identity to cluster-wide wildcard GET/LIST access. Application resource mode and

@@ -1,0 +1,10 @@
+{
+  "KubeMcp": {
+    "AllowedResources": {
+      "clusters.postgresql.cnpg.io": { "Group": "postgresql.cnpg.io", "Version": "v1", "Resource": "clusters", "Kind": "Cluster" },
+      "backups.postgresql.cnpg.io": { "Group": "postgresql.cnpg.io", "Version": "v1", "Resource": "backups", "Kind": "Backup" },
+      "scheduledbackups.postgresql.cnpg.io": { "Group": "postgresql.cnpg.io", "Version": "v1", "Resource": "scheduledbackups", "Kind": "ScheduledBackup" },
+      "poolers.postgresql.cnpg.io": { "Group": "postgresql.cnpg.io", "Version": "v1", "Resource": "poolers", "Kind": "Pooler" }
+    }
+  }
+}

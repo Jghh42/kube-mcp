@@ -67,8 +67,8 @@ kind load docker-image "$test_image" --name "$cluster_name"
 sed \
   -e "s|image: ghcr.io/jghh42/kube-mcp:latest|image: $test_image|" \
   -e "s|imagePullPolicy: Always|imagePullPolicy: IfNotPresent|" \
-  -e "s|value: None|value: OAuthClientCredentials|" \
-  -e "/            - name: KubeMcp__SecretHmacKey/i\            - name: KubeMcp__Authentication__OAuth__Authority\n              value: http://keycloak.kube-mcp.svc.cluster.local:8080/realms/kube-mcp\n            - name: KubeMcp__Authentication__OAuth__Audience\n              value: k-mcp\n            - name: KubeMcp__Authentication__OAuth__RequiredScopes__0\n              value: k-mcp:read\n            - name: KubeMcp__Authentication__OAuth__RequiredRoles__0\n              value: k-mcp:read\n            - name: KubeMcp__Authentication__OAuth__RequireHttpsMetadata\n              value: \"false\"" \
+  -e "s|https://keycloak.example.internal/realms/kube-mcp|http://keycloak.kube-mcp.svc.cluster.local:8080/realms/kube-mcp|" \
+  -e '/KubeMcp__Authentication__OAuth__RequireHttpsMetadata/{n;s|value: "true"|value: "false"|;}' \
   deployment.yaml >"$deployment_manifest"
 grep -Fq "image: $test_image" "$deployment_manifest" || {
   echo "failed to replace the published image in the integration manifest" >&2

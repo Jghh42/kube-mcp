@@ -35,12 +35,30 @@ builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
-if (app.Services.GetRequiredService<IOptions<KubeMcpOptions>>().Value.ResourcePolicy.Mode ==
-    ResourcePolicyMode.AllowAll)
+var kubeMcpOptions = app.Services.GetRequiredService<IOptions<KubeMcpOptions>>().Value;
+
+if (kubeMcpOptions.ResourcePolicy.Mode == ResourcePolicyMode.AllowAll)
 {
     app.Logger.LogWarning(
         "Resource policy AllowAll is enabled. Every namespaced Kubernetes resource supporting GET or LIST may be requested, subject to namespace policy and Kubernetes RBAC.");
 }
+
+if (authenticationMode == AuthenticationMode.None)
+{
+    app.Logger.LogWarning(
+        "Authentication is disabled (Mode=None). The MCP endpoint is reachable WITHOUT credentials. This mode is intended ONLY for isolated local development and must never be exposed to a shared or untrusted network. Set KubeMcp:Authentication:Mode to ApiKey or OAuthClientCredentials for any non-development deployment.");
+}
+
+// Honor forwarded headers only from explicitly configured, known proxies/networks
+// (and loopback) before authentication and audit handling. This lets audit
+// records observe the originating client IP and forwarded-host validation sees
+// the production hostname behind a trusted proxy without trusting every proxy.
+var forwardedHeadersOptions = new ForwardedHeadersOptions();
+ForwardedHeadersConfiguration.Apply(
+    kubeMcpOptions.ForwardedHeaders,
+    forwardedHeadersOptions,
+    builder.Configuration["AllowedHosts"]);
+app.UseForwardedHeaders(forwardedHeadersOptions);
 
 app.UseAuthentication();
 app.UseAuthorization();

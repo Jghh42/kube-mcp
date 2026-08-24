@@ -1,6 +1,9 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace KubeMcp.Configuration;
@@ -8,6 +11,12 @@ namespace KubeMcp.Configuration;
 public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOptions>
 {
     private const int MinimumHmacKeyBytes = 32;
+    private readonly IHostEnvironment environment;
+
+    public KubeMcpOptionsValidator(IHostEnvironment environment)
+    {
+        this.environment = environment;
+    }
 
     public ValidateOptionsResult Validate(string? name, KubeMcpOptions options)
     {
@@ -79,6 +88,12 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
                 $"{KubeMcpOptions.SectionName}:NamespacePolicy:LabelSelector must not exceed 1024 characters.");
         }
 
+        var forwardedHeadersValidation = ValidateForwardedHeaders(options.ForwardedHeaders);
+        if (forwardedHeadersValidation is not null)
+        {
+            return forwardedHeadersValidation;
+        }
+
         return ValidateAuthentication(options.Authentication);
     }
 
@@ -111,7 +126,7 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         }
     }
 
-    private static ValidateOptionsResult ValidateAuthentication(KubeMcpAuthenticationOptions authentication)
+    private ValidateOptionsResult ValidateAuthentication(KubeMcpAuthenticationOptions authentication)
     {
         const string path = $"{KubeMcpOptions.SectionName}:Authentication";
 
@@ -122,6 +137,16 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
 
         if (authentication.Mode == AuthenticationMode.None)
         {
+            var isDevelopment = environment.IsDevelopment();
+            if (!isDevelopment && !authentication.AllowUnauthenticated)
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{path}:Mode=None is not permitted outside the Development environment. " +
+                    "Set Mode to ApiKey or OAuthClientCredentials for any non-development deployment, " +
+                    "or explicitly set KubeMcp:Authentication:AllowUnauthenticated=true for a deliberate " +
+                    "development-only deployment.");
+            }
+
             return ValidateOptionsResult.Success;
         }
 
@@ -182,6 +207,52 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         }
 
         return ValidateOptionsResult.Success;
+    }
+
+    private static ValidateOptionsResult? ValidateForwardedHeaders(KubeMcpForwardedHeadersOptions forwardedHeaders)
+    {
+        const string path = $"{KubeMcpOptions.SectionName}:ForwardedHeaders";
+
+        if (forwardedHeaders is null)
+        {
+            return ValidateOptionsResult.Fail($"{path} is required.");
+        }
+
+        foreach (var proxy in forwardedHeaders.KnownProxies ?? [])
+        {
+            if (!IPAddress.TryParse(proxy, out _))
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{path}:KnownProxies contains invalid IP address \"{proxy}\".");
+            }
+        }
+
+        foreach (var network in forwardedHeaders.KnownNetworks ?? [])
+        {
+            if (!System.Net.IPNetwork.TryParse(network, out var parsed))
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{path}:KnownNetworks contains invalid CIDR network \"{network}\".");
+            }
+
+            if (parsed.PrefixLength == 0)
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{path}:KnownNetworks must not trust every address with \"{network}\".");
+            }
+        }
+
+        const ForwardedHeaders supportedHeaders =
+            ForwardedHeaders.XForwardedFor |
+            ForwardedHeaders.XForwardedProto |
+            ForwardedHeaders.XForwardedHost;
+        if ((forwardedHeaders.AllowedForwardedHeaders & ~supportedHeaders) != 0)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{path}:AllowedForwardedHeaders may contain only XForwardedFor, XForwardedProto, and XForwardedHost.");
+        }
+
+        return null;
     }
 
     private static string? ValidateResource(

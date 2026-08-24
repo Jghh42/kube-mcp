@@ -43,18 +43,23 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
-    public void DefaultAllowlistIncludesCoreCnpgAndTraefikResources()
+    public void DefaultAllowlistIncludesCoreResourcesOnly()
     {
         var allowlist = factory.Services.GetRequiredService<ResourceAllowlist>();
 
         Assert.False(allowlist.AllowsAll);
         Assert.Equal("pods", allowlist.Resolve("pods").QualifiedName);
         Assert.Equal(
-            "clusters.postgresql.cnpg.io",
-            allowlist.Resolve("clusters.postgresql.cnpg.io").QualifiedName);
+            "deployments.apps",
+            allowlist.Resolve("deployments").QualifiedName);
         Assert.Equal(
-            "ingressroutes.traefik.io",
-            allowlist.Resolve("ingressroutes.traefik.io").QualifiedName);
+            "endpointslices.discovery.k8s.io",
+            allowlist.Resolve("endpointslices").QualifiedName);
+        // Optional CloudNativePG and Traefik CRDs are deliberately excluded from
+        // the default allowlist and shipped as overlays so the default surface
+        // stays small and cannot drift from the default RBAC.
+        Assert.Throws<KubernetesReadException>(() => allowlist.Resolve("clusters.postgresql.cnpg.io"));
+        Assert.Throws<KubernetesReadException>(() => allowlist.Resolve("ingressroutes.traefik.io"));
         Assert.Throws<KubernetesReadException>(() => allowlist.Resolve("namespaces"));
     }
 

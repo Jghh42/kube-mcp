@@ -61,7 +61,12 @@ public sealed class ResourceAllowlistTests
             SecretHmacKey = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
             ResourcePolicy = resourcePolicy ?? new ResourcePolicyOptions(),
             AllowedResources = resources,
-            NamespacePolicy = namespacePolicy ?? new NamespacePolicyOptions()
+            NamespacePolicy = namespacePolicy ?? new NamespacePolicyOptions(),
+            Authentication = new KubeMcpAuthenticationOptions
+            {
+                Mode = AuthenticationMode.None,
+                AllowUnauthenticated = true
+            }
         };
 
     internal static KubernetesResourceOptions Resource(
@@ -126,7 +131,8 @@ public sealed class NamespaceAccessPolicyTests
 
 public sealed class KubeMcpOptionsValidatorTests
 {
-    private readonly KubeMcpOptionsValidator validator = new();
+    private readonly KubeMcpOptionsValidator validator =
+        new(new TestHostEnvironment("Production"));
 
     [Fact]
     public void AcceptsValidBlacklistConfiguration()
@@ -228,6 +234,8 @@ file static class OptionsTestExtensions
             ResourcePolicy = options.ResourcePolicy,
             AllowedResources = resources,
             NamespacePolicy = options.NamespacePolicy,
+            Authentication = options.Authentication,
+            ForwardedHeaders = options.ForwardedHeaders,
             MaxListItems = options.MaxListItems,
             MaxResponseBytes = options.MaxResponseBytes,
             KubernetesRequestTimeoutSeconds = options.KubernetesRequestTimeoutSeconds,
