@@ -104,6 +104,14 @@ The service should not introduce a separate infrastructure pattern merely becaus
                │ Authorization: Bearer <token>
                ▼
 ┌─────────────────────────────┐
+│ Ingress / reverse proxy     │
+│                             │
+│ • TLS termination           │
+│ • external hostname         │
+└──────────────┬──────────────┘
+               │ trusted internal HTTP/HTTPS
+               ▼
+┌─────────────────────────────┐
 │ ASP.NET Core / k-mcp        │
 │                             │
 │ • JWT authentication        │
@@ -203,7 +211,16 @@ STDIO transport is explicitly not the deployment model because Kubernetes creden
 
 ASP.NET Core will host the MCP HTTP transport.
 
-TLS must be used for non-local communication.
+TLS must be used for non-local client communication. The expected production
+model is for TLS to terminate at the organization's ingress, reverse proxy, or
+service mesh. The ASP.NET Core application may listen on HTTP behind that trusted
+termination point when the internal hop is protected by the deployment platform
+and cannot be reached as a bypass around the ingress.
+
+Certificate management, HTTPS enforcement, trusted forwarded headers, and the
+external hostname therefore belong to the ingress/platform configuration rather
+than requiring application-managed TLS. Local port-forward and disposable test
+traffic may use HTTP directly.
 
 Direct exposure to the public Internet is not a design goal.
 
@@ -227,7 +244,13 @@ MCP should therefore be treated as another application endpoint hosted inside th
 
 # 8. Authentication
 
-Production authentication will use the organization's existing Keycloak service-to-service pattern.
+Production authentication will use the organization's existing Keycloak service-to-service pattern. The checked-in reference deployment must select this mode and fail closed when credentials are absent.
+
+The implementation may additionally support a static API-key mode for constrained compatibility environments and an unauthenticated mode for isolated local development. These are explicit extensions to the production design:
+
+* API-key mode must require a high-entropy configured key and remains subject to all Kubernetes policy, audit, timeout, and response controls.
+* Unauthenticated mode must be confined to the Development environment by default. Any non-Development use requires a deliberate deployment-level opt-in and is not a compliant production deployment.
+* Neither extension changes the production requirement to use Keycloak OAuth client credentials.
 
 Authentication mechanism:
 
@@ -258,7 +281,7 @@ The MCP server does not receive the original Keycloak client secret.
 
 # 9. ASP.NET Authentication
 
-Authentication should use the organization's existing ASP.NET Core / Keycloak integration.
+Production authentication should use the organization's existing ASP.NET Core / Keycloak integration. The optional API-key compatibility mode must also use ASP.NET Core authentication and authorization handlers rather than bypassing the endpoint policy. The isolated Development-only unauthenticated mode is an explicit exception and must never be enabled by the reference production deployment.
 
 Conceptually:
 
@@ -619,7 +642,7 @@ to exactly mirror arbitrary Kubernetes API naming.
 An explicit `AllowAll` mode may be configured for environments that intentionally
 want every namespaced resource supporting GET/LIST to be accessible. This mode:
 
-* is never the default
+* is never the default; the checked-in/default policy remains the explicit allowlist
 * emits a startup warning
 * uses API discovery only for structured resource resolution
 * remains subject to namespace policy
@@ -628,8 +651,14 @@ want every namespaced resource supporting GET/LIST to be accessible. This mode:
 * does not permit arbitrary API paths or caller-selected HTTP verbs
 
 Kubernetes RBAC must be expanded separately if resources outside the default role
-are intended to work. This preserves an independent, deliberate authorization
-boundary.
+are intended to work. The default deployment must retain its narrow, enumerated
+allowlist RBAC. An `AllowAll` RBAC expansion is a separate high-privilege opt-in and
+may use wildcard read-only RBAC where Kubernetes cannot express "all namespaced
+resources" without also covering cluster-scoped resources. That broader credential
+blast radius is accepted only for this deliberate mode; the MCP application must
+still expose only discovered namespaced resources and GET/LIST operations.
+Operators that require a narrower independent RBAC boundary should supply an
+enumerated role instead of wildcard RBAC.
 
 ---
 
@@ -767,7 +796,16 @@ returning Kubernetes credentials
 
 The server must use a dedicated Kubernetes identity.
 
-Kubernetes RBAC remains an independent security layer and should allow the same or a smaller set of operations than the MCP server.
+Kubernetes RBAC remains an independent security layer. In the default allowlist
+mode it should allow the same or a smaller set of resources and operations than
+the MCP server.
+
+The deliberate `AllowAll` opt-in is an exception for resource breadth: its separate
+read-only wildcard role may also authorize cluster-scoped resources because
+Kubernetes RBAC cannot wildcard only namespaced resource types. The MCP server must
+continue to reject cluster-scoped resources, and the RBAC role must remain limited
+to GET/LIST. Operators may replace the wildcard role with an enumerated role when
+they require RBAC to remain equally narrow.
 
 The authorization sequence is:
 
@@ -1505,7 +1543,7 @@ High-level configuration areas include:
 
 ```text
 HTTP/listener settings
-TLS/reverse-proxy settings
+trusted ingress/reverse-proxy settings (external TLS termination, forwarded headers, allowed hosts)
 
 Keycloak issuer
 expected audience
@@ -1659,15 +1697,15 @@ Only permitted namespaces can be accessed.
 
 ## Invariant 5
 
-Every Kubernetes access originates from an authenticated and authorized MCP request.
+Every production Kubernetes access originates from an authenticated and authorized MCP request. Unauthenticated access is permitted only as an explicit isolated-development exception and is rejected outside Development unless a deliberate deployment opt-in is present.
 
 ## Invariant 6
 
-Authentication uses the organization's normal Keycloak and ASP.NET Core authentication infrastructure.
+Production authentication uses the organization's normal Keycloak and ASP.NET Core authentication infrastructure. A deliberately selected static API-key compatibility mode still uses ASP.NET Core authentication/authorization but is not the reference production mode.
 
 ## Invariant 7
 
-Tokens intended for unrelated services are rejected.
+In OAuth mode, tokens intended for unrelated services are rejected. Static API-key mode requires a separately configured high-entropy credential and does not weaken OAuth token validation when OAuth is selected.
 
 ## Invariant 8
 
@@ -1707,7 +1745,11 @@ The tool cannot construct arbitrary Kubernetes API calls.
 
 ## Invariant 17
 
-Kubernetes RBAC remains an independent authorization boundary.
+Kubernetes RBAC remains an independent read-only authorization boundary. The
+default allowlist deployment uses narrow enumerated RBAC. The separately opted-in
+`AllowAll` role may broaden resource scope, including cluster-scoped reads, but
+must not add verbs beyond GET/LIST; the application still exposes only discovered
+namespaced resources.
 
 ## Invariant 18
 
@@ -1829,6 +1871,8 @@ existing telemetry integration
 existing logging integration
 
 existing audit logging integration
+
+production ingress/reverse proxy providing external TLS termination
 
 one MCP tool:
   k8s_get
