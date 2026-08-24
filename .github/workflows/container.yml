@@ -43,7 +43,7 @@ jobs:
     steps:
       # actions/checkout v5.1.0
       - name: Check out repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       # actions/setup-dotnet v5.4.0
       - name: Set up .NET
@@ -111,7 +111,7 @@ jobs:
     steps:
       # actions/checkout v5.1.0
       - name: Check out repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       # actions/download-artifact v6.0.0
       - name: Download kind-tested candidate
@@ -346,7 +346,7 @@ jobs:
     steps:
       # actions/checkout v5.1.0
       - name: Check out repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       # actions/setup-dotnet v5.4.0
       - name: Set up .NET
