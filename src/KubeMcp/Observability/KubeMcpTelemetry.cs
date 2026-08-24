@@ -41,7 +41,7 @@ public sealed class KubeMcpTelemetry : IDisposable
             description: "End-to-end MCP HTTP request duration.");
         mcpDenials = meter.CreateCounter<long>(
             "kube_mcp.mcp.denials",
-            description: "MCP authentication and authorization denials.");
+            description: "MCP authentication, authorization, and concurrency denials.");
         kubernetesDuration = meter.CreateHistogram<double>(
             "kube_mcp.kubernetes.request.duration",
             unit: "s",
@@ -117,7 +117,9 @@ public sealed class KubeMcpTelemetry : IDisposable
         mcpRequests.Add(1, tags);
         mcpRequestDuration.Record(duration.TotalSeconds, tags);
 
-        if (category is AuditCategories.AuthenticationDenied or AuditCategories.AuthorizationDenied)
+        if (category is AuditCategories.AuthenticationDenied or
+            AuditCategories.AuthorizationDenied or
+            AuditCategories.RateLimited)
         {
             mcpDenials.Add(1, new TagList { { "mcp.error.category", category } });
         }
@@ -207,7 +209,9 @@ public sealed class KubeMcpTelemetry : IDisposable
     private static string ResultFor(string category) => category switch
     {
         AuditCategories.Success => "success",
-        AuditCategories.AuthenticationDenied or AuditCategories.AuthorizationDenied => "denied",
+        AuditCategories.AuthenticationDenied or
+        AuditCategories.AuthorizationDenied or
+        AuditCategories.RateLimited => "denied",
         AuditCategories.ClientCancelled => "cancelled",
         AuditCategories.ServerTimeout or "upstream_timeout" => "timeout",
         _ => "error"

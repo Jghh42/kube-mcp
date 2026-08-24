@@ -26,10 +26,17 @@ environment, `None` is rejected at startup unless the deployment deliberately se
 issuer, audience, lifetime, all configured scopes, and all configured roles before
 MCP execution. Resource and namespace access policies are enforced independently.
 
+A process-wide ASP.NET concurrency limiter applies only to `/mcp`, after successful
+authentication and authorization. By default, at most two requests execute MCP and
+Kubernetes work while two more wait oldest-first; overflow fails with HTTP `429`.
+This globally bounds simultaneous upstream response allocations while leaving the
+root, liveness, and readiness endpoints outside the limiter.
+
 Every dispatched `k8s_get` call emits a structured Kubernetes audit event. Requests
-rejected by authentication or authorization before tool dispatch emit a separate
-MCP access-denial event with no invented resource coordinates; the middleware
-never reads an arbitrary request body to derive audit fields. Events include UTC
+rejected by authentication, authorization, or the concurrency limiter before tool
+dispatch emit a separate MCP access-denial event with no invented resource
+coordinates; the middleware never reads an arbitrary request body to derive audit
+fields. Events include UTC
 timestamp, authenticated client identity when available, authentication mode,
 result, a stable low-cardinality category, duration, request ID, and client IP.
 Kubernetes events additionally contain GET/LIST, resource coordinates, and a
@@ -61,7 +68,9 @@ Kubernetes failures are mapped to fixed safe messages and categories such as
 `upstream_malformed_response`, `response_too_large`, `upstream_timeout`, and
 `internal_error`. Upstream error bodies and arbitrary exception messages never
 cross the Kubernetes boundary. Overall server deadlines use `server_timeout`, while
-a caller disconnect/cancellation uses `client_cancelled`.
+a caller disconnect/cancellation uses `client_cancelled`. Local concurrency
+rejections use `rate_limited`, are returned as HTTP `429`, and are included in the
+same safe audit and low-cardinality telemetry paths as other pre-tool denials.
 
 ### OpenTelemetry
 
@@ -221,6 +230,8 @@ use double underscores, for example `KubeMcp__SecretHmacKey`.
 | `KubeMcp:MaxListItems` | `100` | Maximum objects returned by LIST |
 | `KubeMcp:MaxResponseBytes` | `1048576` | Maximum safe inner tool-content JSON size (not the complete MCP/HTTP wire envelope) |
 | `KubeMcp:MaxUpstreamBodyBytes` | `4194304` | Per-page or single-object Kubernetes response cap enforced before deserialization |
+| `KubeMcp:McpConcurrency:PermitLimit` | `2` | Process-wide maximum authenticated `/mcp` requests executing concurrently (1-16) |
+| `KubeMcp:McpConcurrency:QueueLimit` | `2` | Oldest-first waiting-request bound (0-4); `0` makes overflow fail fast with HTTP 429 |
 | `KubeMcp:ListPageSize` | `50` | Kubernetes page size for non-Secret LISTs |
 | `KubeMcp:SecretListPageSize` | `10` | Smaller Kubernetes page size for Secret LISTs |
 | `KubeMcp:MaxListPages` | `20` | Maximum continuation pages fetched for one LIST |
@@ -242,13 +253,24 @@ use double underscores, for example `KubeMcp__SecretHmacKey`.
 | `KubeMcp:ForwardedHeaders:AllowedForwardedHeaders` | `XForwardedFor, XForwardedProto, XForwardedHost` | Headers honored only from the trusted proxies/networks |
 | `AllowedHosts` | localhost and in-cluster service names | Semicolon-delimited ASP.NET Core host allowlist; production manifests must add their public hostname(s) |
 
+`McpConcurrency` is one global partition, not a per-IP or per-token quota, so all
+authorized clients share the pod's memory budget fairly without trusting
+caller-controlled addressing. The limiter runs after authentication/authorization,
+so rejected credentials cannot consume permits or queue slots. Validation requires
+`PermitLimit * MaxUpstreamBodyBytes` to be at most 64 MiB, reserving at least three
+quarters of the reference 256 MiB pod limit for managed-object expansion, protocol
+envelopes, and runtime overhead. Raise either value only with the other value and
+the pod memory limit considered together. Queued requests remain subject to the
+overall MCP deadline.
+
 Resources are denied unless their MCP name has an explicit mapping. The defaults
 cover common namespaced, built-in Kubernetes resources only. Optional
 CloudNativePG and Traefik resources and RBAC are separate, explicit overlays under
 [`overlays/`](overlays/README.md). The mapping is resolved before any Kubernetes
 request and API discovery cannot expand it. Custom mappings also require
 corresponding read-only Kubernetes RBAC.
-A custom mapping looks like:
+Every mapping must provide a non-null `Group`; use `""` for the core Kubernetes API
+group. A custom mapping looks like:
 
 ```json
 {

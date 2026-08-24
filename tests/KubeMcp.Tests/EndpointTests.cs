@@ -6,6 +6,7 @@ using KubeMcp.Mcp;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -104,7 +105,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
-    public void OverallTimeoutPolicyIsValidatedAndAttachedOnlyToMcpEndpoints()
+    public void TimeoutAndConcurrencyPoliciesAreAttachedOnlyToMcpEndpoints()
     {
         _ = client; // Ensure the application and endpoint data source are initialized.
         var timeoutOptions = factory.Services.GetRequiredService<IOptions<RequestTimeoutOptions>>().Value;
@@ -119,10 +120,12 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
         var routed = endpoints.OfType<RouteEndpoint>().ToArray();
         Assert.Contains(routed, endpoint =>
             endpoint.RoutePattern.RawText?.StartsWith("/mcp", StringComparison.Ordinal) == true &&
-            endpoint.Metadata.GetMetadata<RequestTimeoutAttribute>()?.PolicyName == McpRequestTimeoutOptionsSetup.PolicyName);
+            endpoint.Metadata.GetMetadata<RequestTimeoutAttribute>()?.PolicyName == McpRequestTimeoutOptionsSetup.PolicyName &&
+            endpoint.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName == McpConcurrencyRateLimiterOptionsSetup.PolicyName);
         Assert.DoesNotContain(routed, endpoint =>
             endpoint.RoutePattern.RawText is "/" or "/healthz" or "/readyz" &&
-            endpoint.Metadata.GetMetadata<RequestTimeoutAttribute>() is not null);
+            (endpoint.Metadata.GetMetadata<RequestTimeoutAttribute>() is not null ||
+             endpoint.Metadata.GetMetadata<EnableRateLimitingAttribute>() is not null));
     }
 
     [Fact]
@@ -198,19 +201,25 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
             loggerFactory: null,
             ownsHttpClient: false);
         await using var mcpClient = await McpClient.CreateAsync(transport);
-        using var callerCancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        using var callerCancellation = new CancellationTokenSource();
 
-        // The MCP transport represents the aborted server response as HTTP 499;
-        // the server-side audit category below is the cancellation source of truth.
-        await Assert.ThrowsAnyAsync<Exception>(() => mcpClient.CallToolAsync(
+        // Wait until the request is executing so the test deterministically
+        // exercises propagation of a caller cancellation rather than cancelling
+        // before an asynchronously scheduled request reaches the server.
+        var call = mcpClient.CallToolAsync(
             "k8s_get",
             new Dictionary<string, object?>
             {
                 ["resource"] = "pods",
                 ["namespace"] = "default"
             },
-            cancellationToken: callerCancellation.Token).AsTask());
+            cancellationToken: callerCancellation.Token).AsTask();
+        await reader.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        callerCancellation.Cancel();
 
+        // The MCP transport represents the aborted server response as HTTP 499;
+        // the server-side audit category below is the cancellation source of truth.
+        await Assert.ThrowsAnyAsync<Exception>(() => call);
         await reader.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var audit = await sink.WaitForKubernetesCategoryAsync(AuditCategories.ClientCancelled);
         Assert.Equal("cancelled", audit.Result);
@@ -221,6 +230,9 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
 
     private sealed class CancellationObservingReader : IKubernetesReader
     {
+        public TaskCompletionSource Started { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource CancellationObserved { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -230,6 +242,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
             string? name,
             CancellationToken cancellationToken)
         {
+            Started.TrySetResult();
             using var registration = cancellationToken.Register(() => CancellationObserved.TrySetResult());
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             throw new InvalidOperationException("unreachable");

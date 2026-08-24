@@ -11,6 +11,9 @@ namespace KubeMcp.Configuration;
 public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOptions>
 {
     private const int MinimumHmacKeyBytes = 32;
+    // The reference pod is limited to 256 MiB. Reserve at least three quarters
+    // for the runtime, request/response envelopes, and deserialized object graphs.
+    private const long MaximumAggregateUpstreamBodyBytes = 64L * 1024 * 1024;
     private readonly IHostEnvironment environment;
 
     public KubeMcpOptionsValidator(IHostEnvironment environment)
@@ -110,6 +113,12 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         {
             return ValidateOptionsResult.Fail(
                 $"{KubeMcpOptions.SectionName}:OverallMcpRequestTimeoutSeconds must be greater than KubernetesRequestTimeoutSeconds so the end-to-end deadline leaves time for MCP error serialization and audit publication.");
+        }
+
+        var concurrencyValidation = ValidateMcpConcurrency(options);
+        if (concurrencyValidation is not null)
+        {
+            return concurrencyValidation;
         }
 
         var forwardedHeadersValidation = ValidateForwardedHeaders(options.ForwardedHeaders);
@@ -233,6 +242,36 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         return ValidateOptionsResult.Success;
     }
 
+    private static ValidateOptionsResult? ValidateMcpConcurrency(KubeMcpOptions options)
+    {
+        const string path = $"{KubeMcpOptions.SectionName}:McpConcurrency";
+        var concurrency = options.McpConcurrency;
+        if (concurrency is null)
+        {
+            return ValidateOptionsResult.Fail($"{path} is required.");
+        }
+
+        if (concurrency.PermitLimit is < 1 or > 16)
+        {
+            return ValidateOptionsResult.Fail($"{path}:PermitLimit must be between 1 and 16.");
+        }
+
+        if (concurrency.QueueLimit is < 0 or > 4)
+        {
+            return ValidateOptionsResult.Fail($"{path}:QueueLimit must be between 0 and 4.");
+        }
+
+        var aggregateUpstreamBytes =
+            (long)concurrency.PermitLimit * options.MaxUpstreamBodyBytes;
+        if (aggregateUpstreamBytes > MaximumAggregateUpstreamBodyBytes)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{path}:PermitLimit multiplied by {KubeMcpOptions.SectionName}:MaxUpstreamBodyBytes must not exceed {MaximumAggregateUpstreamBodyBytes} bytes, preserving memory headroom within the 256 MiB pod limit.");
+        }
+
+        return null;
+    }
+
     private static ValidateOptionsResult? ValidateForwardedHeaders(KubeMcpForwardedHeadersOptions forwardedHeaders)
     {
         const string path = $"{KubeMcpOptions.SectionName}:ForwardedHeaders";
@@ -306,7 +345,12 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
             return $"{path}:Version must be a lowercase DNS-1035 label such as v1 or v1beta1.";
         }
 
-        if (!string.IsNullOrEmpty(resource.Group) &&
+        if (resource.Group is null)
+        {
+            return $"{path}:Group must not be null; use an empty string for the core Kubernetes API group.";
+        }
+
+        if (resource.Group.Length > 0 &&
             (resource.Group.Length > 253 ||
              resource.Group.Split('.').Any(part => !IsDnsLabel(part))))
         {

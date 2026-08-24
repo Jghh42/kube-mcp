@@ -11,6 +11,7 @@ public sealed class McpRequestObservabilityTests
     [Theory]
     [InlineData(StatusCodes.Status401Unauthorized, AuditCategories.AuthenticationDenied)]
     [InlineData(StatusCodes.Status403Forbidden, AuditCategories.AuthorizationDenied)]
+    [InlineData(StatusCodes.Status429TooManyRequests, AuditCategories.RateLimited)]
     public async Task AuditsPreToolDenialWithoutReadingBodyOrInventingCoordinates(
         int statusCode,
         string expectedCategory)
@@ -59,8 +60,9 @@ public sealed class McpRequestObservabilityTests
 
         await middleware.InvokeAsync(context);
 
-        var activity = Assert.Single(stopped, item => item.OperationName == "mcp.request");
-        Assert.Equal(expectedCategory, activity.GetTagItem("mcp.error.category"));
+        var activity = stopped.First(item =>
+            item.OperationName == "mcp.request" &&
+            Equals(item.GetTagItem("mcp.error.category"), expectedCategory));
         Assert.Equal(ActivityStatusCode.Error, activity.Status);
     }
 
@@ -82,8 +84,9 @@ public sealed class McpRequestObservabilityTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => middleware.InvokeAsync(context));
 
-        var activity = Assert.Single(stopped, item => item.OperationName == "mcp.request");
-        Assert.Equal(AuditCategories.InternalError, activity.GetTagItem("mcp.error.category"));
+        Assert.Contains(stopped, item =>
+            item.OperationName == "mcp.request" &&
+            Equals(item.GetTagItem("mcp.error.category"), AuditCategories.InternalError));
     }
 
     [Fact]

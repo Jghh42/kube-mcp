@@ -7,6 +7,7 @@ using KubeMcp.Observability;
 using KubeMcp.Security;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Timeouts;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.AspNetCore;
@@ -36,6 +37,8 @@ builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
 builder.Services.AddKubeMcpTelemetry(builder.Configuration);
 builder.Services.AddRequestTimeouts();
 builder.Services.AddSingleton<IConfigureOptions<RequestTimeoutOptions>, McpRequestTimeoutOptionsSetup>();
+builder.Services.AddRateLimiter();
+builder.Services.AddSingleton<IConfigureOptions<RateLimiterOptions>, McpConcurrencyRateLimiterOptionsSetup>();
 builder.Services.AddSingleton<SecretFingerprinter>();
 builder.Services.AddSingleton<SecretSanitizer>();
 builder.Services.AddSingleton<KubernetesListSummarizer>();
@@ -99,6 +102,10 @@ app.UseWhen(
 
 app.UseAuthentication();
 app.UseAuthorization();
+// Limit only endpoint-selected MCP requests, after authentication and
+// authorization. Invalid credentials cannot occupy the process-wide queue or
+// permits; health/readiness/root endpoints do not carry limiter metadata.
+app.UseRateLimiter();
 
 app.MapGet("/", () => Results.Ok(new
 {
@@ -118,7 +125,8 @@ app.MapHealthChecks("/readyz", new HealthCheckOptions
     ResponseWriter = WriteHealthStatusAsync
 });
 var mcpEndpoint = app.MapMcp("/mcp")
-    .WithRequestTimeout(McpRequestTimeoutOptionsSetup.PolicyName);
+    .WithRequestTimeout(McpRequestTimeoutOptionsSetup.PolicyName)
+    .RequireRateLimiting(McpConcurrencyRateLimiterOptionsSetup.PolicyName);
 if (authenticationMode != AuthenticationMode.None)
 {
     mcpEndpoint.RequireAuthorization(AuthenticationConfiguration.McpAccessPolicy);

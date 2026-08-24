@@ -31,6 +31,7 @@ public static class AuditCategories
     public const string Success = "success";
     public const string AuthenticationDenied = "authentication_denied";
     public const string AuthorizationDenied = "authorization_denied";
+    public const string RateLimited = "rate_limited";
     public const string InvalidRequest = "invalid_request";
     public const string ClientCancelled = "client_cancelled";
     public const string ServerTimeout = "server_timeout";

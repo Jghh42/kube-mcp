@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using ModelContextProtocol.Client;
@@ -81,6 +82,30 @@ public sealed class ProductionDeploymentTests
             exception,
             "not permitted outside the Development environment");
         AssertExceptionMessageContains(exception, "AllowUnauthenticated=true");
+    }
+
+    [Fact]
+    public void NullAllowedResourceGroupIsRejectedAtStartup()
+    {
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment(Environments.Development);
+            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddJsonStream(new MemoryStream(
+                    """
+                    {
+                      "KubeMcp": {
+                        "AllowedResources": {
+                          "pods": { "Group": null }
+                        }
+                      }
+                    }
+                    """u8.ToArray())));
+        });
+
+        var exception = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+        AssertExceptionMessageContains(exception, "Group must not be null");
     }
 
     [Fact]

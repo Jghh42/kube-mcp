@@ -129,6 +129,14 @@ spec:
                 secretKeyRef:
                   name: kube-mcp-hmac
                   key: key
+            # Process-wide MCP concurrency bound for this 256Mi pod. At most two
+            # authenticated requests execute MCP/Kubernetes work and two wait;
+            # overflow receives 429. Keep PermitLimit * MaxUpstreamBodyBytes at
+            # or below the validated 64Mi aggregate upstream-body budget.
+            - name: KubeMcp__McpConcurrency__PermitLimit
+              value: "2"
+            - name: KubeMcp__McpConcurrency__QueueLimit
+              value: "2"
             # AllowedHosts: production hostname(s) plus in-cluster and localhost
             # names. Replace k-mcp.example.internal with your real hostname(s);
             # multiple values are semicolon-separated. Required behind an ingress.

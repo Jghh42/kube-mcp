@@ -50,7 +50,9 @@ internal sealed class McpRequestObservabilityMiddleware(
                 _ => context.Response.StatusCode
             };
 
-            if (category is AuditCategories.AuthenticationDenied or AuditCategories.AuthorizationDenied)
+            if (category is AuditCategories.AuthenticationDenied or
+                AuditCategories.AuthorizationDenied or
+                AuditCategories.RateLimited)
             {
                 try
                 {
@@ -93,6 +95,11 @@ internal sealed class McpRequestObservabilityMiddleware(
         if (context.Response.StatusCode == StatusCodes.Status403Forbidden)
         {
             return AuditCategories.AuthorizationDenied;
+        }
+
+        if (context.Response.StatusCode == StatusCodes.Status429TooManyRequests)
+        {
+            return AuditCategories.RateLimited;
         }
 
         // RequestTimeoutToken is the server deadline token, while RequestAborted

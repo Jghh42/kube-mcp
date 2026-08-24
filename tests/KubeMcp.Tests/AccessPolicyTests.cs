@@ -182,6 +182,81 @@ public sealed class KubeMcpOptionsValidatorTests
         Assert.Contains("Resource must be a lowercase Kubernetes resource name", result.FailureMessage);
     }
 
+    [Fact]
+    public void RejectsNullResourceGroupButAcceptsEmptyCoreGroup()
+    {
+        var nullGroup = OptionsWithResource(new KubernetesResourceOptions
+        {
+            Group = null!,
+            Version = "v1",
+            Resource = "pods",
+            Kind = "Pod"
+        });
+        var coreGroup = OptionsWithResource(
+            ResourceAllowlistTests.Resource("", "v1", "pods", "Pod"));
+
+        var nullResult = validator.Validate(null, nullGroup);
+        var coreResult = validator.Validate(null, coreGroup);
+
+        Assert.True(nullResult.Failed);
+        Assert.Contains("Group must not be null", nullResult.FailureMessage);
+        Assert.True(coreResult.Succeeded);
+    }
+
+    [Fact]
+    public void RejectsConcurrencyThatExceedsAggregateUpstreamMemoryBudget()
+    {
+        var baseline = ValidOptions();
+        var options = new KubeMcpOptions
+        {
+            SecretHmacKey = baseline.SecretHmacKey,
+            ResourcePolicy = baseline.ResourcePolicy,
+            AllowedResources = baseline.AllowedResources,
+            NamespacePolicy = baseline.NamespacePolicy,
+            Authentication = baseline.Authentication,
+            MaxUpstreamBodyBytes = 8 * 1024 * 1024,
+            McpConcurrency = new McpConcurrencyOptions
+            {
+                PermitLimit = 9,
+                QueueLimit = 1
+            }
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains("PermitLimit multiplied by KubeMcp:MaxUpstreamBodyBytes", result.FailureMessage);
+    }
+
+    [Theory]
+    [InlineData(0, 0, "PermitLimit")]
+    [InlineData(1, 5, "QueueLimit")]
+    public void RejectsConcurrencyLimitsOutsideValidatedBounds(
+        int permitLimit,
+        int queueLimit,
+        string expectedSetting)
+    {
+        var baseline = ValidOptions();
+        var options = new KubeMcpOptions
+        {
+            SecretHmacKey = baseline.SecretHmacKey,
+            ResourcePolicy = baseline.ResourcePolicy,
+            AllowedResources = baseline.AllowedResources,
+            NamespacePolicy = baseline.NamespacePolicy,
+            Authentication = baseline.Authentication,
+            McpConcurrency = new McpConcurrencyOptions
+            {
+                PermitLimit = permitLimit,
+                QueueLimit = queueLimit
+            }
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(expectedSetting, result.FailureMessage);
+    }
+
     [Theory]
     [InlineData("v1")]
     [InlineData("v1beta1")]
