@@ -115,6 +115,10 @@ spec:
           image: ghcr.io/jghh42/kube-mcp:latest
           imagePullPolicy: Always
           env:
+            # Set to ApiKey or OAuthClientCredentials and provide the corresponding
+            # secret/configuration values for authenticated deployments.
+            - name: KubeMcp__Authentication__Mode
+              value: None
             - name: KubeMcp__SecretHmacKey
               valueFrom:
                 secretKeyRef:

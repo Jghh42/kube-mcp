@@ -16,9 +16,12 @@ name/namespace/kind/age fallback for other resources. GET remains detailed.
 Kubernetes Secrets are never returned raw: LIST returns safe discovery fields and
 key names, while GET replaces each value with a keyed HMAC-SHA256 fingerprint.
 
-> **Development warning:** authentication is not implemented yet. Resource and
-> namespace access policies are enforced, but this version should still not be
-> exposed outside a trusted development environment.
+Authentication is configurable per deployment: no authentication (the development
+default), a static bearer API key, or OAuth client credentials with JWT bearer
+validation. OAuth validates signature, issuer, audience, lifetime, all configured
+scopes, and all configured roles before MCP execution. Resource and namespace
+access policies are enforced independently. Do not expose the unauthenticated
+default configuration outside a trusted development environment.
 
 ## Prerequisites
 
@@ -26,6 +29,7 @@ key names, while GET replaces each value with a keyed HMAC-SHA256 fingerprint.
 - Docker
 - kind
 - kubectl
+- curl and Python 3 (for the kind OAuth harness)
 - OpenSSL (for generating the development HMAC key)
 
 ## Build and test
@@ -63,17 +67,21 @@ clusters can pull it without an image pull secret.
 ## End-to-end test with kind
 
 The integration harness builds and loads a local test image, generates an ephemeral
-HMAC key, deploys the service, creates ConfigMap and Secret fixtures, and calls the
-running service through the official MCP client. It verifies compact Pod,
-Deployment, Service, ConfigMap, and Secret LIST output, detailed GET, resource
-denials, both namespace policy modes, and explicit resource `AllowAll` mode:
+HMAC key, and deploys a one-pod Keycloak development server with an imported test
+realm. It obtains a token through the real `client_credentials` grant and verifies
+invalid client secrets, audience/scope/role enforcement, compact LIST output,
+detailed GET, Secret sanitization, resource denials, both namespace policy modes,
+and explicit resource `AllowAll` mode:
 
 ```sh
 ./tests/integration/run-kind.sh
 ```
 
-The fixture namespace is removed afterward. The tested `kube-mcp` deployment is
-left running in kind.
+The fixture namespace is removed afterward. The tested OAuth-protected `kube-mcp`
+deployment and local Keycloak remain running in kind. Keycloak uses ephemeral H2
+storage and fixed, local-only test credentials from
+[`tests/integration/keycloak.yaml`](tests/integration/keycloak.yaml); it is not a
+production deployment.
 
 ## Deploy the published image
 
@@ -131,6 +139,14 @@ use double underscores, for example `KubeMcp__SecretHmacKey`.
 | `KubeMcp:MaxResponseBytes` | `1048576` | Maximum serialized tool response size |
 | `KubeMcp:KubernetesRequestTimeoutSeconds` | `15` | Kubernetes operation timeout |
 | `KubeMcp:DiscoveryCacheSeconds` | `300` | API discovery cache lifetime when resource `AllowAll` mode is enabled |
+| `KubeMcp:Authentication:Mode` | `None` | `None`, `ApiKey`, or `OAuthClientCredentials` |
+| `KubeMcp:Authentication:ApiKey` | none | Static key of at least 32 bytes; sent as an `Authorization: Bearer` credential |
+| `KubeMcp:Authentication:OAuth:Authority` | none | Exact OIDC issuer/authority URL |
+| `KubeMcp:Authentication:OAuth:Audience` | none | Required JWT audience, normally `k-mcp` |
+| `KubeMcp:Authentication:OAuth:RequiredScopes` | `k-mcp:read` | Scopes all accepted tokens must contain |
+| `KubeMcp:Authentication:OAuth:RequiredRoles` | empty | Roles all accepted tokens must contain; top-level, Keycloak realm, and `resource_access` roles for the configured audience are supported |
+| `KubeMcp:Authentication:OAuth:RequireHttpsMetadata` | `true` | Require HTTPS for OIDC discovery; set false only for local HTTP testing |
+| `KubeMcp:Authentication:OAuth:ClockSkewSeconds` | `60` | JWT lifetime validation tolerance, from 0 to 300 seconds |
 
 Resources are denied unless their MCP name has an explicit mapping. The defaults
 cover common namespaced Kubernetes resources plus CloudNativePG and Traefik CRDs.
@@ -181,8 +197,46 @@ KubeMcp__NamespacePolicy__Mode=LabelSelector
 KubeMcp__NamespacePolicy__LabelSelector=platform.example.com/group in (production,staging)
 ```
 
-The HMAC key must not be committed to source control. Production environments
-should provide it through the organization’s normal secret-management system.
+The HMAC key, static API key, and OAuth client secrets must not be committed to
+source control. Production environments should provide them through the
+organization’s normal secret-management system.
+
+### Authentication modes
+
+The checked-in deployment explicitly uses `None`. In static API-key mode, configure
+`KubeMcp__Authentication__Mode=ApiKey`, inject
+`KubeMcp__Authentication__ApiKey` from a Kubernetes Secret, and send:
+
+```http
+Authorization: Bearer <configured static key>
+```
+
+The static key is not an OAuth token; the standard bearer header is used because it
+is broadly supported by MCP clients and HTTP tooling. The configured authentication
+mode determines whether the bearer credential is compared to the static key or
+validated as an OAuth JWT.
+
+In OAuth mode, the MCP server is a resource server: it never receives or stores an
+OAuth client secret. The caller exchanges its credentials at Keycloak and sends the
+resulting access token:
+
+```sh
+curl --request POST "$KEYCLOAK/realms/$REALM/protocol/openid-connect/token" \
+  --data-urlencode grant_type=client_credentials \
+  --data-urlencode client_id="$CLIENT_ID" \
+  --data-urlencode client_secret="$CLIENT_SECRET"
+
+# MCP requests then include:
+# Authorization: Bearer <access_token>
+```
+
+Configure `Mode=OAuthClientCredentials`, an exact Keycloak realm authority, the
+`k-mcp` audience, and the required scope/role arrays. Array environment variables
+use numeric suffixes, for example
+`KubeMcp__Authentication__OAuth__RequiredScopes__0=k-mcp:read`. The JWT bearer
+middleware obtains signing keys through OIDC discovery/JWKS. HTTPS metadata remains
+mandatory by default; the kind harness disables it only for cluster-local testing.
+Health, readiness, and the informational root endpoint remain public in every mode.
 
 ## Kubernetes RBAC
 

@@ -1,3 +1,4 @@
+using KubeMcp.Authentication;
 using KubeMcp.Configuration;
 using KubeMcp.Kubernetes;
 using KubeMcp.Mcp;
@@ -13,6 +14,7 @@ builder.Services
     .ValidateDataAnnotations()
     .ValidateOnStart();
 builder.Services.AddSingleton<IValidateOptions<KubeMcpOptions>, KubeMcpOptionsValidator>();
+var authenticationMode = builder.Services.AddKubeMcpAuthentication(builder.Configuration);
 
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<SecretFingerprinter>();
@@ -37,6 +39,9 @@ if (app.Services.GetRequiredService<IOptions<KubeMcpOptions>>().Value.ResourcePo
         "Resource policy AllowAll is enabled. Every namespaced Kubernetes resource supporting GET or LIST may be requested, subject to namespace policy and Kubernetes RBAC.");
 }
 
+app.UseAuthentication();
+app.UseAuthorization();
+
 app.MapGet("/", () => Results.Ok(new
 {
     service = "kube-mcp",
@@ -44,7 +49,11 @@ app.MapGet("/", () => Results.Ok(new
 }));
 app.MapHealthChecks("/healthz");
 app.MapHealthChecks("/readyz");
-app.MapMcp("/mcp");
+var mcpEndpoint = app.MapMcp("/mcp");
+if (authenticationMode != AuthenticationMode.None)
+{
+    mcpEndpoint.RequireAuthorization(AuthenticationConfiguration.McpAccessPolicy);
+}
 
 app.Run();
 
