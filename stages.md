@@ -72,3 +72,28 @@ Add simple token based auth and client credential flow. It should be configurabl
 
 6.
 Add Audit logging (based on the normal ILogger for now)
+-----------
+Stage 6 is complete and running in the kind cluster.
+
+### Implemented
+
+- A dedicated audit boundary using the standard `ILogger` pipeline and its default console provider.
+- One structured audit event for every attempted `k8s_get` execution, including successful, failed, and cancelled operations.
+- Safe audit fields for UTC timestamp, authenticated client identity when available, authentication mode, GET/LIST operation, resource, namespace, optional name, result, object count, duration, request ID, and client IP.
+- Identity resolution for OAuth client claims (`client_id`, `azp`, or `sub`), the non-secret shared API-key identity, and `anonymous` when authentication is disabled.
+- Audit values are length-bounded and stripped of control characters to prevent multiline/log-forging input.
+- Audit events never include Kubernetes response bodies, Secret values or fingerprints, bearer tokens, client secrets, Kubernetes credentials, or the HMAC key.
+- Unit tests for structured audit fields, identity handling, safe value handling, and success/failure recording at the MCP tool boundary.
+- The kind integration harness now verifies that OAuth-attributed audit events reach container console logs and that Secret values and unsafe annotations do not.
+
+### Validation
+
+- Release build: 0 warnings, 0 errors.
+- Automated tests: 56/56 passed.
+- Docker image built and loaded into kind.
+- End-to-end tests passed in blacklist, label-selector, and resource `AllowAll` modes.
+- Console audit output verified for an authenticated Secret GET, including client identity and object count.
+- Audit logs verified not to contain the raw Secret value or unsafe Secret annotation.
+- Narrow default RBAC and resource policy restored after integration testing.
+- `kube-mcp` and the local Keycloak test deployment remain running in namespace `kube-mcp`.
+-----------
