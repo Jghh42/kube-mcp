@@ -92,7 +92,10 @@ jobs:
 
   container:
     name: Build and publish image
-    needs: test
+    # The candidate is not built, scanned, or published until the real kind
+    # boundary has passed. This direct dependency also prevents publication
+    # from racing the integration job on pushes.
+    needs: kind-integration
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -186,22 +189,64 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Re-export the cache-backed clean build to GHCR. provenance is generated
-      # explicitly below to avoid duplicate attestations.
-      # docker/build-push-action v7.3.0
+      # Tag and push the already-loaded candidate; never invoke a second build
+      # after scanning. Verify every local tag still resolves to the candidate
+      # image ID and require GHCR to report one registry digest for all tags.
       - name: Publish scanned image
         if: github.event_name == 'push'
-        id: build
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha
+        id: publish
+        env:
+          CANDIDATE_IMAGE: kube-mcp:ci-scan-${{ github.sha }}
+          PUBLISH_TAGS: ${{ steps.metadata.outputs.tags }}
+        run: |
+          set -euo pipefail
+          candidate_id=$(docker image inspect --format '{{.Id}}' "$CANDIDATE_IMAGE")
+          published_digest=
+
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            if [[ "$tag" != ghcr.io/jghh42/kube-mcp:* ]]; then
+              echo "::error::Refusing unexpected publication tag: $tag"
+              exit 1
+            fi
+
+            docker tag "$CANDIDATE_IMAGE" "$tag"
+            tagged_id=$(docker image inspect --format '{{.Id}}' "$tag")
+            if [[ "$tagged_id" != "$candidate_id" ]]; then
+              echo "::error::Tag $tag does not identify the scanned candidate"
+              exit 1
+            fi
+
+            if ! push_output=$(docker push "$tag" 2>&1); then
+              printf '%s\n' "$push_output"
+              exit 1
+            fi
+            printf '%s\n' "$push_output"
+            tag_digest=$(docker buildx imagetools inspect \
+              --format '{{.Manifest.Digest}}' "$tag")
+            if [[ ! "$tag_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Registry did not return a valid digest for $tag"
+              exit 1
+            fi
+            if [[ -n "$published_digest" && "$tag_digest" != "$published_digest" ]]; then
+              echo "::error::Published tags do not share the candidate digest"
+              exit 1
+            fi
+            published_digest=$tag_digest
+          done <<<"$PUBLISH_TAGS"
+
+          if [[ -z "$published_digest" ]]; then
+            echo "::error::No image tags were provided for publication"
+            exit 1
+          fi
+          echo "digest=$published_digest" >>"$GITHUB_OUTPUT"
+          {
+            echo '### Published image'
+            echo
+            echo "\`ghcr.io/jghh42/kube-mcp@$published_digest\`"
+            echo
+            echo 'Use this immutable digest rather than a mutable tag when promoting this build.'
+          } >>"$GITHUB_STEP_SUMMARY"
 
       # actions/attest-build-provenance v4.2.2
       - name: Attest build provenance
@@ -209,7 +254,7 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-name: ghcr.io/jghh42/kube-mcp
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
           push-to-registry: true
 
       # actions/attest v4.1.0 (the attest-sbom wrapper is deprecated)
@@ -218,7 +263,7 @@ jobs:
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
         with:
           subject-name: ghcr.io/jghh42/kube-mcp
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
           sbom-path: sbom.cdx.json
           push-to-registry: true
 
@@ -236,11 +281,9 @@ jobs:
   kind-integration:
     name: kind integration tests
     needs: test
-    # Runs on push (main / tags) and manual dispatch. It is intentionally not
-    # on pull_request to keep PR feedback fast; the hardened harness
-    # (tests/integration/run-kind.sh) restores cluster state on any failure.
-    # Remove this `if` to run the real Kubernetes boundary on PRs too.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Run the real Kubernetes boundary for PRs, pushes, and manual dispatches.
+    # The container job depends on this job, so no candidate can be built or
+    # published until integration succeeds.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -277,8 +320,8 @@ jobs:
             --name kind \
             --image kindest/node:v1.32.2@sha256:f226345927d7e348497136874b6d207e0b32cc52154ad8323129352923a3142f \
             --wait 60s
-          kubectl version --client=true
-          kubectl get nodes
+          kubectl --context kind-kind version --client=true
+          kubectl --context kind-kind get nodes
 
       - name: Run kind integration harness
         run: tests/integration/run-kind.sh

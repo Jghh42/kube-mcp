@@ -5,25 +5,46 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo_root"
 
 cluster_name=${KIND_CLUSTER_NAME:-kind}
+kind_context="kind-${cluster_name}"
+kube_namespace=kube-mcp
+fixture_namespace=kube-mcp-e2e
 local_port=${KUBE_MCP_TEST_PORT:-18082}
 keycloak_local_port=${KUBE_MCP_KEYCLOAK_TEST_PORT:-18083}
-fixture_namespace=kube-mcp-e2e
 secret_value=correct-horse-battery-staple
 test_image=kube-mcp:stage6-test
+
+if ! kubectl_command=$(command -v kubectl); then
+  echo "kubectl is required" >&2
+  exit 1
+fi
+
+# Every invocation below, including client-only create/kustomize commands, goes
+# through this wrapper. Refuse a caller-supplied override so no operation can
+# escape to the ambient context if the user's current context changes mid-run.
+kubectl() {
+  local argument
+  for argument in "$@"; do
+    if [[ "$argument" == --context || "$argument" == --context=* ]]; then
+      echo "run-kind.sh owns kubectl context selection ($kind_context)" >&2
+      return 2
+    fi
+  done
+  command "$kubectl_command" --context "$kind_context" "$@"
+}
+
 port_forward_log=$(mktemp)
 keycloak_port_forward_log=$(mktemp)
 deployment_manifest=$(mktemp)
-original_deployment=$(mktemp)
+kind_kubeconfig=$(mktemp)
 original_clusterrole=$(mktemp)
+original_clusterrolebinding=$(mktemp)
 resource_capture=$(mktemp)
 resource_restore=$(mktemp)
 port_forward_pid=
 keycloak_port_forward_pid=
-restore_needed=false
+cluster_state_snapshot_needed=false
+kube_namespace_owned=false
 fixture_namespace_owned=false
-original_kube_namespace_exists=false
-original_access_label_exists=false
-original_access_label_value=
 
 # Normalize a captured API object so it can be compared and restored. The
 # resourceVersion needed by `kubectl replace` is added from the live object at
@@ -59,33 +80,15 @@ capture_resource() {
   fi
 }
 
-capture_original_state() {
-  capture_resource "$original_deployment" \
-    deployment kube-mcp --namespace kube-mcp
+capture_original_cluster_state() {
   capture_resource "$original_clusterrole" clusterrole kube-mcp-reader
-
-  : >"$resource_capture"
-  kubectl get namespace kube-mcp --ignore-not-found -o json >"$resource_capture"
-  if [[ -s "$resource_capture" ]]; then
-    original_kube_namespace_exists=true
-    if original_access_label_value=$(python3 -c '
-import json, sys
-labels = json.load(sys.stdin).get("metadata", {}).get("labels", {})
-key = "kube-mcp.io/agent-access"
-if key not in labels:
-    raise SystemExit(3)
-print(labels[key], end="")
-' <"$resource_capture"); then
-      original_access_label_exists=true
-    elif [[ $? -ne 3 ]]; then
-      return 1
-    fi
-  fi
+  capture_resource "$original_clusterrolebinding" \
+    clusterrolebinding kube-mcp-reader
 }
 
 # Generate a complete replacement object with the live resourceVersion. Unlike
-# `kubectl apply`, replace removes fields added by a test phase, so the original
-# env list and RBAC rules are restored exactly rather than merge-restored.
+# `kubectl apply`, replace removes fields added by a test phase, so original
+# cluster-scoped metadata and RBAC fields are restored rather than merge-restored.
 write_restore_object() {
   local snapshot=$1
   local resource_version=$2
@@ -179,102 +182,84 @@ verify_resource() {
   fi
 }
 
-restore_access_label() {
-  local namespace
-  if ! namespace=$(kubectl get namespace kube-mcp --ignore-not-found -o name); then
-    return 1
-  fi
-  [[ -n "$namespace" ]] || return 0
-
-  if [[ "$original_kube_namespace_exists" == "true" &&
-        "$original_access_label_exists" == "true" ]]; then
-    kubectl label namespace kube-mcp \
-      "kube-mcp.io/agent-access=$original_access_label_value" \
-      --overwrite >/dev/null
-  else
-    kubectl label namespace kube-mcp kube-mcp.io/agent-access- \
-      --overwrite >/dev/null
-  fi
-}
-
-verify_access_label() {
-  local namespace label_value='' label_exists=false label_status
-  if ! namespace=$(kubectl get namespace kube-mcp --ignore-not-found -o name); then
-    return 1
-  fi
-  if [[ -z "$namespace" ]]; then
-    [[ "$original_kube_namespace_exists" == "false" ]]
-    return
-  fi
-
-  : >"$resource_capture"
-  if ! kubectl get namespace kube-mcp -o json >"$resource_capture"; then
-    return 1
-  fi
-  if label_value=$(python3 -c '
-import json, sys
-labels = json.load(sys.stdin).get("metadata", {}).get("labels", {})
-key = "kube-mcp.io/agent-access"
-if key not in labels:
-    raise SystemExit(3)
-print(labels[key], end="")
-' <"$resource_capture"); then
-    label_exists=true
-  else
-    label_status=$?
-    [[ "$label_status" -eq 3 ]] || return 1
-  fi
-
-  [[ "$label_exists" == "$original_access_label_exists" ]] &&
-    [[ "$original_access_label_exists" == "false" ||
-       "$label_value" == "$original_access_label_value" ]]
-}
-
-# Restore both resources even if one operation fails, then verify their full
-# normalized state. This function is used on the success path and by the EXIT
-# trap, which is armed before the first kubectl mutation below.
-restore_original_state() {
+# Restore both cluster-scoped resources even if one operation fails, then
+# verify their full normalized state. Namespaced state is not merge-restored:
+# this harness refuses both managed namespaces when they pre-exist, creates
+# them itself, and deletes them in full on every exit.
+restore_original_cluster_state() {
   local failed=0
   restore_resource "$original_clusterrole" clusterrole kube-mcp-reader || failed=1
-  restore_resource "$original_deployment" \
-    deployment kube-mcp --namespace kube-mcp || failed=1
-  restore_access_label || failed=1
+  restore_resource "$original_clusterrolebinding" \
+    clusterrolebinding kube-mcp-reader || failed=1
   verify_resource "$original_clusterrole" clusterrole kube-mcp-reader || failed=1
-  verify_resource "$original_deployment" \
-    deployment kube-mcp --namespace kube-mcp || failed=1
-  verify_access_label || failed=1
+  verify_resource "$original_clusterrolebinding" \
+    clusterrolebinding kube-mcp-reader || failed=1
+  return "$failed"
+}
+
+stop_port_forwards() {
+  local pid
+  for pid in "$port_forward_pid" "$keycloak_port_forward_pid"; do
+    if [[ -n "$pid" ]]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+  port_forward_pid=
+  keycloak_port_forward_pid=
+}
+
+# Namespace deletion is the ownership boundary for all namespaced resources:
+# kube-mcp removes the ServiceAccount, kube-mcp/keycloak Services and
+# Deployments, HMAC Secret, and Keycloak realm ConfigMap; kube-mcp-e2e removes
+# its ConfigMap and Secret. ClusterRole and ClusterRoleBinding are restored
+# separately from exact pre-run snapshots.
+remove_owned_namespaces() {
+  local failed=0
+  if [[ "$fixture_namespace_owned" == "true" ]]; then
+    if kubectl delete namespace "$fixture_namespace" \
+      --ignore-not-found --wait=true --timeout=120s >/dev/null; then
+      fixture_namespace_owned=false
+    else
+      echo "failed to delete owned namespace '$fixture_namespace'" >&2
+      failed=1
+    fi
+  fi
+  if [[ "$kube_namespace_owned" == "true" ]]; then
+    if kubectl delete namespace "$kube_namespace" \
+      --ignore-not-found --wait=true --timeout=120s >/dev/null; then
+      kube_namespace_owned=false
+    else
+      echo "failed to delete owned namespace '$kube_namespace'" >&2
+      failed=1
+    fi
+  fi
   return "$failed"
 }
 
 cleanup() {
   local exit_code=$?
-  local restore_code=0
+  local cleanup_code
   trap - EXIT
   set +e
 
-  for pid in "$port_forward_pid" "$keycloak_port_forward_pid"; do
-    if [[ -n "$pid" ]]; then
-      kill "$pid" 2>/dev/null
-      wait "$pid" 2>/dev/null
-    fi
-  done
-  if [[ "$restore_needed" == "true" ]]; then
-    restore_original_state
-    restore_code=$?
-    if ((restore_code != 0)); then
-      echo "failed to restore the original kube-mcp Deployment/ClusterRole state" >&2
-      exit_code=1
-    fi
+  stop_port_forwards
+  remove_owned_namespaces
+  cleanup_code=$?
+  if ((cleanup_code != 0)); then
+    exit_code=1
   fi
-  if [[ "$fixture_namespace_owned" == "true" ]]; then
-    if ! kubectl delete namespace "$fixture_namespace" \
-      --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1; then
-      echo "failed to delete integration fixture namespace '$fixture_namespace'" >&2
+  if [[ "$cluster_state_snapshot_needed" == "true" ]]; then
+    restore_original_cluster_state
+    cleanup_code=$?
+    if ((cleanup_code != 0)); then
+      echo "failed to restore the original kube-mcp ClusterRole/ClusterRoleBinding state" >&2
       exit_code=1
     fi
   fi
   rm -f "$port_forward_log" "$keycloak_port_forward_log" "$deployment_manifest" \
-    "$original_deployment" "$original_clusterrole" "$resource_capture" "$resource_restore"
+    "$kind_kubeconfig" "$original_clusterrole" "$original_clusterrolebinding" \
+    "$resource_capture" "$resource_restore"
   exit "$exit_code"
 }
 trap cleanup EXIT
@@ -284,19 +269,75 @@ kind get clusters | grep -Fxq "$cluster_name" || {
   exit 1
 }
 
-# The fixture namespace is owned by this run and deleted on exit. Refuse to
-# destroy a pre-existing namespace with the same name.
-if [[ -n $(kubectl get namespace "$fixture_namespace" --ignore-not-found -o name) ]]; then
-  echo "fixture namespace '$fixture_namespace' already exists; refusing to delete it" >&2
+# Fail closed before the first Kubernetes mutation. In addition to requiring the
+# expected current-context, compare its API endpoint and CA with kind's own
+# kubeconfig. A same-named context that targets a different cluster is rejected.
+if ! current_context=$(command "$kubectl_command" --context "$kind_context" \
+  config current-context 2>/dev/null); then
+  echo "kubectl has no current context; expected '$kind_context'" >&2
+  exit 1
+fi
+if [[ "$current_context" != "$kind_context" ]]; then
+  echo "kubectl current context is '$current_context'; expected '$kind_context'" >&2
+  exit 1
+fi
+if ! kind get kubeconfig --name "$cluster_name" >"$kind_kubeconfig"; then
+  echo "cannot read kubeconfig for kind cluster '$cluster_name'" >&2
+  exit 1
+fi
+if ! kubectl config view --raw --flatten --minify -o json >"$resource_capture"; then
+  echo "kubectl context '$kind_context' is unavailable" >&2
+  exit 1
+fi
+if ! KUBECONFIG="$kind_kubeconfig" command "$kubectl_command" \
+  --context "$kind_context" config view --raw --flatten --minify -o json \
+  >"$resource_restore"; then
+  echo "kind did not provide the expected context '$kind_context'" >&2
+  exit 1
+fi
+if ! python3 - "$resource_capture" "$resource_restore" <<'PY'
+import json
+import sys
+
+
+def cluster_identity(path):
+    config = json.load(open(path))
+    context = config["contexts"][0]["context"]
+    cluster_name = context["cluster"]
+    cluster = next(
+        item["cluster"] for item in config["clusters"] if item["name"] == cluster_name
+    )
+    return cluster.get("server"), cluster.get("certificate-authority-data")
+
+
+if cluster_identity(sys.argv[1]) != cluster_identity(sys.argv[2]):
+    raise SystemExit(1)
+PY
+then
+  echo "kubectl context '$kind_context' does not match kind cluster '$cluster_name'" >&2
+  exit 1
+fi
+if ! kubectl get --raw=/readyz >/dev/null; then
+  echo "Kubernetes API for context '$kind_context' is unavailable" >&2
   exit 1
 fi
 
-# Snapshot the state that existed before this harness, not the test deployment
-# produced below. Arm restoration immediately after the complete snapshot and
-# before kind image loading, namespace creation, apply, label, env, or RBAC
-# mutations. Empty snapshots ensure a fresh CI cluster is restored to absence.
-capture_original_state
-restore_needed=true
+# Both namespaces are exclusively managed by this run. Refusing either one up
+# front avoids overwriting unrelated ServiceAccounts, Services, Secrets,
+# ConfigMaps, or Deployments and makes namespace deletion a safe full cleanup.
+for managed_namespace in "$kube_namespace" "$fixture_namespace"; do
+  if [[ -n $(kubectl get namespace "$managed_namespace" --ignore-not-found -o name) ]]; then
+    echo "managed namespace '$managed_namespace' already exists; refusing to mutate it" >&2
+    exit 1
+  fi
+done
+
+# Snapshot cluster-scoped objects before namespace creation, apply, image load,
+# label, env, or RBAC mutations. Empty snapshots restore fresh CI clusters to
+# absence; pre-existing ClusterRole/ClusterRoleBinding objects are restored
+# exactly. The EXIT trap is already armed and the guard is enabled immediately.
+capture_original_cluster_state
+cluster_state_snapshot_needed=true
 
 start_port_forward() {
   : >"$port_forward_log"
@@ -339,7 +380,10 @@ grep -Fq "value: OAuthClientCredentials" "$deployment_manifest" || {
   exit 1
 }
 
-kubectl create namespace kube-mcp --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+# Direct creation makes ownership unambiguous: if a race creates this namespace
+# after the preflight, create fails and the cleanup trap will not delete it.
+kubectl create namespace "$kube_namespace" >/dev/null
+kube_namespace_owned=true
 kubectl apply --filename tests/integration/keycloak.yaml >/dev/null
 kubectl rollout restart deployment/keycloak --namespace kube-mcp >/dev/null
 kubectl rollout status deployment/keycloak --namespace kube-mcp --timeout=180s
@@ -397,13 +441,9 @@ service_account=system:serviceaccount:kube-mcp:kube-mcp
 [[ $(kubectl auth can-i list roles --namespace kube-mcp --as "$service_account") == "no" ]]
 [[ $(kubectl auth can-i create pods --namespace kube-mcp --as "$service_account") == "no" ]]
 
+kubectl create namespace "$fixture_namespace" >/dev/null
 fixture_namespace_owned=true
 kubectl apply -f - <<'EOF' >/dev/null
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: kube-mcp-e2e
----
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -498,14 +538,12 @@ run_integration_phase "AllowAll resource policy integration tests" \
   KUBE_MCP_NAMESPACE_POLICY_MODE=LabelSelector \
   KUBE_MCP_RESOURCE_POLICY_MODE=AllowAll
 
-# Explicit, checked restoration on the success path. Keep the EXIT guard armed
-# until replacement/deletion, exact-state verification, and any resulting
-# original Deployment rollout have all completed successfully.
-restore_original_state
-if [[ -s "$original_deployment" ]]; then
-  kubectl rollout status deployment/kube-mcp \
-    --namespace kube-mcp --timeout=120s
-fi
-restore_needed=false
+# Explicit, checked cleanup on the success path. Keep the EXIT guard armed until
+# both owned namespaces (and therefore every namespaced fixture) are gone and
+# both cluster-scoped snapshots have been restored and exactly verified.
+stop_port_forwards
+remove_owned_namespaces
+restore_original_cluster_state
+cluster_state_snapshot_needed=false
 
-echo "Stage 6 integration tests passed for audit logging, authentication, allowlist, AllowAll, blacklist, and label-selector modes. Original Deployment, ClusterRole, and kube-mcp access-label state restored."
+echo "Stage 6 integration tests passed for audit logging, authentication, allowlist, AllowAll, blacklist, and label-selector modes. Owned namespaces removed; original ClusterRole and ClusterRoleBinding state restored."

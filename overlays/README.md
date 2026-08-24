@@ -74,5 +74,8 @@ reapply `deployment.yaml`:
 kubectl delete clusterrole kube-mcp-reader-cnpg
 kubectl delete clusterrolebinding kube-mcp-reader-cnpg
 kubectl set env deployment/kube-mcp --namespace kube-mcp \
-  'KubeMcp__AllowedResources__clusters.postgresql.cnpg.io-'
+  'KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Group-' \
+  'KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Version-' \
+  'KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Resource-' \
+  'KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Kind-'
 ```
