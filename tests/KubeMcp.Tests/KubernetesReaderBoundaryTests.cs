@@ -23,6 +23,11 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
 
     public int LastListPageSize { get; private set; }
     public string? LastListContinueToken { get; private set; }
+    public byte[]? LastGetBodyBytes { get; private set; }
+    public byte[]? LastListBodyBytes { get; private set; }
+    public bool CoreResourcesComplete { get; set; } = true;
+    public bool ApiGroupsComplete { get; set; } = true;
+    public bool GroupResourcesComplete { get; set; } = true;
 
     public Func<KubernetesResourceDescriptor, string, string, int, CancellationToken, Task<string>>? GetHandler { get; set; }
     public Func<KubernetesResourceDescriptor, string, int, string?, int, CancellationToken, Task<string>>? ListHandler { get; set; }
@@ -39,7 +44,8 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
         var body = GetHandler is null
             ? "{}"
             : await GetHandler(descriptor, @namespace, name, maxBodyBytes, cancellationToken).ConfigureAwait(false);
-        return Encoding.UTF8.GetBytes(body);
+        LastGetBodyBytes = Encoding.UTF8.GetBytes(body);
+        return LastGetBodyBytes;
     }
 
     public async Task<ReadOnlyMemory<byte>> ListNamespacedAsync(
@@ -50,41 +56,49 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
         ListPageSizes.Add(pageSize);
         Record($"LIST {descriptor.QualifiedName} {@namespace} pageSize={pageSize} continue={continueToken ?? "<null>"} maxBody={maxBodyBytes}");
         var body = ListHandler is null
-            ? KubernetesJson.ListBody([], null)
+            ? KubernetesJson.ListBody(
+                [],
+                null,
+                descriptor.ApiVersion,
+                descriptor.Kind + "List")
             : await ListHandler(descriptor, @namespace, pageSize, continueToken, maxBodyBytes, cancellationToken).ConfigureAwait(false);
-        return Encoding.UTF8.GetBytes(body);
+        LastListBodyBytes = Encoding.UTF8.GetBytes(body);
+        return LastListBodyBytes;
     }
 
-    public async Task<IReadOnlyList<ApiResourceInfo>> GetCoreResourcesAsync(
+    public async Task<ApiDiscoveryResult<ApiResourceInfo>> GetCoreResourcesAsync(
         int maxBodyBytes,
         CancellationToken cancellationToken)
     {
         Record("DISCOVERY core");
-        return CoreResourcesHandler is null
+        var items = CoreResourcesHandler is null
             ? []
             : await CoreResourcesHandler(cancellationToken).ConfigureAwait(false);
+        return new ApiDiscoveryResult<ApiResourceInfo>(items, CoreResourcesComplete);
     }
 
-    public async Task<IReadOnlyList<ApiGroupInfo>> GetApiGroupsAsync(
+    public async Task<ApiDiscoveryResult<ApiGroupInfo>> GetApiGroupsAsync(
         int maxBodyBytes,
         CancellationToken cancellationToken)
     {
         Record("DISCOVERY groups");
-        return ApiGroupsHandler is null
+        var items = ApiGroupsHandler is null
             ? []
             : await ApiGroupsHandler(cancellationToken).ConfigureAwait(false);
+        return new ApiDiscoveryResult<ApiGroupInfo>(items, ApiGroupsComplete);
     }
 
-    public async Task<IReadOnlyList<ApiResourceInfo>> GetGroupResourcesAsync(
+    public async Task<ApiDiscoveryResult<ApiResourceInfo>> GetGroupResourcesAsync(
         string group,
         string version,
         int maxBodyBytes,
         CancellationToken cancellationToken)
     {
         Record($"DISCOVERY group {group}/{version}");
-        return GroupResourcesHandler is null
+        var items = GroupResourcesHandler is null
             ? []
             : await GroupResourcesHandler(group, version, cancellationToken).ConfigureAwait(false);
+        return new ApiDiscoveryResult<ApiResourceInfo>(items, GroupResourcesComplete);
     }
 
     public async Task<bool> IsResourceAccessAllowedAsync(
@@ -195,7 +209,8 @@ internal static class ReaderTestOptions
         int maxListPages = 20,
         int secretListPageSize = 10,
         int discoveryCacheSeconds = 300,
-        int discoveryParallelism = 4) => new()
+        int discoveryParallelism = 4,
+        int kubernetesRequestTimeoutSeconds = 15) => new()
         {
             SecretHmacKey = HmacKey,
             ResourcePolicy = new ResourcePolicyOptions { Mode = mode },
@@ -208,20 +223,24 @@ internal static class ReaderTestOptions
             MaxListPages = maxListPages,
             SecretListPageSize = secretListPageSize,
             DiscoveryCacheSeconds = discoveryCacheSeconds,
-            DiscoveryParallelism = discoveryParallelism
+            DiscoveryParallelism = discoveryParallelism,
+            KubernetesRequestTimeoutSeconds = kubernetesRequestTimeoutSeconds
         };
 }
 
 internal static class KubernetesJson
 {
-    public static string PodItem(string name, string node = "node-1") => JsonSerializer.Serialize(new
-    {
-        apiVersion = "v1",
-        kind = "Pod",
-        metadata = new { name, creationTimestamp = "2024-01-01T00:00:00Z" },
-        spec = new { nodeName = node },
-        status = new { phase = "Running", podIP = "10.0.0.1" }
-    });
+    public static string PodItem(
+        string name,
+        string node = "node-1",
+        string @namespace = "production") => JsonSerializer.Serialize(new
+        {
+            apiVersion = "v1",
+            kind = "Pod",
+            metadata = new { name, @namespace, creationTimestamp = "2024-01-01T00:00:00Z" },
+            spec = new { nodeName = node },
+            status = new { phase = "Running", podIP = "10.0.0.1" }
+        });
 
     public static string SecretGetBody(string name, string plaintext)
     {
@@ -251,7 +270,7 @@ internal static class KubernetesJson
         {
             apiVersion = "v1",
             kind = "Secret",
-            metadata = new { name, creationTimestamp = "2024-01-01T00:00:00Z" },
+            metadata = new { name, @namespace = "prod", creationTimestamp = "2024-01-01T00:00:00Z" },
             type = "Opaque",
             data = new { password = base64 }
         });
@@ -268,9 +287,17 @@ internal static class KubernetesJson
         });
     }
 
-    public static string ListBody(IEnumerable<string> itemJsons, string? nextContinue)
+    public static string ListBody(
+        IEnumerable<string> itemJsons,
+        string? nextContinue,
+        string apiVersion = "v1",
+        string kind = "PodList")
     {
-        var root = new JsonObject();
+        var root = new JsonObject
+        {
+            ["apiVersion"] = apiVersion,
+            ["kind"] = kind
+        };
         var metadata = new JsonObject();
         if (nextContinue is not null)
         {
@@ -356,6 +383,29 @@ public sealed class KubernetesBoundaryOptionsTests
     }
 
     [Fact]
+    public void AllowAllDiscoveryBodiesAreIncludedInAggregateMemoryBudget()
+    {
+        var baseline = ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll);
+        var options = new KubeMcpOptions
+        {
+            SecretHmacKey = baseline.SecretHmacKey,
+            ResourcePolicy = baseline.ResourcePolicy,
+            AllowedResources = baseline.AllowedResources,
+            NamespacePolicy = baseline.NamespacePolicy,
+            Authentication = new KubeMcpAuthenticationOptions { Mode = AuthenticationMode.None },
+            MaxUpstreamBodyBytes = 8 * 1024 * 1024,
+            DiscoveryParallelism = 8,
+            McpConcurrency = new McpConcurrencyOptions { PermitLimit = 2 }
+        };
+
+        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
+            .Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains("AllowAll discovery parallelism", result.FailureMessage);
+    }
+
+    [Fact]
     public void UpstreamBodyBudgetCannotBeSmallerThanSafeOutputBudget()
     {
         var valid = ReaderTestOptions.Options(maxResponseBytes: 128 * 1024);
@@ -383,6 +433,20 @@ public sealed class KubernetesBoundaryOptionsTests
 
 public sealed class KubernetesReaderPolicyAndOrderTests
 {
+    [Fact]
+    public async Task OversizedResourceIsRejectedBeforePolicyOrKubernetesCalls()
+    {
+        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
+        var oversized = new string('r', KubernetesNameValidator.MaximumQualifiedNameLength + 1);
+
+        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
+            host.Reader.ReadAsync(oversized, "production", null, CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.InvalidRequest, exception.Category);
+        Assert.Empty(host.Api.Calls);
+        Assert.DoesNotContain(oversized, exception.Message);
+    }
+
     [Fact]
     public async Task AllowlistDenialMakesNoKubernetesCall()
     {
@@ -544,7 +608,23 @@ public sealed class KubernetesReaderGetListTests
 public sealed class KubernetesReaderTimeoutTests
 {
     [Fact]
-    public async Task InternalTimeoutTranslatesToTimeoutCategory()
+    public async Task ConfiguredTimeoutTranslatesToTimeoutCategory()
+    {
+        using var host = new ReaderHost(ReaderTestOptions.Options(kubernetesRequestTimeoutSeconds: 1));
+        host.Api.ListHandler = async (_, _, _, _, _, cancellationToken) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return KubernetesJson.ListBody([], null);
+        };
+
+        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
+            host.Reader.ReadAsync("pods", "production", null, CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.Timeout, exception.Category);
+    }
+
+    [Fact]
+    public async Task UnrelatedOperationCanceledDoesNotMasqueradeAsTimeout()
     {
         using var host = new ReaderHost(ReaderTestOptions.Options());
         host.Api.ListHandler = (_, _, _, _, _, _) => throw new OperationCanceledException();
@@ -552,7 +632,7 @@ public sealed class KubernetesReaderTimeoutTests
         var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
             host.Reader.ReadAsync("pods", "production", null, CancellationToken.None));
 
-        Assert.Equal(KubernetesErrorCategory.Timeout, exception.Category);
+        Assert.Equal(KubernetesErrorCategory.Internal, exception.Category);
     }
 
     [Fact]
@@ -600,6 +680,7 @@ public sealed class KubernetesReaderSecretTests
         var password = data.GetProperty("password").GetString();
         Assert.StartsWith("hmac-sha256:", password);
         Assert.NotEqual(password, data.GetProperty("username").GetString());
+        Assert.All(host.Api.LastGetBodyBytes!, value => Assert.Equal(0, value));
     }
 
     [Fact]
@@ -609,7 +690,11 @@ public sealed class KubernetesReaderSecretTests
         using var host = new ReaderHost(options);
         const string plaintext = "s3cr3t-value";
         host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
-            KubernetesJson.ListBody([KubernetesJson.SecretListItem("db", plaintext)], null));
+            KubernetesJson.ListBody(
+                [KubernetesJson.SecretListItem("db", plaintext)],
+                null,
+                "v1",
+                "SecretList"));
 
         var result = await host.Reader.ReadAsync("secrets", "prod", null, CancellationToken.None);
 
@@ -624,6 +709,7 @@ public sealed class KubernetesReaderSecretTests
         Assert.Equal("Opaque", item.GetProperty("type").GetString());
         Assert.Equal("password", Assert.Single(item.GetProperty("keys").EnumerateArray()).GetString());
         Assert.False(item.TryGetProperty("data", out _));
+        Assert.All(host.Api.LastListBodyBytes!, value => Assert.Equal(0, value));
     }
 
     [Fact]
@@ -635,13 +721,145 @@ public sealed class KubernetesReaderSecretTests
         });
         using var host = new ReaderHost(options);
         host.Api.GetHandler = (_, _, _, _, _) => Task.FromResult(
-            "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"bad\"},\"data\":{\"password\":\"not base64!\"}}");
+            "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"bad\",\"namespace\":\"prod\"},\"data\":{\"password\":\"not base64!\"}}");
 
         var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
             host.Reader.ReadAsync("secrets", "prod", "bad", CancellationToken.None));
 
         Assert.Equal(KubernetesErrorCategory.MalformedResponse, exception.Category);
         Assert.Equal(KubernetesApi.SafeMessage(KubernetesErrorCategory.MalformedResponse), exception.Message);
+        Assert.All(host.Api.LastGetBodyBytes!, value => Assert.Equal(0, value));
+    }
+
+    [Theory]
+    [InlineData("\"data\":[]")]
+    [InlineData("\"stringData\":false")]
+    [InlineData("\"type\":{}")]
+    [InlineData("\"immutable\":\"true\"")]
+    public async Task MalformedSecretFieldsAreRejectedAndRawBodyIsCleared(
+        string malformedField)
+    {
+        var options = ReaderTestOptions.Options(resources: new()
+        {
+            ["secrets"] = ReaderTestOptions.R("", "v1", "secrets", "Secret")
+        });
+        using var host = new ReaderHost(options);
+        host.Api.GetHandler = (_, _, _, _, _) => Task.FromResult(
+            "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"bad\",\"namespace\":\"prod\"}," +
+            malformedField + "}");
+
+        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
+            host.Reader.ReadAsync("secrets", "prod", "bad", CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.MalformedResponse, exception.Category);
+        Assert.All(host.Api.LastGetBodyBytes!, value => Assert.Equal(0, value));
+    }
+
+    [Theory]
+    [InlineData("\"data\":[]")]
+    [InlineData("\"data\":{\"password\":false}")]
+    [InlineData("\"stringData\":false")]
+    [InlineData("\"stringData\":{\"password\":[]}")]
+    [InlineData("\"type\":{}")]
+    [InlineData("\"immutable\":\"true\"")]
+    public async Task MalformedSecretListFieldsAreRejectedAndRawPageIsCleared(
+        string malformedField)
+    {
+        var options = ReaderTestOptions.Options(resources: new()
+        {
+            ["secrets"] = ReaderTestOptions.R("", "v1", "secrets", "Secret")
+        });
+        using var host = new ReaderHost(options);
+        var item =
+            "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"bad\",\"namespace\":\"prod\"}," +
+            malformedField + "}";
+        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
+            KubernetesJson.ListBody([item], null, "v1", "SecretList"));
+
+        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
+            host.Reader.ReadAsync("secrets", "prod", null, CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.MalformedResponse, exception.Category);
+        Assert.All(host.Api.LastListBodyBytes!, value => Assert.Equal(0, value));
+    }
+
+    [Fact]
+    public async Task SecretListValidatesMalformedItemsOmittedByItemCap()
+    {
+        var options = ReaderTestOptions.Options(
+            resources: new()
+            {
+                ["secrets"] = ReaderTestOptions.R("", "v1", "secrets", "Secret")
+            },
+            maxListItems: 1);
+        using var host = new ReaderHost(options);
+        const string malformedItem =
+            "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"bad\",\"namespace\":\"prod\"},\"data\":{\"password\":false}}";
+        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
+            KubernetesJson.ListBody(
+                [KubernetesJson.SecretListItem("good", "safe"), malformedItem],
+                null,
+                "v1",
+                "SecretList"));
+
+        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
+            host.Reader.ReadAsync("secrets", "prod", null, CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.MalformedResponse, exception.Category);
+        Assert.All(host.Api.LastListBodyBytes!, value => Assert.Equal(0, value));
+    }
+
+    [Fact]
+    public async Task ContinueTokenScanDoesNotTreatSecretDataAsListMetadata()
+    {
+        var options = ReaderTestOptions.Options(resources: new()
+        {
+            ["secrets"] = ReaderTestOptions.R("", "v1", "secrets", "Secret")
+        });
+        using var host = new ReaderHost(options);
+        var item = JsonSerializer.Serialize(new
+        {
+            apiVersion = "v1",
+            kind = "Secret",
+            metadata = new { name = "db", @namespace = "prod" },
+            data = new Dictionary<string, string>
+            {
+                ["continue"] = new string('x', KubernetesApi.MaximumContinueTokenBytes + 1)
+            }
+        });
+        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
+            KubernetesJson.ListBody([item], null, "v1", "SecretList"));
+
+        var result = await host.Reader.ReadAsync(
+            "secrets",
+            "prod",
+            null,
+            CancellationToken.None);
+
+        using var document = JsonDocument.Parse(result.Json);
+        Assert.Equal(1, document.RootElement.GetProperty("count").GetInt32());
+        Assert.Equal("continue", Assert.Single(document.RootElement
+            .GetProperty("items")[0]
+            .GetProperty("keys")
+            .EnumerateArray()).GetString());
+        Assert.All(host.Api.LastListBodyBytes!, value => Assert.Equal(0, value));
+    }
+
+    [Fact]
+    public async Task MalformedSecretListStillClearsRawPage()
+    {
+        var options = ReaderTestOptions.Options(resources: new()
+        {
+            ["secrets"] = ReaderTestOptions.R("", "v1", "secrets", "Secret")
+        });
+        using var host = new ReaderHost(options);
+        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult("{}");
+
+        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
+            host.Reader.ReadAsync("secrets", "prod", null, CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.MalformedResponse, exception.Category);
+        Assert.All(host.Api.LastListBodyBytes!, value => Assert.Equal(0, value));
     }
 
     [Fact]
@@ -708,15 +926,63 @@ public sealed class KubernetesReaderErrorTests
     }
 
     [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"name\":\"other\",\"namespace\":\"production\"}}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"name\":\"web-1\",\"namespace\":\"production\"}}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"name\":\"web-1\"}}")]
+    [InlineData("{\"APIVERSION\":\"v1\",\"KIND\":\"Pod\",\"metadata\":{\"name\":\"web-1\",\"namespace\":\"production\"}}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"ApiVersion\":\"evil/v9\",\"kind\":\"Pod\",\"metadata\":{\"name\":\"web-1\",\"namespace\":\"production\"}}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"name\":\"web-1\",\"namespace\":\"production\"},\"Metadata\":{\"name\":\"other\",\"namespace\":\"other\"}}")]
+    public async Task GetRequiresExpectedKubernetesObjectIdentity(string body)
+    {
+        using var host = new ReaderHost(ReaderTestOptions.Options());
+        host.Api.GetHandler = (_, _, _, _, _) => Task.FromResult(body);
+
+        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
+            host.Reader.ReadAsync("pods", "production", "web-1", CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.MalformedResponse, exception.Category);
+    }
+
+    [Theory]
     [InlineData("[]")]
     [InlineData("{}")]
     [InlineData("{\"items\":null}")]
     [InlineData("{\"items\":[null]}")]
     [InlineData("{\"metadata\":{\"continue\":42},\"items\":[]}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"ServiceList\",\"metadata\":{},\"items\":[]}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"metadata\":{},\"items\":[{}]}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"metadata\":{},\"items\":[{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"name\":\"p1\",\"namespace\":\"other\"}}]}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"metadata\":{},\"items\":[{\"APIVERSION\":\"v1\",\"KIND\":\"Pod\",\"metadata\":{\"name\":\"p1\",\"namespace\":\"production\"}}]}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"metadata\":{},\"items\":[{\"apiVersion\":\"v1\",\"ApiVersion\":\"evil/v9\",\"kind\":\"Pod\",\"metadata\":{\"name\":\"p1\",\"namespace\":\"production\"}}]}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"metadata\":{},\"items\":[{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"name\":\"p1\",\"namespace\":\"production\"},\"Metadata\":{\"name\":\"other\",\"namespace\":\"other\"}}]}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"metadata\":{},\"items\":[],\"Items\":[]}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"metadata\":{\"continue\":\"c1\",\"Continue\":\"c2\"},\"items\":[]}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"metadata\":{\"continue\":\"c1\",\"continue\":\"c2\"},\"items\":[]}")]
+    [InlineData("{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"metadata\":{\"continue\":\"\\uD800\"},\"items\":[]}")]
     public async Task MalformedListShapeMapsToMalformedCategory(string body)
     {
         using var host = new ReaderHost(ReaderTestOptions.Options());
         host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(body);
+
+        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
+            host.Reader.ReadAsync("pods", "production", null, CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.MalformedResponse, exception.Category);
+    }
+
+    [Fact]
+    public async Task ListValidatesMalformedItemsOmittedByItemCap()
+    {
+        var options = ReaderTestOptions.Options(maxListItems: 1);
+        using var host = new ReaderHost(options);
+        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
+            KubernetesJson.ListBody(
+                [
+                    KubernetesJson.PodItem("p1"),
+                    KubernetesJson.PodItem("p2", @namespace: "other")
+                ],
+                null));
 
         var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
             host.Reader.ReadAsync("pods", "production", null, CancellationToken.None));
@@ -822,6 +1088,48 @@ public sealed class KubernetesReaderPaginationTests
     }
 
     [Fact]
+    public async Task OversizedContinueTokenIsRejectedBeforeReplay()
+    {
+        using var host = new ReaderHost(ReaderTestOptions.Options(maxListPages: 100));
+        var oversizedToken = new string('t', KubernetesApi.MaximumContinueTokenBytes + 1);
+        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
+            KubernetesJson.ListBody([], oversizedToken));
+
+        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
+            host.Reader.ReadAsync("pods", "production", null, CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.MalformedResponse, exception.Category);
+        Assert.Equal(1, host.Api.Calls.Count(call => call.StartsWith("LIST")));
+    }
+
+    [Fact]
+    public async Task EscapedContinueTokenIsMeasuredAfterBoundedDecoding()
+    {
+        using var host = new ReaderHost(ReaderTestOptions.Options(maxListPages: 2));
+        var decodedToken = new string('t', 1400);
+        var escapedToken = string.Concat(Enumerable.Repeat("\\u0074", decodedToken.Length));
+        var firstPage =
+            "{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"metadata\":{\"continue\":\"" +
+            escapedToken + "\"},\"items\":[]}";
+        host.Api.ListHandler = (_, _, _, continueToken, _, _) => continueToken switch
+        {
+            null => Task.FromResult(firstPage),
+            _ when continueToken == decodedToken => Task.FromResult(KubernetesJson.ListBody([], null)),
+            _ => throw new InvalidOperationException("unexpected continue token")
+        };
+
+        var result = await host.Reader.ReadAsync(
+            "pods",
+            "production",
+            null,
+            CancellationToken.None);
+
+        using var document = JsonDocument.Parse(result.Json);
+        Assert.False(document.RootElement.GetProperty("limited").GetBoolean());
+        Assert.Equal(2, host.Api.Calls.Count(call => call.StartsWith("LIST")));
+    }
+
+    [Fact]
     public async Task ItemCapMarksLimitedAndAvoidsExtraPageFetch()
     {
         var options = ReaderTestOptions.Options(maxListItems: 3, listPageSize: 2);
@@ -840,6 +1148,98 @@ public sealed class KubernetesReaderPaginationTests
         Assert.True(document.RootElement.GetProperty("limited").GetBoolean());
         Assert.Equal(2, host.Api.Calls.Count(c => c.StartsWith("LIST")));
         Assert.Equal([2, 2], host.Api.ListPageSizes);
+    }
+
+    [Fact]
+    public async Task IncrementalUtf8AccountingAcceptsExactSerializedBudget()
+    {
+        static ReaderHost CreateHost(int maxResponseBytes)
+        {
+            var host = new ReaderHost(ReaderTestOptions.Options(
+                maxResponseBytes: maxResponseBytes,
+                listPageSize: 1));
+            host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
+                KubernetesJson.ListBody([KubernetesJson.PodItem("pod-1", "nødé-東京")], null));
+            return host;
+        }
+
+        int exactBytes;
+        using (var baseline = CreateHost(4096))
+        {
+            var result = await baseline.Reader.ReadAsync(
+                "pods",
+                "production",
+                null,
+                CancellationToken.None);
+            exactBytes = Encoding.UTF8.GetByteCount(result.Json);
+        }
+
+        using (var exact = CreateHost(exactBytes))
+        {
+            var result = await exact.Reader.ReadAsync(
+                "pods",
+                "production",
+                null,
+                CancellationToken.None);
+            using var document = JsonDocument.Parse(result.Json);
+            Assert.Equal(1, document.RootElement.GetProperty("count").GetInt32());
+            Assert.Equal(exactBytes, Encoding.UTF8.GetByteCount(result.Json));
+        }
+
+        using (var oneByteShort = CreateHost(exactBytes - 1))
+        {
+            var result = await oneByteShort.Reader.ReadAsync(
+                "pods",
+                "production",
+                null,
+                CancellationToken.None);
+            using var document = JsonDocument.Parse(result.Json);
+            Assert.Equal(0, document.RootElement.GetProperty("count").GetInt32());
+            Assert.True(document.RootElement.GetProperty("limited").GetBoolean());
+        }
+    }
+
+    [Fact]
+    public async Task IncrementalAccountingUsesExactLimitedMarkerSize()
+    {
+        var page = new[]
+        {
+            KubernetesJson.PodItem("pod-1"),
+            KubernetesJson.PodItem("pod-2"),
+            KubernetesJson.PodItem("pod-3")
+        };
+
+        int exactLimitedBytes;
+        using (var baseline = new ReaderHost(ReaderTestOptions.Options(
+                   maxListItems: 2,
+                   maxResponseBytes: 4096)))
+        {
+            baseline.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
+                KubernetesJson.ListBody(page, null));
+            var result = await baseline.Reader.ReadAsync(
+                "pods",
+                "production",
+                null,
+                CancellationToken.None);
+            exactLimitedBytes = Encoding.UTF8.GetByteCount(result.Json);
+        }
+
+        using var exact = new ReaderHost(ReaderTestOptions.Options(
+            maxListItems: 100,
+            maxResponseBytes: exactLimitedBytes));
+        exact.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
+            KubernetesJson.ListBody(page, null));
+
+        var exactResult = await exact.Reader.ReadAsync(
+            "pods",
+            "production",
+            null,
+            CancellationToken.None);
+
+        using var document = JsonDocument.Parse(exactResult.Json);
+        Assert.Equal(2, document.RootElement.GetProperty("count").GetInt32());
+        Assert.True(document.RootElement.GetProperty("limited").GetBoolean());
+        Assert.Equal(exactLimitedBytes, Encoding.UTF8.GetByteCount(exactResult.Json));
     }
 
     [Fact]
@@ -872,7 +1272,8 @@ public sealed class KubernetesReaderPaginationTests
             secretListPageSize: 10);
 
         using var host = new ReaderHost(options);
-        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(KubernetesJson.ListBody([], null));
+        host.Api.ListHandler = (descriptor, _, _, _, _, _) => Task.FromResult(
+            KubernetesJson.ListBody([], null, descriptor.ApiVersion, descriptor.Kind + "List"));
 
         await host.Reader.ReadAsync("pods", "production", null, CancellationToken.None);
         Assert.Equal(50, host.Api.LastListPageSize);
@@ -890,7 +1291,7 @@ public sealed class KubernetesReaderPaginationTests
         });
         using var host = new ReaderHost(options);
         host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
-            KubernetesJson.ListBody([], null));
+            KubernetesJson.ListBody([], null, "postgresql.cnpg.io/v1", "ClusterList"));
 
         var result = await host.Reader.ReadAsync("cnpg-clusters", "db", null, CancellationToken.None);
 
@@ -920,7 +1321,8 @@ public sealed class KubernetesReaderDiscoveryTests
             "batch" => [KubernetesJson.Resource("jobs", "job", "Job", "get", "list")],
             _ => []
         });
-        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(KubernetesJson.ListBody([], null));
+        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
+            KubernetesJson.ListBody([], null, "apps/v1", "DeploymentList"));
 
         await host.Reader.ReadAsync("deployments", "production", null, CancellationToken.None);
 
@@ -949,7 +1351,8 @@ public sealed class KubernetesReaderDiscoveryTests
                 503),
             _ => []
         });
-        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(KubernetesJson.ListBody([], null));
+        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
+            KubernetesJson.ListBody([], null, "batch/v1", "JobList"));
 
         var jobsResult = await host.Reader.ReadAsync("jobs.batch", "production", null, CancellationToken.None);
         Assert.NotNull(jobsResult);
@@ -965,6 +1368,89 @@ public sealed class KubernetesReaderDiscoveryTests
         var broken = await Assert.ThrowsAsync<KubernetesReadException>(() =>
             host.Reader.ReadAsync("widgets", "production", null, CancellationToken.None));
         Assert.Equal(KubernetesErrorCategory.NotFound, broken.Category);
+    }
+
+    [Fact]
+    public async Task IncompleteGroupIndexNeverExpandsAliases()
+    {
+        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
+        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>([]);
+        host.Api.ApiGroupsComplete = false;
+        host.Api.ApiGroupsHandler = _ => Task.FromResult<IReadOnlyList<ApiGroupInfo>>([new("apps", "v1")]);
+        host.Api.GroupResourcesHandler = (_, _, _) => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
+            [new ApiResourceInfo(
+                "deployments",
+                "deployment",
+                "Deployment",
+                Namespaced: true,
+                ShortNames: ["deploy"],
+                Verbs: ["list"])]);
+
+        await host.Reader.ReadAsync("deployments.apps", "production", null, CancellationToken.None);
+        var alias = await Assert.ThrowsAsync<KubernetesReadException>(() =>
+            host.Reader.ReadAsync("deploy", "production", null, CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.NotFound, alias.Category);
+    }
+
+    [Fact]
+    public async Task PerDocumentResourceCapMarksDiscoveryIncomplete()
+    {
+        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
+        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>([]);
+        host.Api.ApiGroupsHandler = _ => Task.FromResult<IReadOnlyList<ApiGroupInfo>>([new("example.io", "v1")]);
+        host.Api.GroupResourcesHandler = (_, _, _) => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
+            Enumerable.Range(0, KubernetesApi.MaximumResourcesPerDiscoveryDocument + 1)
+                .Select(index => new ApiResourceInfo(
+                    $"widgets-{index}",
+                    $"widget-{index}",
+                    "Widget",
+                    Namespaced: true,
+                    ShortNames: index == 0 ? ["target"] : null,
+                    Verbs: ["list"]))
+                .ToArray());
+
+        await host.Reader.ReadAsync("widgets-0.example.io", "production", null, CancellationToken.None);
+        var alias = await Assert.ThrowsAsync<KubernetesReadException>(() =>
+            host.Reader.ReadAsync("target", "production", null, CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.NotFound, alias.Category);
+    }
+
+    [Fact]
+    public async Task AggregateDiscoveryCacheCapStopsGrowthAndDisablesAliases()
+    {
+        var options = ReaderTestOptions.Options(
+            mode: ResourcePolicyMode.AllowAll,
+            discoveryParallelism: 1);
+        using var host = new ReaderHost(options);
+        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
+            Enumerable.Range(0, KubernetesApi.MaximumResourcesPerDiscoveryDocument)
+                .Select(index => KubernetesJson.Resource(
+                    $"core-{index}",
+                    $"core-{index}",
+                    "CoreThing",
+                    "list"))
+                .ToArray());
+        host.Api.ApiGroupsHandler = _ => Task.FromResult<IReadOnlyList<ApiGroupInfo>>(
+            [new("g1.example", "v1"), new("g2.example", "v1")]);
+        host.Api.GroupResourcesHandler = (group, _, _) => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
+            Enumerable.Range(0, KubernetesApi.MaximumResourcesPerDiscoveryDocument)
+                .Select(index => new ApiResourceInfo(
+                    $"items-{index}",
+                    $"item-{index}",
+                    "Item",
+                    Namespaced: true,
+                    ShortNames: group == "g1.example" && index == 0 ? ["target"] : null,
+                    Verbs: ["list"]))
+                .ToArray());
+
+        await host.Reader.ReadAsync("items-0.g1.example", "production", null, CancellationToken.None);
+        var alias = await Assert.ThrowsAsync<KubernetesReadException>(() =>
+            host.Reader.ReadAsync("target", "production", null, CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.NotFound, alias.Category);
+        Assert.DoesNotContain(host.Api.Calls, call => call == "DISCOVERY group g2.example/v1");
     }
 
     [Fact]

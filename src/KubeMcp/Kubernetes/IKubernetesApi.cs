@@ -16,6 +16,15 @@ public sealed record ApiResourceInfo(
 public sealed record ApiGroupInfo(string Name, string PreferredVersion);
 
 /// <summary>
+/// A bounded discovery result. <see cref="IsComplete"/> is false when the
+/// adapter had to omit entries, so callers can fail closed instead of expanding
+/// aliases from a partial view of the cluster.
+/// </summary>
+public sealed record ApiDiscoveryResult<T>(
+    IReadOnlyList<T> Items,
+    bool IsComplete);
+
+/// <summary>
 /// Narrow, testable access to the Kubernetes API. All network access used by
 /// <see cref="KubernetesReader"/> and readiness passes through this boundary.
 /// </summary>
@@ -42,15 +51,15 @@ public interface IKubernetesApi : IDisposable
         int maxBodyBytes,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<ApiResourceInfo>> GetCoreResourcesAsync(
+    Task<ApiDiscoveryResult<ApiResourceInfo>> GetCoreResourcesAsync(
         int maxBodyBytes,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<ApiGroupInfo>> GetApiGroupsAsync(
+    Task<ApiDiscoveryResult<ApiGroupInfo>> GetApiGroupsAsync(
         int maxBodyBytes,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<ApiResourceInfo>> GetGroupResourcesAsync(
+    Task<ApiDiscoveryResult<ApiResourceInfo>> GetGroupResourcesAsync(
         string group,
         string version,
         int maxBodyBytes,

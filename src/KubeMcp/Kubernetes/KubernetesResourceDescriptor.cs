@@ -6,6 +6,10 @@ public sealed record KubernetesResourceDescriptor(
     string Resource,
     string Kind)
 {
+    public string ApiVersion => string.IsNullOrEmpty(Group)
+        ? Version
+        : $"{Group}/{Version}";
+
     public string QualifiedName => string.IsNullOrEmpty(Group)
         ? Resource
         : $"{Resource}.{Group}";

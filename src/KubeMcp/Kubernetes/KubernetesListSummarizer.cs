@@ -82,6 +82,13 @@ public sealed class KubernetesListSummarizer(
         return SummarizeFallback(item, descriptor);
     }
 
+    internal JsonObject SummarizeSecret(JsonElement item)
+    {
+        var result = secretSanitizer.SanitizeListItem(item);
+        AddAge(result, item);
+        return result;
+    }
+
     private JsonObject SummarizePod(DynamicKubernetesObject item)
     {
         var spec = ObjectProperty(item, "spec");
@@ -564,6 +571,23 @@ public sealed class KubernetesListSummarizer(
         }
     }
 
+    private void AddAge(JsonObject result, JsonElement item)
+    {
+        var creationTimestamp = MetadataString(item, "creationTimestamp");
+        if (DateTimeOffset.TryParse(
+                creationTimestamp,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal,
+                out var created))
+        {
+            result["age"] = FormatAge(timeProvider.GetUtcNow() - created);
+        }
+        else
+        {
+            result["age"] = null;
+        }
+    }
+
     private static string FormatAge(TimeSpan age)
     {
         if (age < TimeSpan.Zero)
@@ -884,6 +908,9 @@ public sealed class KubernetesListSummarizer(
             : null;
 
     private static string? MetadataString(DynamicKubernetesObject item, string name) =>
+        StringProperty(ObjectProperty(item, "metadata"), name);
+
+    private static string? MetadataString(JsonElement item, string name) =>
         StringProperty(ObjectProperty(item, "metadata"), name);
 
     private static string? StringProperty(JsonElement? source, string name) =>

@@ -48,6 +48,10 @@ public sealed class KubernetesGetTool
         string? name = null,
         CancellationToken cancellationToken = default)
     {
+        // Never copy an oversized caller-controlled resource into policy errors,
+        // logs, or audit records. The validator below rejects it before the
+        // reader can perform allowlist or discovery work.
+        var diagnosticResource = KubernetesNameValidator.BoundedResourceForDiagnostics(resource);
         var operation = name is null ? "LIST" : "GET";
         var stopwatch = Stopwatch.StartNew();
         using var activity = telemetry?.StartKubernetesRequest(operation);
@@ -59,6 +63,7 @@ public sealed class KubernetesGetTool
 
         try
         {
+            KubernetesNameValidator.ValidateResourceIdentifierLength(resource);
             var response = await reader.ReadAsync(resource, @namespace, name, cancellationToken);
             result = "success";
             category = AuditCategories.Success;
@@ -99,7 +104,7 @@ public sealed class KubernetesGetTool
             logger.LogWarning(
                 "Kubernetes {Operation} failed for resource {Resource} in namespace {Namespace}. Exception type: {ExceptionType}",
                 operation,
-                resource,
+                diagnosticResource,
                 @namespace,
                 exception.GetType().Name);
             throw new McpException(KubernetesErrorDetails.Get(KubernetesErrorCategory.Internal).Message);
@@ -121,7 +126,7 @@ public sealed class KubernetesGetTool
             {
                 auditLogger.LogKubernetesAccess(new KubernetesAuditEvent(
                     operation,
-                    resource,
+                    diagnosticResource,
                     @namespace,
                     name,
                     result,

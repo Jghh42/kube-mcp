@@ -4,6 +4,23 @@ namespace KubeMcp.Kubernetes;
 
 public static partial class KubernetesNameValidator
 {
+    public const int MaximumQualifiedNameLength = 253;
+
+    public static void ValidateResourceIdentifierLength(string? resource)
+    {
+        if (resource is not null && resource.Length > MaximumQualifiedNameLength)
+        {
+            throw new KubernetesReadException(
+                $"resource must not exceed {MaximumQualifiedNameLength} characters.",
+                KubernetesErrorCategory.InvalidRequest);
+        }
+    }
+
+    internal static string BoundedResourceForDiagnostics(string? resource) =>
+        resource is not null && resource.Length <= MaximumQualifiedNameLength
+            ? resource
+            : "<invalid-resource>";
+
     public static void ValidateNamespace(string @namespace)
     {
         if (@namespace.Length > 63 || !DnsLabelRegex().IsMatch(@namespace))
@@ -16,7 +33,7 @@ public static partial class KubernetesNameValidator
 
     public static void ValidateResourceName(string name)
     {
-        if (name.Length > 253 || name.Split('.').Any(label =>
+        if (name.Length > MaximumQualifiedNameLength || name.Split('.').Any(label =>
                 label.Length > 63 || !DnsLabelRegex().IsMatch(label)))
         {
             throw new KubernetesReadException(

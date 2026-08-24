@@ -1,4 +1,7 @@
 using System.Collections.Concurrent;
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -12,9 +15,29 @@ namespace KubeMcp.Kubernetes;
 
 public sealed class KubernetesReader : IKubernetesReader, IDisposable
 {
-    private const int ListFrameOverheadBytes = 256;
+    internal const int MaximumCachedDiscoveryResources = 2048;
+    private const int MaximumAliasesPerDiscoveredResource = 16;
 
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private const string ListPrefix = "{\"operation\":\"LIST\",\"resource\":";
+    private const string ListCanonicalResource = ",\"canonicalResource\":";
+    private const string ListNamespace = ",\"namespace\":";
+    private const string ListItems = ",\"items\":[";
+    private const string ListCount = "],\"count\":";
+    private const string ListLimited = ",\"limited\":";
+    private const string ListSuffix = "}";
+
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = false
+    };
+    private static readonly int ListFixedFramingBytes = Encoding.UTF8.GetByteCount(
+        ListPrefix +
+        ListCanonicalResource +
+        ListNamespace +
+        ListItems +
+        ListCount +
+        ListLimited +
+        ListSuffix);
 
     private readonly IKubernetesApi api;
     private readonly SecretSanitizer secretSanitizer;
@@ -55,6 +78,9 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         string? name,
         CancellationToken cancellationToken)
     {
+        // Reject an oversized caller value before trimming or copying it into
+        // allowlist/discovery lookups and dynamic error text.
+        KubernetesNameValidator.ValidateResourceIdentifierLength(resource);
         resource = RequiredValue(resource, nameof(resource));
         @namespace = RequiredValue(@namespace, nameof(@namespace));
         name = name is null ? null : RequiredValue(name, nameof(name));
@@ -103,11 +129,24 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
                 name is null ? safeResult["count"]?.GetValue<int>() ?? 0 : 1,
                 descriptor.IsSecret);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
             throw new KubernetesReadException(
                 "The Kubernetes request timed out.",
                 KubernetesErrorCategory.Timeout);
+        }
+        catch (OperationCanceledException ex)
+        {
+            logger.LogWarning(
+                "Unexpected Kubernetes cancellation: {ExceptionType}",
+                ex.GetType().Name);
+            throw new KubernetesReadException(
+                "The Kubernetes API request failed.",
+                KubernetesErrorCategory.Internal);
         }
         catch (KubernetesApiException ex)
         {
@@ -134,38 +173,51 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     {
         var body = await api.GetNamespacedAsync(
             descriptor, @namespace, name, options.MaxUpstreamBodyBytes, cancellationToken).ConfigureAwait(false);
-        cancellationToken.ThrowIfCancellationRequested();
 
-        DynamicKubernetesObject item;
         try
         {
-            item = JsonSerializer.Deserialize<DynamicKubernetesObject>(body.Span, SerializerOptions) ??
-                   throw new KubernetesApiException(
-                       KubernetesErrorCategory.MalformedResponse,
-                       KubernetesApi.SafeMessage(KubernetesErrorCategory.MalformedResponse));
-        }
-        catch (JsonException)
-        {
-            throw new KubernetesApiException(
-                KubernetesErrorCategory.MalformedResponse,
-                KubernetesApi.SafeMessage(KubernetesErrorCategory.MalformedResponse));
-        }
+            cancellationToken.ThrowIfCancellationRequested();
 
-        cancellationToken.ThrowIfCancellationRequested();
-        if (!descriptor.IsSecret)
-        {
+            using var document = ParseBody(body);
+            ValidateObjectIdentity(document.RootElement, descriptor, @namespace, name);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (descriptor.IsSecret)
+            {
+                try
+                {
+                    // Sanitize directly from the document so raw Secret fields are
+                    // not cloned into a second JsonElement backing buffer.
+                    return secretSanitizer.SanitizeGet(document.RootElement);
+                }
+                catch (Exception ex) when (ex is KubernetesReadException or InvalidOperationException)
+                {
+                    // Invalid Secret data is malformed upstream content. Replace the
+                    // sanitizer detail with the same fixed boundary category/message.
+                    throw MalformedResponseException();
+                }
+            }
+
+            DynamicKubernetesObject item;
+            try
+            {
+                item = document.RootElement.Deserialize<DynamicKubernetesObject>(SerializerOptions) ??
+                       throw MalformedResponseException();
+            }
+            catch (JsonException)
+            {
+                throw MalformedResponseException();
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
             return ToJsonObject(item);
         }
-
-        try
+        finally
         {
-            return secretSanitizer.SanitizeGet(item);
-        }
-        catch (KubernetesReadException)
-        {
-            // Invalid Secret data is malformed upstream content. Replace the
-            // sanitizer detail with the same fixed boundary category/message.
-            throw MalformedResponseException();
+            if (descriptor.IsSecret)
+            {
+                ZeroRawBody(body);
+            }
         }
     }
 
@@ -183,7 +235,13 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         var budgetHit = false;
         var pageCapHit = false;
         var pagesFetched = 0;
-        var seenContinueTokens = new HashSet<string>(StringComparer.Ordinal);
+        var itemsContentBytes = 0L;
+        var requestedResourceBytes = SerializedStringByteCount(requestedResource);
+        var canonicalResourceBytes = SerializedStringByteCount(descriptor.QualifiedName);
+        var namespaceBytes = SerializedStringByteCount(@namespace);
+        var seenContinueTokens = new HashSet<string>(
+            Math.Min(options.MaxListPages, 100),
+            StringComparer.Ordinal);
         string? continueToken = null;
 
         do
@@ -203,47 +261,125 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
                 descriptor, @namespace, pageSize, continueToken, options.MaxUpstreamBodyBytes, cancellationToken)
                 .ConfigureAwait(false);
             pagesFetched++;
-            cancellationToken.ThrowIfCancellationRequested();
+            string? nextContinue;
 
-            using var document = ParseListBody(body);
-            cancellationToken.ThrowIfCancellationRequested();
-            if (document.RootElement.ValueKind != JsonValueKind.Object ||
-                !document.RootElement.TryGetProperty("items", out var itemsElement) ||
-                itemsElement.ValueKind != JsonValueKind.Array)
-            {
-                throw new KubernetesApiException(
-                    KubernetesErrorCategory.MalformedResponse,
-                    KubernetesApi.SafeMessage(KubernetesErrorCategory.MalformedResponse));
-            }
-
-            string? nextContinue = ReadContinueToken(document.RootElement);
-            if (!string.IsNullOrEmpty(nextContinue) && !seenContinueTokens.Add(nextContinue))
-            {
-                throw MalformedResponseException();
-            }
-
-            // Summarize each item and drop the raw object promptly so raw Secret
-            // values do not outlive the page. Stop as soon as the item or safe
-            // response budget is reached.
-            foreach (var itemElement in itemsElement.EnumerateArray())
+            try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (items.Count >= maxItems)
+                EnsureContinueTokenBounded(body.Span);
+                using (var document = ParseBody(body))
                 {
-                    itemCapHit = true;
-                    break;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var itemsElement = ValidateListIdentity(
+                        document.RootElement,
+                        descriptor);
+
+                    nextContinue = ReadContinueToken(document.RootElement);
+                    if (!string.IsNullOrEmpty(nextContinue) && !seenContinueTokens.Add(nextContinue))
+                    {
+                        throw MalformedResponseException();
+                    }
+
+                    // Validate every object in an already-fetched page, including
+                    // entries omitted by a local output cap. Serialize each emitted
+                    // safe summary once for exact O(n) compact UTF-8 accounting.
+                    var sourceItemIndex = 0;
+                    var sourceItemCount = itemsElement.GetArrayLength();
+                    foreach (var itemElement in itemsElement.EnumerateArray())
+                    {
+                        sourceItemIndex++;
+                        cancellationToken.ThrowIfCancellationRequested();
+                        ValidateObjectIdentity(
+                            itemElement,
+                            descriptor,
+                            @namespace,
+                            expectedName: null);
+
+                        if (items.Count >= maxItems)
+                        {
+                            itemCapHit = true;
+                        }
+
+                        if (itemCapHit || budgetHit)
+                        {
+                            if (descriptor.IsSecret)
+                            {
+                                ValidateSecretListItem(itemElement);
+                            }
+
+                            continue;
+                        }
+
+                        JsonObject summary;
+                        if (descriptor.IsSecret)
+                        {
+                            try
+                            {
+                                summary = listSummarizer.SummarizeSecret(itemElement);
+                            }
+                            catch (Exception ex) when (ex is KubernetesReadException or InvalidOperationException)
+                            {
+                                throw MalformedResponseException();
+                            }
+                        }
+                        else
+                        {
+                            var item = ParseListItem(itemElement);
+                            try
+                            {
+                                summary = listSummarizer.Summarize(item, descriptor);
+                            }
+                            catch (InvalidOperationException)
+                            {
+                                throw MalformedResponseException();
+                            }
+                        }
+
+                        var summaryBytes = JsonSerializer.SerializeToUtf8Bytes(
+                            summary,
+                            SerializerOptions).LongLength;
+                        var prospectiveItemsBytes = itemsContentBytes +
+                            (items.Count == 0 ? 0 : 1) +
+                            summaryBytes;
+                        var prospectiveCount = items.Count + 1;
+                        var completeResponseBytes = ListResponseByteCount(
+                            requestedResourceBytes,
+                            canonicalResourceBytes,
+                            namespaceBytes,
+                            prospectiveItemsBytes,
+                            prospectiveCount,
+                            limited: false);
+
+                        if (completeResponseBytes > options.MaxResponseBytes)
+                        {
+                            var moreDataExists = sourceItemIndex < sourceItemCount ||
+                                !string.IsNullOrEmpty(nextContinue);
+                            var limitedResponseBytes = completeResponseBytes - 1;
+                            if (moreDataExists && limitedResponseBytes <= options.MaxResponseBytes)
+                            {
+                                // The shorter `true` marker is now semantically
+                                // accurate because this page or a continuation has
+                                // known omitted data.
+                                items.Add(summary);
+                                itemsContentBytes = prospectiveItemsBytes;
+                            }
+
+                            budgetHit = true;
+                            continue;
+                        }
+
+                        items.Add(summary);
+                        itemsContentBytes = prospectiveItemsBytes;
+                    }
                 }
-
-                var item = ParseListItem(itemElement);
-                var summary = listSummarizer.Summarize(item, descriptor);
-                items.Add(summary);
-
-                if (Encoding.UTF8.GetByteCount(items.ToJsonString(SerializerOptions)) + ListFrameOverheadBytes >
-                    options.MaxResponseBytes)
+            }
+            finally
+            {
+                if (descriptor.IsSecret)
                 {
-                    items.RemoveAt(items.Count - 1);
-                    budgetHit = true;
-                    break;
+                    // JsonDocument can reference the input memory, so clear only
+                    // after it and all per-item JsonElements have been disposed.
+                    ZeroRawBody(body);
                 }
             }
 
@@ -279,25 +415,266 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
             ["limited"] = limited
         };
 
-        // Final guard so the serialized safe output never exceeds the budget even
-        // when the per-item estimate under-counted the response framing.
-        if (Encoding.UTF8.GetByteCount(response.ToJsonString(SerializerOptions)) > options.MaxResponseBytes)
-        {
-            limited = true;
-            while (items.Count > 0 &&
-                   Encoding.UTF8.GetByteCount(response.ToJsonString(SerializerOptions)) > options.MaxResponseBytes)
-            {
-                items.RemoveAt(items.Count - 1);
-            }
-
-            response["count"] = items.Count;
-            response["limited"] = true;
-        }
-
+        // ReadAsync performs one final serialization guard for both GET and LIST,
+        // verifying this incremental accounting without a trimming loop.
         return response;
     }
 
-    private static JsonDocument ParseListBody(ReadOnlyMemory<byte> body)
+    private void ValidateSecretListItem(JsonElement item)
+    {
+        try
+        {
+            secretSanitizer.ValidateListItem(item);
+        }
+        catch (Exception ex) when (ex is KubernetesReadException or InvalidOperationException)
+        {
+            throw MalformedResponseException();
+        }
+    }
+
+    private static long SerializedStringByteCount(string value) =>
+        JsonSerializer.SerializeToUtf8Bytes(value, SerializerOptions).LongLength;
+
+    private static long ListResponseByteCount(
+        long requestedResourceBytes,
+        long canonicalResourceBytes,
+        long namespaceBytes,
+        long itemsContentBytes,
+        int itemCount,
+        bool limited) =>
+        ListFixedFramingBytes +
+        requestedResourceBytes +
+        canonicalResourceBytes +
+        namespaceBytes +
+        itemsContentBytes +
+        itemCount.ToString(CultureInfo.InvariantCulture).Length +
+        (limited ? 4 : 5);
+
+    private static JsonElement ValidateListIdentity(
+        JsonElement root,
+        KubernetesResourceDescriptor descriptor)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !RequiredIdentityString(root, "apiVersion").Equals(
+                descriptor.ApiVersion,
+                StringComparison.Ordinal) ||
+            !RequiredIdentityString(root, "kind").Equals(
+                descriptor.Kind + "List",
+                StringComparison.Ordinal))
+        {
+            throw MalformedResponseException();
+        }
+
+        _ = RequiredIdentityObject(root, "metadata");
+        var items = RequiredIdentityProperty(root, "items");
+        if (items.ValueKind != JsonValueKind.Array)
+        {
+            throw MalformedResponseException();
+        }
+
+        return items;
+    }
+
+    private static void ValidateObjectIdentity(
+        JsonElement item,
+        KubernetesResourceDescriptor descriptor,
+        string @namespace,
+        string? expectedName)
+    {
+        if (item.ValueKind != JsonValueKind.Object ||
+            !RequiredIdentityString(item, "apiVersion").Equals(
+                descriptor.ApiVersion,
+                StringComparison.Ordinal) ||
+            !RequiredIdentityString(item, "kind").Equals(
+                descriptor.Kind,
+                StringComparison.Ordinal))
+        {
+            throw MalformedResponseException();
+        }
+
+        ValidateMetadataIdentity(
+            RequiredIdentityObject(item, "metadata"),
+            @namespace,
+            expectedName);
+    }
+
+    private static void ValidateMetadataIdentity(
+        JsonElement metadata,
+        string @namespace,
+        string? expectedName)
+    {
+        var actualName = RequiredIdentityString(metadata, "name");
+        var actualNamespace = RequiredIdentityString(metadata, "namespace");
+        if ((expectedName is not null && !actualName.Equals(expectedName, StringComparison.Ordinal)) ||
+            !actualNamespace.Equals(@namespace, StringComparison.Ordinal))
+        {
+            throw MalformedResponseException();
+        }
+    }
+
+    private static JsonElement RequiredIdentityObject(
+        JsonElement parent,
+        string propertyName)
+    {
+        var result = RequiredIdentityProperty(parent, propertyName);
+        if (result.ValueKind != JsonValueKind.Object)
+        {
+            throw MalformedResponseException();
+        }
+
+        return result;
+    }
+
+    private static string RequiredIdentityString(JsonElement parent, string propertyName)
+    {
+        var value = RequiredIdentityProperty(parent, propertyName);
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            throw MalformedResponseException();
+        }
+
+        string? result;
+        try
+        {
+            result = value.GetString();
+        }
+        catch (InvalidOperationException)
+        {
+            throw MalformedResponseException();
+        }
+
+        if (string.IsNullOrWhiteSpace(result))
+        {
+            throw MalformedResponseException();
+        }
+
+        return result;
+    }
+
+    private static JsonElement RequiredIdentityProperty(
+        JsonElement parent,
+        string propertyName)
+    {
+        if (!TryGetExactProperty(parent, propertyName, out var value))
+        {
+            throw MalformedResponseException();
+        }
+
+        return value;
+    }
+
+    private static bool TryGetExactProperty(
+        JsonElement parent,
+        string propertyName,
+        out JsonElement value)
+    {
+        value = default;
+        var found = false;
+        foreach (var property in parent.EnumerateObject())
+        {
+            if (!property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (found || !property.NameEquals(propertyName))
+            {
+                throw MalformedResponseException();
+            }
+
+            found = true;
+            value = property.Value;
+        }
+
+        return found;
+    }
+
+    private static void ZeroRawBody(ReadOnlyMemory<byte> body)
+    {
+        try
+        {
+            if (MemoryMarshal.TryGetArray(body, out var segment) && segment.Array is not null)
+            {
+                CryptographicOperations.ZeroMemory(segment.AsSpan());
+            }
+        }
+        catch
+        {
+            // The API boundary permits arbitrary ReadOnlyMemory implementations.
+            // Clearing is best effort and must not replace the safe result or the
+            // original boundary error when a custom memory manager misbehaves.
+        }
+    }
+
+    private static void EnsureContinueTokenBounded(ReadOnlySpan<byte> body)
+    {
+        try
+        {
+            var reader = new Utf8JsonReader(body, isFinalBlock: true, state: default);
+            var readMetadataValue = false;
+            var readContinueValue = false;
+            var metadataObjectDepth = -1;
+            while (reader.Read())
+            {
+                if (readMetadataValue)
+                {
+                    if (reader.TokenType == JsonTokenType.StartObject)
+                    {
+                        metadataObjectDepth = reader.CurrentDepth;
+                    }
+
+                    readMetadataValue = false;
+                    continue;
+                }
+
+                if (readContinueValue)
+                {
+                    if (reader.TokenType == JsonTokenType.String &&
+                        KubernetesApi.JsonStringExceedsUtf8ByteLimit(
+                            ref reader,
+                            KubernetesApi.MaximumContinueTokenBytes))
+                    {
+                        throw MalformedResponseException();
+                    }
+
+                    readContinueValue = false;
+                    continue;
+                }
+
+                if (metadataObjectDepth >= 0 &&
+                    reader.TokenType == JsonTokenType.EndObject &&
+                    reader.CurrentDepth == metadataObjectDepth)
+                {
+                    metadataObjectDepth = -1;
+                    continue;
+                }
+
+                if (reader.TokenType != JsonTokenType.PropertyName)
+                {
+                    continue;
+                }
+
+                if (metadataObjectDepth < 0 &&
+                    reader.CurrentDepth == 1 &&
+                    reader.ValueTextEquals("metadata"u8))
+                {
+                    readMetadataValue = true;
+                }
+                else if (metadataObjectDepth >= 0 &&
+                         reader.CurrentDepth == metadataObjectDepth + 1 &&
+                         reader.ValueTextEquals("continue"u8))
+                {
+                    readContinueValue = true;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            throw MalformedResponseException();
+        }
+    }
+
+    private static JsonDocument ParseBody(ReadOnlyMemory<byte> body)
     {
         try
         {
@@ -334,18 +711,8 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
 
     private static string? ReadContinueToken(JsonElement root)
     {
-        if (!root.TryGetProperty("metadata", out var metadata) ||
-            metadata.ValueKind == JsonValueKind.Null)
-        {
-            return null;
-        }
-
-        if (metadata.ValueKind != JsonValueKind.Object)
-        {
-            throw MalformedResponseException();
-        }
-
-        if (!metadata.TryGetProperty("continue", out var continueToken) ||
+        var metadata = RequiredIdentityObject(root, "metadata");
+        if (!TryGetExactProperty(metadata, "continue", out var continueToken) ||
             continueToken.ValueKind == JsonValueKind.Null)
         {
             return null;
@@ -356,7 +723,23 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
             throw MalformedResponseException();
         }
 
-        return continueToken.GetString();
+        string? value;
+        try
+        {
+            value = continueToken.GetString();
+        }
+        catch (InvalidOperationException)
+        {
+            throw MalformedResponseException();
+        }
+
+        if (value is not null &&
+            Encoding.UTF8.GetByteCount(value) > KubernetesApi.MaximumContinueTokenBytes)
+        {
+            throw MalformedResponseException();
+        }
+
+        return value;
     }
 
     private async Task EnsureNamespaceAllowedAsync(
@@ -493,7 +876,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     {
         var discovered = new List<DiscoveredResource>();
 
-        IReadOnlyList<ApiResourceInfo> coreResources;
+        ApiDiscoveryResult<ApiResourceInfo> coreResources;
         try
         {
             coreResources = await api.GetCoreResourcesAsync(
@@ -519,9 +902,15 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
                 FailureCategory: category);
         }
 
-        AddDiscoveredResources(discovered, string.Empty, "v1", coreResources);
+        var discoveryComplete = coreResources.IsComplete;
+        discoveryComplete &= AddDiscoveredResources(
+            discovered,
+            string.Empty,
+            "v1",
+            coreResources.Items,
+            MaximumCachedDiscoveryResources);
 
-        IReadOnlyList<ApiGroupInfo> groups;
+        ApiDiscoveryResult<ApiGroupInfo> groups;
         try
         {
             groups = await api.GetApiGroupsAsync(
@@ -545,10 +934,11 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         }
 
         var bag = new ConcurrentBag<DiscoveredResource>();
-        var partialFailure = 0;
+        var partialFailure = discoveryComplete && groups.IsComplete ? 0 : 1;
+        var cachedResourceCount = discovered.Count;
         try
         {
-            await Parallel.ForEachAsync(groups, new ParallelOptions
+            await Parallel.ForEachAsync(groups.Items, new ParallelOptions
             {
                 MaxDegreeOfParallelism = Math.Max(1, options.DiscoveryParallelism),
                 CancellationToken = cancellationToken
@@ -556,15 +946,42 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
             {
                 try
                 {
+                    if (Volatile.Read(ref cachedResourceCount) >= MaximumCachedDiscoveryResources)
+                    {
+                        Interlocked.Exchange(ref partialFailure, 1);
+                        return;
+                    }
+
                     var groupResources = await api.GetGroupResourcesAsync(
                         group.Name,
                         group.PreferredVersion,
                         options.MaxUpstreamBodyBytes,
                         token).ConfigureAwait(false);
+                    if (!groupResources.IsComplete)
+                    {
+                        Interlocked.Exchange(ref partialFailure, 1);
+                    }
+
                     var local = new List<DiscoveredResource>();
-                    AddDiscoveredResources(local, group.Name, group.PreferredVersion, groupResources);
+                    if (!AddDiscoveredResources(
+                            local,
+                            group.Name,
+                            group.PreferredVersion,
+                            groupResources.Items,
+                            KubernetesApi.MaximumResourcesPerDiscoveryDocument))
+                    {
+                        Interlocked.Exchange(ref partialFailure, 1);
+                    }
+
                     foreach (var discoveredResource in local)
                     {
+                        var position = Interlocked.Increment(ref cachedResourceCount);
+                        if (position > MaximumCachedDiscoveryResources)
+                        {
+                            Interlocked.Exchange(ref partialFailure, 1);
+                            break;
+                        }
+
                         bag.Add(discoveredResource);
                     }
                 }
@@ -598,12 +1015,14 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
             FailureCategory: null);
     }
 
-    private static void AddDiscoveredResources(
+    private static bool AddDiscoveredResources(
         ICollection<DiscoveredResource> destination,
         string group,
         string version,
-        IEnumerable<ApiResourceInfo> resources)
+        IEnumerable<ApiResourceInfo> resources,
+        int maximumResources)
     {
+        var complete = true;
         foreach (var resource in resources)
         {
             if (!resource.Namespaced || resource.Name.Contains('/'))
@@ -611,26 +1030,74 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
                 continue;
             }
 
+            if (destination.Count >= maximumResources)
+            {
+                complete = false;
+                break;
+            }
+
             var descriptor = new KubernetesResourceDescriptor(
                 group,
                 version,
                 resource.Name,
                 resource.Kind);
-            var aliases = new List<string>
+            if (!IsBoundedDiscoveryValue(resource.Name) ||
+                !IsBoundedDiscoveryValue(resource.Kind) ||
+                !IsBoundedDiscoveryValue(descriptor.QualifiedName))
+            {
+                complete = false;
+                continue;
+            }
+
+            var aliases = new List<string>(MaximumAliasesPerDiscoveredResource);
+            var aliasCandidates = new[]
             {
                 resource.Name,
                 resource.SingularName,
                 resource.Kind,
                 descriptor.QualifiedName
-            };
-            aliases.AddRange(resource.ShortNames ?? []);
+            }.Concat(resource.ShortNames ?? []);
+            foreach (var alias in aliasCandidates)
+            {
+                if (string.IsNullOrWhiteSpace(alias))
+                {
+                    continue;
+                }
 
-            destination.Add(new DiscoveredResource(
-                descriptor,
-                aliases.Where(alias => !string.IsNullOrWhiteSpace(alias)).Distinct().ToArray(),
-                (resource.Verbs ?? []).ToArray()));
+                if (!IsBoundedDiscoveryValue(alias))
+                {
+                    complete = false;
+                    continue;
+                }
+
+                if (aliases.Contains(alias, StringComparer.Ordinal))
+                {
+                    continue;
+                }
+
+                if (aliases.Count >= MaximumAliasesPerDiscoveredResource)
+                {
+                    complete = false;
+                    break;
+                }
+
+                aliases.Add(alias);
+            }
+
+            var verbs = (resource.Verbs ?? [])
+                .Where(verb => verb.Equals("get", StringComparison.OrdinalIgnoreCase) ||
+                               verb.Equals("list", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            destination.Add(new DiscoveredResource(descriptor, aliases, verbs));
         }
+
+        return complete;
     }
+
+    private static bool IsBoundedDiscoveryValue(string? value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value.Length <= KubernetesNameValidator.MaximumQualifiedNameLength;
 
     private static KubernetesReadException Translate(KubernetesApiException exception) =>
         new(KubernetesApi.SafeMessage(exception.Category), exception.Category);

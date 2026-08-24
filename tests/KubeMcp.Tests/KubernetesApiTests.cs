@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using KubeMcp.Kubernetes;
 using k8s;
 
@@ -25,6 +26,7 @@ public sealed class KubernetesApiTests
     [InlineData(500, KubernetesErrorCategory.ServerError)]
     [InlineData(502, KubernetesErrorCategory.ServerError)]
     [InlineData(503, KubernetesErrorCategory.ServerError)]
+    [InlineData(504, KubernetesErrorCategory.Timeout)]
     public void MapsHttpStatusCodesToSafeCategories(int statusCode, KubernetesErrorCategory expected)
     {
         Assert.Equal(expected, KubernetesApi.MapErrorCategory(statusCode));
@@ -86,10 +88,28 @@ public sealed class KubernetesApiTests
     [Fact]
     public async Task ReadCappedStopsBeforeBufferingOversizedBody()
     {
-        var payload = Encoding.UTF8.GetBytes(new string('x', 10 * 1024));
-        using var stream = new MemoryStream(payload);
+        using var stream = new RepeatingByteStream(10 * 1024);
+
         await Assert.ThrowsAsync<KubernetesApiException>(() =>
             KubernetesApi.ReadCappedAsync(stream, maxBodyBytes: 256, CancellationToken.None));
+
+        Assert.InRange(stream.BytesRead, 257, 257);
+    }
+
+    [Fact]
+    public async Task SensitiveCappedReadClearsPartialBodyOnError()
+    {
+        using var stream = new RepeatingByteStream(10 * 1024);
+
+        await Assert.ThrowsAsync<KubernetesApiException>(() =>
+            KubernetesApi.ReadCappedAsync(
+                stream,
+                maxBodyBytes: 256,
+                CancellationToken.None,
+                clearTemporaryBuffers: true));
+
+        Assert.False(stream.FirstReadBuffer.IsEmpty);
+        Assert.All(stream.FirstReadBuffer.ToArray(), value => Assert.Equal(0, value));
     }
 
     [Fact]
@@ -144,6 +164,19 @@ public sealed class KubernetesApiTests
     }
 
     [Fact]
+    public void BuildListUriRejectsOversizedContinueTokenBeforeEscaping()
+    {
+        var exception = Assert.Throws<KubernetesApiException>(() => KubernetesApi.BuildListUri(
+            BaseUri,
+            Descriptor("", "v1", "pods", "Pod"),
+            "production",
+            pageSize: 25,
+            continueToken: new string('t', KubernetesApi.MaximumContinueTokenBytes + 1)));
+
+        Assert.Equal(KubernetesErrorCategory.MalformedResponse, exception.Category);
+    }
+
+    [Fact]
     public async Task GetNamespacedReturnsCappedBodyAndDoesNotReadUpstreamErrorBody()
     {
         var secretLeak = "UPSTREAM-SECRET-BODY-MUST-NOT-LEAK";
@@ -164,11 +197,9 @@ public sealed class KubernetesApiTests
     [Fact]
     public async Task GetNamespacedEnforcesUpstreamBodyCapBeforeReturning()
     {
-        var oversized = new string('x', 10 * 1024);
-        var body = "{\"kind\":\"ConfigMap\",\"metadata\":{\"name\":\"big\"},\"data\":{\"k\":\"" + oversized + "\"}}";
         using var k = CreateClient(() => new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = new StringContent(body)
+            Content = new StreamContent(new RepeatingByteStream(10 * 1024))
         });
         using var api = new KubernetesApi(k, ownsClient: true);
 
@@ -218,7 +249,8 @@ public sealed class KubernetesApiTests
 
         var resources = await api.GetCoreResourcesAsync(4096, CancellationToken.None);
 
-        var resource = Assert.Single(resources);
+        Assert.True(resources.IsComplete);
+        var resource = Assert.Single(resources.Items);
         Assert.Equal("pods", resource.Name);
         Assert.Equal("pod", resource.SingularName);
         Assert.Equal("Pod", resource.Kind);
@@ -251,7 +283,137 @@ public sealed class KubernetesApiTests
 
         var groups = await api.GetApiGroupsAsync(4096, CancellationToken.None);
 
-        Assert.Equal(new ApiGroupInfo("apps", "v1"), Assert.Single(groups));
+        Assert.True(groups.IsComplete);
+        Assert.Equal(new ApiGroupInfo("apps", "v1"), Assert.Single(groups.Items));
+    }
+
+    [Fact]
+    public async Task ApiGroupDiscoveryMarksMissingPreferredVersionIncomplete()
+    {
+        const string body = """
+            {
+              "groups": [
+                { "name": "apps", "preferredVersion": { "version": "v1" } },
+                { "name": "broken.example" }
+              ]
+            }
+            """;
+        using var k = CreateClient(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body)
+        });
+        using var api = new KubernetesApi(k, ownsClient: true);
+
+        var groups = await api.GetApiGroupsAsync(4096, CancellationToken.None);
+
+        Assert.False(groups.IsComplete);
+        Assert.Equal(new ApiGroupInfo("apps", "v1"), Assert.Single(groups.Items));
+    }
+
+    [Fact]
+    public async Task ApiGroupDiscoveryStopsAtHardGroupCap()
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            groups = Enumerable.Range(0, KubernetesApi.MaximumDiscoveryGroups + 1)
+                .Select(index => new
+                {
+                    name = $"g{index}.example",
+                    preferredVersion = new { version = "v1" }
+                })
+        });
+        using var k = CreateClient(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body)
+        });
+        using var api = new KubernetesApi(k, ownsClient: true);
+
+        var groups = await api.GetApiGroupsAsync(
+            Encoding.UTF8.GetByteCount(body) + 1,
+            CancellationToken.None);
+
+        Assert.False(groups.IsComplete);
+        Assert.Equal(KubernetesApi.MaximumDiscoveryGroups, groups.Items.Count);
+    }
+
+    [Fact]
+    public async Task DiscoveryMeasuresEscapedStringsAfterBoundedDecoding()
+    {
+        var escapedName = string.Concat(Enumerable.Repeat("\\u0077", 253));
+        var body =
+            "{\"resources\":[{\"name\":\"" + escapedName +
+            "\",\"singularName\":\"widget\",\"namespaced\":true,\"kind\":\"Widget\"}]}";
+        using var k = CreateClient(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body)
+        });
+        using var api = new KubernetesApi(k, ownsClient: true);
+
+        var resources = await api.GetCoreResourcesAsync(
+            Encoding.UTF8.GetByteCount(body) + 1,
+            CancellationToken.None);
+
+        Assert.True(resources.IsComplete);
+        Assert.Equal(new string('w', 253), Assert.Single(resources.Items).Name);
+    }
+
+    [Fact]
+    public async Task DiscoveryRejectsOversizedStringsBeforeMaterializingThem()
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            resources = new[]
+            {
+                new
+                {
+                    name = new string('x', 513),
+                    singularName = "widget",
+                    namespaced = true,
+                    kind = "Widget"
+                }
+            }
+        });
+        using var k = CreateClient(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body)
+        });
+        using var api = new KubernetesApi(k, ownsClient: true);
+
+        var exception = await Assert.ThrowsAsync<KubernetesApiException>(() =>
+            api.GetCoreResourcesAsync(
+                Encoding.UTF8.GetByteCount(body) + 1,
+                CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.MalformedResponse, exception.Category);
+    }
+
+    [Fact]
+    public async Task ApiResourceDiscoveryStopsAtHardDocumentCap()
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            resources = Enumerable.Range(0, KubernetesApi.MaximumResourcesPerDiscoveryDocument + 1)
+                .Select(index => new
+                {
+                    name = $"widgets-{index}",
+                    singularName = $"widget-{index}",
+                    namespaced = true,
+                    kind = "Widget",
+                    verbs = new[] { "get", "list" }
+                })
+        });
+        using var k = CreateClient(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body)
+        });
+        using var api = new KubernetesApi(k, ownsClient: true);
+
+        var resources = await api.GetCoreResourcesAsync(
+            Encoding.UTF8.GetByteCount(body) + 1,
+            CancellationToken.None);
+
+        Assert.False(resources.IsComplete);
+        Assert.Equal(KubernetesApi.MaximumResourcesPerDiscoveryDocument, resources.Items.Count);
     }
 
     [Fact]
@@ -331,10 +493,9 @@ public sealed class KubernetesApiTests
     [Fact]
     public async Task DiscoveryIsAlsoCappedBeforeParsing()
     {
-        var body = "{\"resources\":[]}" + new string(' ', 4096);
         using var k = CreateClient(() => new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = new StringContent(body)
+            Content = new StreamContent(new RepeatingByteStream(4096))
         });
         using var api = new KubernetesApi(k, ownsClient: true);
 
@@ -379,6 +540,65 @@ public sealed class KubernetesApiTests
 
         var handler = new StubHandler(responder);
         return (new k8s.Kubernetes(configuration, new DelegatingHandler[] { handler }), handler);
+    }
+
+    private sealed class RepeatingByteStream : Stream
+    {
+        private readonly long length;
+        private long remaining;
+
+        public RepeatingByteStream(long length)
+        {
+            this.length = length;
+            remaining = length;
+        }
+
+        public int BytesRead { get; private set; }
+        public Memory<byte> FirstReadBuffer { get; private set; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => length;
+        public override long Position
+        {
+            get => length - remaining;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = (int)Math.Min(count, remaining);
+            buffer.AsSpan(offset, read).Fill((byte)'x');
+            remaining -= read;
+            BytesRead += read;
+            return read;
+        }
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (FirstReadBuffer.IsEmpty)
+            {
+                FirstReadBuffer = buffer;
+            }
+
+            var read = (int)Math.Min(buffer.Length, remaining);
+            buffer.Span[..read].Fill((byte)'x');
+            remaining -= read;
+            BytesRead += read;
+            return ValueTask.FromResult(read);
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class StubHandler : DelegatingHandler

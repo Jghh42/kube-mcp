@@ -225,7 +225,7 @@ public sealed class KubeMcpOptionsValidatorTests
         var result = validator.Validate(null, options);
 
         Assert.True(result.Failed);
-        Assert.Contains("PermitLimit multiplied by KubeMcp:MaxUpstreamBodyBytes", result.FailureMessage);
+        Assert.Contains("worst-case concurrent Kubernetes body count", result.FailureMessage);
     }
 
     [Theory]
