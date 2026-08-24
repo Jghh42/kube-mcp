@@ -362,8 +362,14 @@ wait_for_rollout() {
     --selector "$selector" -o wide >&2 || true
   kubectl get events --namespace "$kube_namespace" \
     --field-selector type=Warning --sort-by=.lastTimestamp >&2 || true
+  kubectl get pods --namespace "$kube_namespace" --selector "$selector" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" waiting="}{.status.containerStatuses[0].state.waiting.reason}{" lastReason="}{.status.containerStatuses[0].lastState.terminated.reason}{" exitCode="}{.status.containerStatuses[0].lastState.terminated.exitCode}{"\n"}{end}' >&2 || true
+  echo "current container log tail:" >&2
   kubectl logs "deployment/$deployment" --namespace "$kube_namespace" \
     --all-containers --tail=100 >&2 || true
+  echo "previous container log tail:" >&2
+  kubectl logs "deployment/$deployment" --namespace "$kube_namespace" \
+    --all-containers --previous --tail=100 >&2 || true
   return 1
 }
 
@@ -440,7 +446,7 @@ kubectl apply --filename tests/integration/keycloak.yaml >/dev/null
 # The namespace is newly owned by this run, so apply already creates the only
 # required rollout. Restarting immediately would create a second ReplicaSet
 # while the first Keycloak JVM is still starting and can exhaust the kind node.
-wait_for_rollout keycloak app.kubernetes.io/name=kube-mcp-keycloak 240s
+wait_for_rollout keycloak app.kubernetes.io/name=kube-mcp-keycloak 420s
 
 kubectl port-forward --namespace kube-mcp service/keycloak "$keycloak_local_port:8080" \
   >"$keycloak_port_forward_log" 2>&1 &

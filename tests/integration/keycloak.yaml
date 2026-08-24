@@ -137,6 +137,11 @@ spec:
           imagePullPolicy: IfNotPresent
           args: ["start-dev", "--import-realm"]
           env:
+            # Keycloak defaults to a 70% max heap, which left too little native
+            # headroom during Quarkus augmentation under the former 768 MiB CI
+            # limit. Keep a deterministic 512 MiB heap and equal non-heap room.
+            - name: JAVA_OPTS_KC_HEAP
+              value: -Xms128m -Xmx512m
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
               value: admin
             - name: KC_BOOTSTRAP_ADMIN_PASSWORD
@@ -159,7 +164,7 @@ spec:
               memory: 256Mi
             limits:
               cpu: "1"
-              memory: 768Mi
+              memory: 1Gi
           volumeMounts:
             - name: realm
               mountPath: /opt/keycloak/data/import
