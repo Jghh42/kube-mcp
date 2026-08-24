@@ -23,6 +23,15 @@ scopes, and all configured roles before MCP execution. Resource and namespace
 access policies are enforced independently. Do not expose the unauthenticated
 default configuration outside a trusted development environment.
 
+Every `k8s_get` attempt emits a structured audit event through the standard
+`ILogger` pipeline (console output by default). Events include UTC timestamp,
+authenticated client identity when available, authentication mode, GET/LIST,
+resource coordinates, result, successful object count, duration, request ID, and
+client IP. Audit events contain no Kubernetes response bodies, Secret values,
+fingerprints, credentials, or token contents. In unauthenticated mode the client is
+recorded as `anonymous`; static API-key calls use the non-secret shared identity
+`static-api-key`; OAuth calls prefer the validated `client_id`/`azp`/`sub` claim.
+
 ## Prerequisites
 
 - .NET 10 SDK

@@ -42,7 +42,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         client = new k8s.Kubernetes(configuration);
     }
 
-    public async Task<string> ReadAsync(
+    public async Task<KubernetesReadResult> ReadAsync(
         string resource,
         string @namespace,
         string? name,
@@ -84,7 +84,9 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
                     $"The Kubernetes response exceeded the configured {options.MaxResponseBytes}-byte limit.");
             }
 
-            return json;
+            return new KubernetesReadResult(
+                json,
+                name is null ? safeResult["count"]?.GetValue<int>() ?? 0 : 1);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

@@ -1,3 +1,4 @@
+using KubeMcp.Audit;
 using KubeMcp.Authentication;
 using KubeMcp.Configuration;
 using KubeMcp.Kubernetes;
@@ -17,6 +18,8 @@ builder.Services.AddSingleton<IValidateOptions<KubeMcpOptions>, KubeMcpOptionsVa
 var authenticationMode = builder.Services.AddKubeMcpAuthentication(builder.Configuration);
 
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
 builder.Services.AddSingleton<SecretFingerprinter>();
 builder.Services.AddSingleton<SecretSanitizer>();
 builder.Services.AddSingleton<KubernetesListSummarizer>();

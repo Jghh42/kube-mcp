@@ -8,7 +8,8 @@ cluster_name=${KIND_CLUSTER_NAME:-kind}
 local_port=${KUBE_MCP_TEST_PORT:-18082}
 keycloak_local_port=${KUBE_MCP_KEYCLOAK_TEST_PORT:-18083}
 fixture_namespace=kube-mcp-e2e
-test_image=kube-mcp:stage5-test
+secret_value=correct-horse-battery-staple
+test_image=kube-mcp:stage6-test
 port_forward_log=$(mktemp)
 keycloak_port_forward_log=$(mktemp)
 deployment_manifest=$(mktemp)
@@ -176,6 +177,13 @@ KUBE_MCP_INTEGRATION_MISSING_PERMISSION_TOKEN="$missing_permission_token" \
     --filter 'FullyQualifiedName~KindIntegrationTests' \
     --logger 'console;verbosity=normal'
 
+audit_logs=$(kubectl logs deployment/kube-mcp --namespace kube-mcp)
+grep -Fq 'Kubernetes audit:' <<<"$audit_logs"
+grep -Fq 'client=kube-mcp-e2e authentication=OAuthClientCredentials' <<<"$audit_logs"
+grep -Fq 'operation=GET resource=secrets namespace=kube-mcp-e2e name=integration-secret result=success objectCount=1' <<<"$audit_logs"
+! grep -Fq "$secret_value" <<<"$audit_logs"
+! grep -Fq 'annotation-must-not-leak' <<<"$audit_logs"
+
 kill "$port_forward_pid" 2>/dev/null || true
 wait "$port_forward_pid" 2>/dev/null || true
 port_forward_pid=
@@ -232,4 +240,4 @@ defaults_need_restore=false
 [[ $(kubectl auth can-i list roles --namespace kube-mcp --as "$service_account") == "no" ]]
 kubectl label namespace kube-mcp kube-mcp.io/agent-access- >/dev/null
 
-echo "Stage 5 integration tests passed for authentication, allowlist, AllowAll, blacklist, and label-selector modes. kube-mcp and local Keycloak remain running with narrow resource defaults."
+echo "Stage 6 integration tests passed for audit logging, authentication, allowlist, AllowAll, blacklist, and label-selector modes. kube-mcp and local Keycloak remain running with narrow resource defaults."
