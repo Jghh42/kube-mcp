@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using KubeMcp.Audit;
@@ -208,7 +209,17 @@ public sealed class ReverseProxyAuditTests
             },
             cancellationToken: CancellationToken.None);
 
-        var entry = capturer.Entries.SingleOrDefault(e => e.EventId == AuditLogger.KubernetesAccessEvent);
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        CapturingLoggerProvider.CapturedEntry? entry = null;
+        while (entry is null && DateTime.UtcNow < deadline)
+        {
+            entry = capturer.Entries.SingleOrDefault(e => e.EventId == AuditLogger.KubernetesAccessEvent);
+            if (entry is null)
+            {
+                await Task.Delay(10);
+            }
+        }
+
         Assert.NotNull(entry);
         Assert.Equal("198.51.100.7", entry!.Properties["ClientIp"]);
     }
@@ -242,7 +253,7 @@ public sealed class ReverseProxyAuditTests
 
 internal sealed class CapturingLoggerProvider : ILoggerProvider
 {
-    public List<CapturedEntry> Entries { get; } = [];
+    public ConcurrentQueue<CapturedEntry> Entries { get; } = new();
 
     public ILogger CreateLogger(string categoryName) => new CapturingLogger(this);
 
@@ -267,7 +278,7 @@ internal sealed class CapturingLoggerProvider : ILoggerProvider
                 ? pairs.Where(pair => pair.Key != "{OriginalFormat}")
                     .ToDictionary(pair => pair.Key, pair => pair.Value)
                 : new Dictionary<string, object?>();
-            owner.Entries.Add(new CapturedEntry(eventId, properties));
+            owner.Entries.Enqueue(new CapturedEntry(eventId, properties));
         }
     }
 

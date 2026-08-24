@@ -61,8 +61,17 @@ public sealed class KubeMcpOptions
     [Range(1, 120)]
     public int KubernetesRequestTimeoutSeconds { get; init; } = 15;
 
+    /// <summary>
+    /// End-to-end deadline for an HTTP MCP request, including authentication,
+    /// protocol parsing/dispatch, Kubernetes work, and response serialization.
+    /// </summary>
+    [Range(1, 3600)]
+    public int OverallMcpRequestTimeoutSeconds { get; init; } = 30;
+
     [Range(1, 3600)]
     public int DiscoveryCacheSeconds { get; init; } = 300;
+
+    public KubeMcpTelemetryOptions Telemetry { get; init; } = new();
 }
 
 public sealed class ResourcePolicyOptions
@@ -135,6 +144,15 @@ public sealed class KubeMcpForwardedHeadersOptions
     // originating client and production hostname behind a reverse proxy.
     public ForwardedHeaders AllowedForwardedHeaders { get; init; } =
         ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
+}
+
+public sealed class KubeMcpTelemetryOptions
+{
+    /// <summary>
+    /// Enables OpenTelemetry tracing and metrics export. OTLP connection settings
+    /// use the standard OTEL_EXPORTER_OTLP_* environment variables.
+    /// </summary>
+    public bool Enabled { get; init; }
 }
 
 public sealed class OAuthOptions

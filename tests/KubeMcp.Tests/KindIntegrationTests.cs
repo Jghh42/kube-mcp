@@ -145,8 +145,8 @@ public sealed class KindIntegrationTests
         Assert.True(unknownResource.IsError);
         Assert.Contains(
             resourcePolicyMode == "AllowAll"
-                ? "was not found among namespaced Kubernetes resources"
-                : "not included in the configured resource allowlist",
+                ? "The Kubernetes resource was not found."
+                : "The Kubernetes resource is not allowed.",
             Text(unknownResource));
 
         if (resourcePolicyMode == "AllowAll")
@@ -162,18 +162,14 @@ public sealed class KindIntegrationTests
         var policyMode = Environment.GetEnvironmentVariable("KUBE_MCP_NAMESPACE_POLICY_MODE");
         var deniedNamespace = await CallAsync(client, "pods", @namespace: "kube-system");
         Assert.True(deniedNamespace.IsError);
-        Assert.Contains(
-            policyMode == "LabelSelector"
-                ? "does not match the configured namespace label selector"
-                : "denied by the configured namespace blacklist",
-            Text(deniedNamespace));
+        Assert.Contains("The Kubernetes namespace is not allowed.", Text(deniedNamespace));
 
         if (policyMode == "LabelSelector")
         {
             var unlabelledNamespace = await CallAsync(client, "configmaps", @namespace: "default");
             Assert.True(unlabelledNamespace.IsError);
             Assert.Contains(
-                "does not match the configured namespace label selector",
+                "The Kubernetes namespace is not allowed.",
                 Text(unlabelledNamespace));
         }
 
@@ -186,7 +182,7 @@ public sealed class KindIntegrationTests
             },
             cancellationToken: CancellationToken.None);
         Assert.True(invalidNamespace.IsError);
-        Assert.Contains("valid lowercase Kubernetes DNS label", Text(invalidNamespace));
+        Assert.Contains("The Kubernetes request is invalid.", Text(invalidNamespace));
     }
 
     private static async Task AssertOAuthDenialsAsync(string endpoint)

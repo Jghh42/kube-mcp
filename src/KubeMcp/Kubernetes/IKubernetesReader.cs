@@ -9,4 +9,7 @@ public interface IKubernetesReader
         CancellationToken cancellationToken);
 }
 
-public sealed record KubernetesReadResult(string Json, int ObjectCount);
+public sealed record KubernetesReadResult(
+    string Json,
+    int ObjectCount,
+    bool IsSecret = false);

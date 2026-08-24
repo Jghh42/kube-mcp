@@ -3,7 +3,9 @@ using KubeMcp.Authentication;
 using KubeMcp.Configuration;
 using KubeMcp.Kubernetes;
 using KubeMcp.Mcp;
+using KubeMcp.Observability;
 using KubeMcp.Security;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.AspNetCore;
 
@@ -19,7 +21,19 @@ var authenticationMode = builder.Services.AddKubeMcpAuthentication(builder.Confi
 
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHttpContextAccessor();
+// Structured ILogger audit output is the immediate best-effort default. Any
+// additional IAuditSink registrations are fanned out through the bounded queue.
+builder.Services.AddSingleton<StructuredLoggerAuditSink>();
+builder.Services.AddSingleton<CompositeAuditSink>();
+builder.Services.AddSingleton<AuditSinkDispatcher>();
+builder.Services.AddSingleton<IAuditEventPublisher>(serviceProvider =>
+    serviceProvider.GetRequiredService<AuditSinkDispatcher>());
+builder.Services.AddHostedService(serviceProvider =>
+    serviceProvider.GetRequiredService<AuditSinkDispatcher>());
 builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
+builder.Services.AddKubeMcpTelemetry(builder.Configuration);
+builder.Services.AddRequestTimeouts();
+builder.Services.AddSingleton<IConfigureOptions<RequestTimeoutOptions>, McpRequestTimeoutOptionsSetup>();
 builder.Services.AddSingleton<SecretFingerprinter>();
 builder.Services.AddSingleton<SecretSanitizer>();
 builder.Services.AddSingleton<KubernetesListSummarizer>();
@@ -60,6 +74,17 @@ ForwardedHeadersConfiguration.Apply(
     builder.Configuration["AllowedHosts"]);
 app.UseForwardedHeaders(forwardedHeadersOptions);
 
+app.UseRouting();
+// The end-to-end deadline is deliberately scoped to the MCP branch. Health,
+// readiness, and root responses are not governed by the MCP timeout policy.
+app.UseWhen(
+    context => context.Request.Path.StartsWithSegments("/mcp"),
+    branch =>
+    {
+        branch.UseRequestTimeouts();
+        branch.UseMiddleware<McpRequestObservabilityMiddleware>();
+    });
+
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -70,7 +95,8 @@ app.MapGet("/", () => Results.Ok(new
 }));
 app.MapHealthChecks("/healthz");
 app.MapHealthChecks("/readyz");
-var mcpEndpoint = app.MapMcp("/mcp");
+var mcpEndpoint = app.MapMcp("/mcp")
+    .WithRequestTimeout(McpRequestTimeoutOptionsSetup.PolicyName);
 if (authenticationMode != AuthenticationMode.None)
 {
     mcpEndpoint.RequireAuthorization(AuthenticationConfiguration.McpAccessPolicy);

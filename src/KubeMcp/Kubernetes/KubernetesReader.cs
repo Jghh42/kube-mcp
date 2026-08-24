@@ -100,7 +100,8 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
 
             return new KubernetesReadResult(
                 json,
-                name is null ? safeResult["count"]?.GetValue<int>() ?? 0 : 1);
+                name is null ? safeResult["count"]?.GetValue<int>() ?? 0 : 1,
+                descriptor.IsSecret);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

@@ -291,10 +291,55 @@ public sealed class KubernetesBoundaryOptionsTests
     {
         var options = ReaderTestOptions.Options(listPageSize: 10, secretListPageSize: 11);
 
-        var result = new KubeMcpOptionsValidator().Validate(null, options);
+        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
+            .Validate(null, options);
 
         Assert.True(result.Failed);
         Assert.Contains("SecretListPageSize", result.FailureMessage);
+    }
+
+    [Fact]
+    public void OverallMcpTimeoutMustBeValidatedAndExceedKubernetesTimeout()
+    {
+        var baseline = ReaderTestOptions.Options();
+        var options = new KubeMcpOptions
+        {
+            SecretHmacKey = baseline.SecretHmacKey,
+            ResourcePolicy = baseline.ResourcePolicy,
+            AllowedResources = baseline.AllowedResources,
+            NamespacePolicy = baseline.NamespacePolicy,
+            KubernetesRequestTimeoutSeconds = 15,
+            OverallMcpRequestTimeoutSeconds = 15
+        };
+
+        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
+            .Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains("must be greater than KubernetesRequestTimeoutSeconds", result.FailureMessage);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3601)]
+    public void OverallMcpTimeoutRejectsOutOfRangeValues(int timeoutSeconds)
+    {
+        var baseline = ReaderTestOptions.Options();
+        var options = new KubeMcpOptions
+        {
+            SecretHmacKey = baseline.SecretHmacKey,
+            ResourcePolicy = baseline.ResourcePolicy,
+            AllowedResources = baseline.AllowedResources,
+            NamespacePolicy = baseline.NamespacePolicy,
+            KubernetesRequestTimeoutSeconds = 15,
+            OverallMcpRequestTimeoutSeconds = timeoutSeconds
+        };
+
+        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
+            .Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains("between 1 and 3600", result.FailureMessage);
     }
 
     [Fact]
@@ -311,7 +356,8 @@ public sealed class KubernetesBoundaryOptionsTests
             MaxUpstreamBodyBytes = 64 * 1024
         };
 
-        var result = new KubeMcpOptionsValidator().Validate(null, options);
+        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
+            .Validate(null, options);
 
         Assert.True(result.Failed);
         Assert.Contains("MaxUpstreamBodyBytes", result.FailureMessage);

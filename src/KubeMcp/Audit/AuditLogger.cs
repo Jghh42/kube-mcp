@@ -5,37 +5,97 @@ using Microsoft.Extensions.Options;
 namespace KubeMcp.Audit;
 
 public sealed class AuditLogger(
-    ILogger<AuditLogger> logger,
+    IAuditEventPublisher publisher,
     IHttpContextAccessor httpContextAccessor,
     IOptions<KubeMcpOptions> options,
-    TimeProvider timeProvider) : IAuditLogger
+    TimeProvider timeProvider,
+    StructuredLoggerAuditSink? structuredLoggerSink = null) : IAuditLogger
 {
     private const int MaximumValueLength = 256;
     internal static readonly EventId KubernetesAccessEvent = new(1000, "KubernetesAccess");
+    internal static readonly EventId McpAccessDeniedEvent = new(1001, "McpAccessDenied");
 
     public void LogKubernetesAccess(KubernetesAuditEvent auditEvent)
     {
-        var context = httpContextAccessor.HttpContext;
-        var identity = ResolveIdentity(context?.User);
-        var authenticationMethod = options.Value.Authentication.Mode.ToString();
-        var clientIp = context?.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        var requestId = context?.TraceIdentifier ?? "unknown";
-
-        logger.LogInformation(
-            KubernetesAccessEvent,
-            "Kubernetes audit: timestamp={Timestamp} client={ClientIdentity} authentication={AuthenticationMethod} operation={Operation} resource={Resource} namespace={Namespace} name={ResourceName} result={Result} objectCount={ObjectCount} durationMs={DurationMs} requestId={RequestId} clientIp={ClientIp}",
-            timeProvider.GetUtcNow(),
-            Safe(identity),
-            authenticationMethod,
+        var common = CommonFields();
+        TryPublish(new AuditRecord(
+            AuditEventType.KubernetesAccess,
+            common.Timestamp,
+            common.Identity,
+            common.AuthenticationMethod,
             Safe(auditEvent.Operation),
             Safe(auditEvent.Resource),
             Safe(auditEvent.Namespace),
             Safe(auditEvent.Name ?? "-"),
             Safe(auditEvent.Result),
+            Safe(auditEvent.Category),
             auditEvent.ObjectCount,
-            Math.Round(auditEvent.Duration.TotalMilliseconds, 2),
-            Safe(requestId),
-            Safe(clientIp));
+            auditEvent.Duration,
+            common.RequestId,
+            common.ClientIp,
+            StatusCode: null));
+    }
+
+    public void LogMcpAccessDenied(McpAccessDeniedAuditEvent auditEvent)
+    {
+        var common = CommonFields();
+        TryPublish(new AuditRecord(
+            AuditEventType.McpAccessDenied,
+            common.Timestamp,
+            common.Identity,
+            common.AuthenticationMethod,
+            Operation: null,
+            Resource: null,
+            Namespace: null,
+            Name: null,
+            Result: "denied",
+            Category: Safe(auditEvent.Category),
+            ObjectCount: null,
+            auditEvent.Duration,
+            common.RequestId,
+            common.ClientIp,
+            auditEvent.StatusCode));
+    }
+
+    private void TryPublish(AuditRecord record)
+    {
+        if (structuredLoggerSink is not null)
+        {
+            try
+            {
+                // Preserve immediate structured logs as the default audit path.
+                // This sink completes synchronously; provider exceptions are
+                // contained before fan-out to organization sinks.
+                structuredLoggerSink.WriteAsync(record, CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch
+            {
+                // Audit logging is best effort and cannot alter request handling.
+            }
+        }
+
+        try
+        {
+            _ = publisher.TryPublish(record);
+        }
+        catch
+        {
+            // The production publisher is no-throw. Keep this final guard so a
+            // replacement publisher can never alter the response or original error.
+        }
+    }
+
+    private CommonAuditFields CommonFields()
+    {
+        var context = httpContextAccessor.HttpContext;
+        return new CommonAuditFields(
+            timeProvider.GetUtcNow(),
+            Safe(ResolveIdentity(context?.User)),
+            Safe(options.Value.Authentication.Mode.ToString()),
+            Safe(context?.TraceIdentifier ?? "unknown"),
+            Safe(context?.Connection.RemoteIpAddress?.ToString() ?? "unknown"));
     }
 
     private static string ResolveIdentity(ClaimsPrincipal? principal)
@@ -67,4 +127,11 @@ public sealed class AuditLogger(
             ? sanitized
             : sanitized[..MaximumValueLength];
     }
+
+    private sealed record CommonAuditFields(
+        DateTimeOffset Timestamp,
+        string Identity,
+        string AuthenticationMethod,
+        string RequestId,
+        string ClientIp);
 }

@@ -10,9 +10,9 @@ k8s_get(resource, namespace, name?)
 ```
 
 Omitting `name` performs a compact namespaced LIST. Supplying `name` performs a
-namespaced GET. LIST uses resource-specific structured summaries (for Pods,
-workloads, Services, ConfigMaps, Secrets, Jobs, and CronJobs) and a minimal
-name/namespace/kind/age fallback for other resources. GET remains detailed.
+namespaced GET. LIST uses compact resource-specific structured summaries for the
+default built-in resource set and a minimal name/namespace/kind/age fallback for
+unknown resources and CRDs. GET remains detailed.
 Kubernetes Secrets are never returned raw: LIST returns safe discovery fields and
 key names, while GET replaces each value with a keyed HMAC-SHA256 fingerprint.
 
@@ -26,14 +26,65 @@ environment, `None` is rejected at startup unless the deployment deliberately se
 issuer, audience, lifetime, all configured scopes, and all configured roles before
 MCP execution. Resource and namespace access policies are enforced independently.
 
-Every `k8s_get` attempt emits a structured audit event through the standard
-`ILogger` pipeline (console output by default). Events include UTC timestamp,
-authenticated client identity when available, authentication mode, GET/LIST,
-resource coordinates, result, successful object count, duration, request ID, and
-client IP. Audit events contain no Kubernetes response bodies, Secret values,
-fingerprints, credentials, or token contents. In unauthenticated mode the client is
-recorded as `anonymous`; static API-key calls use the non-secret shared identity
-`static-api-key`; OAuth calls prefer the validated `client_id`/`azp`/`sub` claim.
+Every dispatched `k8s_get` call emits a structured Kubernetes audit event. Requests
+rejected by authentication or authorization before tool dispatch emit a separate
+MCP access-denial event with no invented resource coordinates; the middleware
+never reads an arbitrary request body to derive audit fields. Events include UTC
+timestamp, authenticated client identity when available, authentication mode,
+result, a stable low-cardinality category, duration, request ID, and client IP.
+Kubernetes events additionally contain GET/LIST, resource coordinates, and a
+successful object count. Audit records contain no Kubernetes response bodies,
+Secret values, fingerprints, credentials, or token contents. In unauthenticated
+mode the client is recorded as `anonymous`; static API-key calls use the non-secret
+shared identity `static-api-key`; OAuth calls prefer the validated
+`client_id`/`azp`/`sub` claim.
+
+The structured `ILogger` audit sink remains enabled by default and is invoked
+immediately so records are visible when a request completes. Its behavior follows
+the configured logging provider: provider latency can delay request completion, so
+production logging providers should be non-blocking; provider exceptions are
+suppressed and never replace the response or original error. Additional
+organization sinks implement `IAuditSink` and use a bounded, non-blocking,
+best-effort queue. `CompositeAuditSink` fans each sanitized record out sequentially
+in the background. Organization-sink latency never blocks an MCP response, one sink
+exception does not stop the others, and sink exceptions never replace a response
+or the original tool error. If the 1,024-record queue is full, the newest record is
+dropped; aggregate local event `AuditQueueFull` is reported every 30 seconds from a
+separate background loop, never on the request path. The queue is drained during
+the host's graceful-shutdown window; cancellation of that window may leave records
+undelivered. Deployments requiring durable, tamper-resistant retention should
+register their audit provider and alert on sink failures and queue drops.
+
+Kubernetes failures are mapped to fixed safe messages and categories such as
+`resource_not_found`, `kubernetes_access_denied`, `upstream_throttled`,
+`upstream_server_error`, `upstream_network_error`,
+`upstream_malformed_response`, `response_too_large`, `upstream_timeout`, and
+`internal_error`. Upstream error bodies and arbitrary exception messages never
+cross the Kubernetes boundary. Overall server deadlines use `server_timeout`, while
+a caller disconnect/cancellation uses `client_cancelled`.
+
+### OpenTelemetry
+
+Set `KubeMcp__Telemetry__Enabled=true` to export custom MCP and Kubernetes metrics
+and traces over OTLP. Exporter connection and authentication use standard
+OpenTelemetry settings understood by organization-managed collectors:
+
+```text
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.example.internal:4317
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <collector credential>
+```
+
+`http/protobuf` is also supported through `OTEL_EXPORTER_OTLP_PROTOCOL`. Keep
+collector credentials in the deployment's secret-management system. The custom
+instruments cover MCP request count/duration/denials, Kubernetes duration/errors,
+safe tool-content response size, LIST count, sanitized Secret GET count, and
+server/upstream timeouts. Only curated custom spans from the `/mcp` middleware and
+Kubernetes tool boundary are exported; generic ASP.NET URL/query/user-agent spans,
+request/response bodies, and arbitrary exception events are not recorded. Metrics
+and custom spans use only fixed operations, outcomes, HTTP status codes, and safe
+error categories. They never tag Kubernetes resource/object names, namespaces, request
+or response bodies, tokens, fingerprints, or arbitrary exception text.
 
 ## Prerequisites
 
@@ -47,9 +98,9 @@ recorded as `anonymous`; static API-key calls use the non-secret shared identity
 ## Build and test
 
 ```sh
-dotnet restore
+dotnet restore --locked-mode
 dotnet build --configuration Release --no-restore
-dotnet test --configuration Release --no-build
+dotnet test --configuration Release --no-build --no-restore
 ```
 
 The test suite includes Secret sanitization/fingerprinting tests, compact LIST
@@ -168,9 +219,15 @@ use double underscores, for example `KubeMcp__SecretHmacKey`.
 | `KubeMcp:NamespacePolicy:DeniedNamespaces` | Kubernetes system namespaces | Names denied in blacklist mode |
 | `KubeMcp:NamespacePolicy:LabelSelector` | none | Required Kubernetes label selector in label-selector mode |
 | `KubeMcp:MaxListItems` | `100` | Maximum objects returned by LIST |
-| `KubeMcp:MaxResponseBytes` | `1048576` | Maximum serialized tool response size |
-| `KubeMcp:KubernetesRequestTimeoutSeconds` | `15` | Kubernetes operation timeout |
+| `KubeMcp:MaxResponseBytes` | `1048576` | Maximum safe inner tool-content JSON size (not the complete MCP/HTTP wire envelope) |
+| `KubeMcp:MaxUpstreamBodyBytes` | `4194304` | Per-page or single-object Kubernetes response cap enforced before deserialization |
+| `KubeMcp:ListPageSize` | `50` | Kubernetes page size for non-Secret LISTs |
+| `KubeMcp:SecretListPageSize` | `10` | Smaller Kubernetes page size for Secret LISTs |
+| `KubeMcp:MaxListPages` | `20` | Maximum continuation pages fetched for one LIST |
+| `KubeMcp:KubernetesRequestTimeoutSeconds` | `15` | Kubernetes reader operation timeout |
+| `KubeMcp:OverallMcpRequestTimeoutSeconds` | `30` | End-to-end `/mcp` server deadline; must be greater than the Kubernetes timeout |
 | `KubeMcp:DiscoveryCacheSeconds` | `300` | API discovery cache lifetime when resource `AllowAll` mode is enabled |
+| `KubeMcp:Telemetry:Enabled` | `false` | Enable low-cardinality OpenTelemetry metrics/traces and OTLP export |
 | `KubeMcp:Authentication:Mode` | `ApiKey` (`None` in `appsettings.Development.json`) | `None`, `ApiKey`, or `OAuthClientCredentials` |
 | `KubeMcp:Authentication:AllowUnauthenticated` | `false` | Deliberate deployment-level opt-in required for `None` outside the `Development` environment; never enable in production |
 | `KubeMcp:Authentication:ApiKey` | none | Static key of at least 32 bytes; sent as an `Authorization: Bearer` credential |

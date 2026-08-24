@@ -100,6 +100,18 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
                 $"{KubeMcpOptions.SectionName}:SecretListPageSize must not exceed ListPageSize.");
         }
 
+        if (options.OverallMcpRequestTimeoutSeconds is < 1 or > 3600)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:OverallMcpRequestTimeoutSeconds must be between 1 and 3600.");
+        }
+
+        if (options.OverallMcpRequestTimeoutSeconds <= options.KubernetesRequestTimeoutSeconds)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:OverallMcpRequestTimeoutSeconds must be greater than KubernetesRequestTimeoutSeconds so the end-to-end deadline leaves time for MCP error serialization and audit publication.");
+        }
+
         var forwardedHeadersValidation = ValidateForwardedHeaders(options.ForwardedHeaders);
         if (forwardedHeadersValidation is not null)
         {

@@ -191,19 +191,8 @@ internal sealed class KubernetesApi : IKubernetesApi
         _ => KubernetesErrorCategory.Internal,
     };
 
-    internal static string SafeMessage(KubernetesErrorCategory category) => category switch
-    {
-        KubernetesErrorCategory.NotFound => "The Kubernetes resource was not found.",
-        KubernetesErrorCategory.AccessDenied => "Access to the Kubernetes resource was denied.",
-        KubernetesErrorCategory.RateLimited => "The Kubernetes API is rate-limiting requests; retry later.",
-        KubernetesErrorCategory.ServerError => "The Kubernetes API returned a server error.",
-        KubernetesErrorCategory.InvalidRequest => "The Kubernetes request was invalid.",
-        KubernetesErrorCategory.NetworkError => "The Kubernetes API could not be reached.",
-        KubernetesErrorCategory.Timeout => "The Kubernetes request timed out.",
-        KubernetesErrorCategory.ResponseTooLarge => "The Kubernetes response exceeded the configured upstream body-size limit.",
-        KubernetesErrorCategory.MalformedResponse => "The Kubernetes API returned a malformed response.",
-        _ => "The Kubernetes API request failed.",
-    };
+    internal static string SafeMessage(KubernetesErrorCategory category) =>
+        KubernetesErrorDetails.Get(category).Message;
 
     internal static Uri BuildGetUri(
         Uri baseUri,
