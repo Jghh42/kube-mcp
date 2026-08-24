@@ -17,6 +17,8 @@ public sealed class KubeMcpOptions
 
     public NamespacePolicyOptions NamespacePolicy { get; init; } = new();
 
+    public KubeMcpAuthenticationOptions Authentication { get; init; } = new();
+
     [Range(1, 1000)]
     public int MaxListItems { get; init; } = 100;
 
@@ -66,4 +68,36 @@ public enum NamespacePolicyMode
 {
     Blacklist,
     LabelSelector
+}
+
+public sealed class KubeMcpAuthenticationOptions
+{
+    public AuthenticationMode Mode { get; init; } = AuthenticationMode.None;
+
+    public string ApiKey { get; init; } = string.Empty;
+
+    public OAuthOptions OAuth { get; init; } = new();
+}
+
+public sealed class OAuthOptions
+{
+    public string Authority { get; init; } = string.Empty;
+
+    public string Audience { get; init; } = string.Empty;
+
+    public string[] RequiredScopes { get; init; } = ["k-mcp:read"];
+
+    public string[] RequiredRoles { get; init; } = [];
+
+    public bool RequireHttpsMetadata { get; init; } = true;
+
+    [Range(0, 300)]
+    public int ClockSkewSeconds { get; init; } = 60;
+}
+
+public enum AuthenticationMode
+{
+    None,
+    ApiKey,
+    OAuthClientCredentials
 }

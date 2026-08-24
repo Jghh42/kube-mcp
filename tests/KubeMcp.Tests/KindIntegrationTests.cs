@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text.Json;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -19,11 +22,23 @@ public sealed class KindIntegrationTests
             return;
         }
 
-        await using var transport = new HttpClientTransport(new HttpClientTransportOptions
+        var accessToken = Environment.GetEnvironmentVariable("KUBE_MCP_INTEGRATION_ACCESS_TOKEN");
+        using var httpClient = new HttpClient();
+        if (!string.IsNullOrWhiteSpace(accessToken))
         {
-            Endpoint = new Uri(endpoint),
-            Name = "kube-mcp-kind-integration"
-        });
+            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            await AssertOAuthDenialsAsync(endpoint);
+        }
+
+        await using var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri(endpoint),
+                Name = "kube-mcp-kind-integration"
+            },
+            httpClient,
+            loggerFactory: null,
+            ownsHttpClient: false);
         await using var client = await McpClient.CreateAsync(transport);
 
         var tools = await client.ListToolsAsync();
@@ -173,6 +188,31 @@ public sealed class KindIntegrationTests
             cancellationToken: CancellationToken.None);
         Assert.True(invalidNamespace.IsError);
         Assert.Contains("valid lowercase Kubernetes DNS label", Text(invalidNamespace));
+    }
+
+    private static async Task AssertOAuthDenialsAsync(string endpoint)
+    {
+        var wrongAudienceToken = Environment.GetEnvironmentVariable("KUBE_MCP_INTEGRATION_WRONG_AUDIENCE_TOKEN");
+        var missingPermissionToken = Environment.GetEnvironmentVariable("KUBE_MCP_INTEGRATION_MISSING_PERMISSION_TOKEN");
+        Assert.False(string.IsNullOrWhiteSpace(wrongAudienceToken));
+        Assert.False(string.IsNullOrWhiteSpace(missingPermissionToken));
+
+        using var unauthenticated = new HttpClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(unauthenticated, endpoint));
+
+        using var wrongAudience = new HttpClient();
+        wrongAudience.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", wrongAudienceToken);
+        Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(wrongAudience, endpoint));
+
+        using var missingPermission = new HttpClient();
+        missingPermission.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", missingPermissionToken);
+        Assert.Equal(HttpStatusCode.Forbidden, await PostMcpAsync(missingPermission, endpoint));
+    }
+
+    private static async Task<HttpStatusCode> PostMcpAsync(HttpClient client, string endpoint)
+    {
+        using var response = await client.PostAsync(endpoint, JsonContent.Create(new { }));
+        return response.StatusCode;
     }
 
     private static ValueTask<CallToolResult> CallAsync(
