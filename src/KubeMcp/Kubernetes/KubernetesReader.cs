@@ -289,11 +289,10 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
                     {
                         sourceItemIndex++;
                         cancellationToken.ThrowIfCancellationRequested();
-                        ValidateObjectIdentity(
+                        ValidateListObjectIdentity(
                             itemElement,
                             descriptor,
-                            @namespace,
-                            expectedName: null);
+                            @namespace);
 
                         if (items.Count >= maxItems)
                         {
@@ -496,6 +495,45 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
             RequiredIdentityObject(item, "metadata"),
             @namespace,
             expectedName);
+    }
+
+    private static void ValidateListObjectIdentity(
+        JsonElement item,
+        KubernetesResourceDescriptor descriptor,
+        string @namespace)
+    {
+        if (item.ValueKind != JsonValueKind.Object)
+        {
+            throw MalformedResponseException();
+        }
+
+        // Kubernetes commonly omits TypeMeta (apiVersion/kind) from objects
+        // embedded in typed LIST responses. The enclosing list TypeMeta is
+        // required above; if an item does include either field, validate it
+        // strictly so contradictory or case-confused identities are rejected.
+        ValidateOptionalIdentityString(item, "apiVersion", descriptor.ApiVersion);
+        ValidateOptionalIdentityString(item, "kind", descriptor.Kind);
+        ValidateMetadataIdentity(
+            RequiredIdentityObject(item, "metadata"),
+            @namespace,
+            expectedName: null);
+    }
+
+    private static void ValidateOptionalIdentityString(
+        JsonElement parent,
+        string propertyName,
+        string expectedValue)
+    {
+        if (!TryGetExactProperty(parent, propertyName, out var value))
+        {
+            return;
+        }
+
+        if (value.ValueKind != JsonValueKind.String ||
+            !string.Equals(value.GetString(), expectedValue, StringComparison.Ordinal))
+        {
+            throw MalformedResponseException();
+        }
     }
 
     private static void ValidateMetadataIdentity(

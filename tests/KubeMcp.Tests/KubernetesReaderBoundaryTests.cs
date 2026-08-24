@@ -1031,6 +1031,22 @@ public sealed class KubernetesReaderErrorTests
     }
 
     [Fact]
+    public async Task ListAcceptsKubernetesItemsWithoutRepeatedTypeMeta()
+    {
+        using var host = new ReaderHost(ReaderTestOptions.Options());
+        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
+            "{\"apiVersion\":\"v1\",\"kind\":\"PodList\",\"metadata\":{},\"items\":[" +
+            "{\"metadata\":{\"name\":\"p1\",\"namespace\":\"production\",\"creationTimestamp\":\"2024-01-01T00:00:00Z\"},\"spec\":{\"containers\":[]},\"status\":{}}]}");
+
+        var result = await host.Reader.ReadAsync(
+            "pods", "production", null, CancellationToken.None);
+
+        using var json = JsonDocument.Parse(result.Json);
+        var item = Assert.Single(json.RootElement.GetProperty("items").EnumerateArray());
+        Assert.Equal("p1", item.GetProperty("name").GetString());
+    }
+
+    [Fact]
     public async Task ListValidatesMalformedItemsOmittedByItemCap()
     {
         var options = ReaderTestOptions.Options(maxListItems: 1);

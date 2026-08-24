@@ -45,8 +45,8 @@ public sealed class KindIntegrationTests
         Assert.Equal("k8s_get", Assert.Single(tools).Name);
 
         var configMapList = await CallAsync(client, "configmaps");
-        Assert.NotEqual(true, configMapList.IsError);
         var configMapListText = Text(configMapList);
+        Assert.False(configMapList.IsError == true, configMapListText);
         Assert.DoesNotContain("integration", configMapListText);
         Assert.DoesNotContain("\"data\"", configMapListText);
         using (var json = JsonDocument.Parse(configMapListText))
