@@ -29,7 +29,8 @@ public sealed class NamespaceAccessPolicy
         if (mode == NamespacePolicyMode.Blacklist && deniedNamespaces.Contains(@namespace))
         {
             throw new KubernetesReadException(
-                $"Namespace \"{@namespace}\" is denied by the configured namespace blacklist.");
+                $"Namespace \"{@namespace}\" is denied by the configured namespace blacklist.",
+                KubernetesErrorCategory.NamespaceNotAllowed);
         }
     }
 
@@ -38,7 +39,8 @@ public sealed class NamespaceAccessPolicy
         if (mode == NamespacePolicyMode.LabelSelector && !matched)
         {
             throw new KubernetesReadException(
-                $"Namespace \"{@namespace}\" does not match the configured namespace label selector.");
+                $"Namespace \"{@namespace}\" does not match the configured namespace label selector.",
+                KubernetesErrorCategory.NamespaceNotAllowed);
         }
     }
 }

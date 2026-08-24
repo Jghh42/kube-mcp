@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -12,15 +13,14 @@ public sealed class KindIntegrationTests
     private const string Namespace = "kube-mcp-e2e";
     private const string SecretValue = "correct-horse-battery-staple";
 
-    [Fact]
+    [IntegrationTest]
     [Trait("Category", "Integration")]
     public async Task McpReadsRealKindResourcesAndSanitizesSecrets()
     {
-        var endpoint = Environment.GetEnvironmentVariable("KUBE_MCP_INTEGRATION_ENDPOINT");
-        if (string.IsNullOrWhiteSpace(endpoint))
-        {
-            return;
-        }
+        var endpoint = Environment.GetEnvironmentVariable(IntegrationTestAttribute.EndpointVariable);
+        Assert.False(string.IsNullOrWhiteSpace(endpoint),
+            $"{IntegrationTestAttribute.EndpointVariable} must be set when this test runs; " +
+            "if you see this, the skip attribute was bypassed.");
 
         var accessToken = Environment.GetEnvironmentVariable("KUBE_MCP_INTEGRATION_ACCESS_TOKEN");
         using var httpClient = new HttpClient();
@@ -45,8 +45,8 @@ public sealed class KindIntegrationTests
         Assert.Equal("k8s_get", Assert.Single(tools).Name);
 
         var configMapList = await CallAsync(client, "configmaps");
-        Assert.NotEqual(true, configMapList.IsError);
         var configMapListText = Text(configMapList);
+        Assert.False(configMapList.IsError == true, configMapListText);
         Assert.DoesNotContain("integration", configMapListText);
         Assert.DoesNotContain("\"data\"", configMapListText);
         using (var json = JsonDocument.Parse(configMapListText))
@@ -123,6 +123,9 @@ public sealed class KindIntegrationTests
         Assert.Contains("integration-secret", secretListText);
         Assert.Contains("password", secretListText);
         Assert.DoesNotContain(SecretValue, secretListText);
+        Assert.DoesNotContain(
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(SecretValue)),
+            secretListText);
         Assert.DoesNotContain("hmac-sha256:", secretListText);
 
         var secretGet = await CallAsync(client, "secrets", "integration-secret");
@@ -146,8 +149,8 @@ public sealed class KindIntegrationTests
         Assert.True(unknownResource.IsError);
         Assert.Contains(
             resourcePolicyMode == "AllowAll"
-                ? "was not found among namespaced Kubernetes resources"
-                : "not included in the configured resource allowlist",
+                ? "The Kubernetes resource was not found."
+                : "The Kubernetes resource is not allowed.",
             Text(unknownResource));
 
         if (resourcePolicyMode == "AllowAll")
@@ -163,18 +166,14 @@ public sealed class KindIntegrationTests
         var policyMode = Environment.GetEnvironmentVariable("KUBE_MCP_NAMESPACE_POLICY_MODE");
         var deniedNamespace = await CallAsync(client, "pods", @namespace: "kube-system");
         Assert.True(deniedNamespace.IsError);
-        Assert.Contains(
-            policyMode == "LabelSelector"
-                ? "does not match the configured namespace label selector"
-                : "denied by the configured namespace blacklist",
-            Text(deniedNamespace));
+        Assert.Contains("The Kubernetes namespace is not allowed.", Text(deniedNamespace));
 
         if (policyMode == "LabelSelector")
         {
             var unlabelledNamespace = await CallAsync(client, "configmaps", @namespace: "default");
             Assert.True(unlabelledNamespace.IsError);
             Assert.Contains(
-                "does not match the configured namespace label selector",
+                "The Kubernetes namespace is not allowed.",
                 Text(unlabelledNamespace));
         }
 
@@ -187,7 +186,7 @@ public sealed class KindIntegrationTests
             },
             cancellationToken: CancellationToken.None);
         Assert.True(invalidNamespace.IsError);
-        Assert.Contains("valid lowercase Kubernetes DNS label", Text(invalidNamespace));
+        Assert.Contains("The Kubernetes request is invalid.", Text(invalidNamespace));
     }
 
     private static async Task AssertOAuthDenialsAsync(string endpoint)

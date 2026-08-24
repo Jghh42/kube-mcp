@@ -1,11 +1,15 @@
 namespace KubeMcp.Kubernetes;
 
-internal sealed record KubernetesResourceDescriptor(
+public sealed record KubernetesResourceDescriptor(
     string Group,
     string Version,
     string Resource,
     string Kind)
 {
+    public string ApiVersion => string.IsNullOrEmpty(Group)
+        ? Version
+        : $"{Group}/{Version}";
+
     public string QualifiedName => string.IsNullOrEmpty(Group)
         ? Resource
         : $"{Resource}.{Group}";

@@ -1,0 +1,42 @@
+# Optional CloudNativePG RBAC overlay.
+#
+# The default ClusterRole in deployment.yaml grants only core Kubernetes
+# resources. Apply this overlay to additionally grant read-only (get/list) access
+# to the CloudNativePG CRDs listed in overlays/cnpg/resources.json. Application
+# resource mode and Kubernetes RBAC are independent: enabling only one does not
+# allow access to the other, so you must also add the CRD mappings to the
+# kube-mcp configuration (see overlays/README.md).
+#
+#   kubectl apply --filename overlays/cnpg/rbac.yaml
+#
+# This overlay is purely additive. To withdraw access, delete the resources:
+#
+#   kubectl delete clusterrole kube-mcp-reader-cnpg
+#   kubectl delete clusterrolebinding kube-mcp-reader-cnpg
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-mcp-reader-cnpg
+  labels:
+    app.kubernetes.io/name: kube-mcp
+    app.kubernetes.io/component: cnpg-overlay
+rules:
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters", "backups", "scheduledbackups", "poolers"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-mcp-reader-cnpg
+  labels:
+    app.kubernetes.io/name: kube-mcp
+    app.kubernetes.io/component: cnpg-overlay
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-mcp-reader-cnpg
+subjects:
+  - kind: ServiceAccount
+    name: kube-mcp
+    namespace: kube-mcp

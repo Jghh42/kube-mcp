@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # Keep project files and their committed packages.lock.json files in one
+  # reviewed update so locked CI/Docker restores remain reproducible.
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+
+  # Refresh digest-pinned Dockerfile dependencies without reverting to mutable
+  # tags. The human-readable tag remains visible beside each digest.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Full action SHAs are mandatory; automated update PRs avoid requiring
+  # mutable major-version tags in the workflow itself.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10

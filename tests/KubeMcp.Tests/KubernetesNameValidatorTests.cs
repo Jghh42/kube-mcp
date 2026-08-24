@@ -24,6 +24,22 @@ public sealed class KubernetesNameValidatorTests
             KubernetesNameValidator.ValidateNamespace(value));
     }
 
+    [Fact]
+    public void BoundsCallerResourceBeforeDiagnosticCopying()
+    {
+        var oversized = new string(
+            'r',
+            KubernetesNameValidator.MaximumQualifiedNameLength + 1);
+
+        var exception = Assert.Throws<KubernetesReadException>(() =>
+            KubernetesNameValidator.ValidateResourceIdentifierLength(oversized));
+
+        Assert.Equal(KubernetesErrorCategory.InvalidRequest, exception.Category);
+        Assert.Equal("<invalid-resource>",
+            KubernetesNameValidator.BoundedResourceForDiagnostics(oversized));
+        Assert.DoesNotContain(oversized, exception.Message);
+    }
+
     [Theory]
     [InlineData("pod-1")]
     [InlineData("generated.name-123")]

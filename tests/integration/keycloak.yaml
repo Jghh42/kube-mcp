@@ -118,6 +118,10 @@ metadata:
     app.kubernetes.io/name: kube-mcp-keycloak
 spec:
   replicas: 1
+  # This is an ephemeral single-replica integration dependency. Recreate avoids
+  # briefly running two memory-heavy Keycloak JVMs on the one-node kind runner.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: kube-mcp-keycloak
@@ -128,10 +132,16 @@ spec:
     spec:
       containers:
         - name: keycloak
-          image: quay.io/keycloak/keycloak:26.4.7
+          # Multi-arch index digest verified from Quay for Keycloak 26.4.7.
+          image: quay.io/keycloak/keycloak:26.4.7@sha256:9409c59bdfb65dbffa20b11e6f18b8abb9281d480c7ca402f51ed3d5977e6007
           imagePullPolicy: IfNotPresent
           args: ["start-dev", "--import-realm"]
           env:
+            # Keycloak defaults to a 70% max heap, which left too little native
+            # headroom during Quarkus augmentation under the former 768 MiB CI
+            # limit. Keep a deterministic 512 MiB heap and equal non-heap room.
+            - name: JAVA_OPTS_KC_HEAP
+              value: -Xms128m -Xmx512m
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
               value: admin
             - name: KC_BOOTSTRAP_ADMIN_PASSWORD
@@ -154,7 +164,7 @@ spec:
               memory: 256Mi
             limits:
               cpu: "1"
-              memory: 768Mi
+              memory: 1Gi
           volumeMounts:
             - name: realm
               mountPath: /opt/keycloak/data/import

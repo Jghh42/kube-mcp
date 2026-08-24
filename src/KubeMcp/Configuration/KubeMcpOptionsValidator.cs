@@ -1,6 +1,9 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace KubeMcp.Configuration;
@@ -8,6 +11,15 @@ namespace KubeMcp.Configuration;
 public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOptions>
 {
     private const int MinimumHmacKeyBytes = 32;
+    // The reference pod is limited to 256 MiB. Reserve at least three quarters
+    // for the runtime, request/response envelopes, and deserialized object graphs.
+    private const long MaximumAggregateUpstreamBodyBytes = 64L * 1024 * 1024;
+    private readonly IHostEnvironment environment;
+
+    public KubeMcpOptionsValidator(IHostEnvironment environment)
+    {
+        this.environment = environment;
+    }
 
     public ValidateOptionsResult Validate(string? name, KubeMcpOptions options)
     {
@@ -79,6 +91,61 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
                 $"{KubeMcpOptions.SectionName}:NamespacePolicy:LabelSelector must not exceed 1024 characters.");
         }
 
+        if (options.ReadinessNamespace is not null &&
+            !IsDnsLabel(options.ReadinessNamespace))
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:ReadinessNamespace must be a valid Kubernetes namespace name.");
+        }
+
+        if (options.MaxUpstreamBodyBytes < options.MaxResponseBytes)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:MaxUpstreamBodyBytes must be at least MaxResponseBytes so a single object's safe output can fit within the upstream body budget.");
+        }
+
+        if (options.SecretListPageSize > options.ListPageSize)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:SecretListPageSize must not exceed ListPageSize.");
+        }
+
+        if (options.DiscoveryParallelism is < 1 or > 16)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:DiscoveryParallelism must be between 1 and 16.");
+        }
+
+        if (options.OverallMcpRequestTimeoutSeconds is < 1 or > 3600)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:OverallMcpRequestTimeoutSeconds must be between 1 and 3600.");
+        }
+
+        if (options.OverallMcpRequestTimeoutSeconds <= options.KubernetesRequestTimeoutSeconds)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:OverallMcpRequestTimeoutSeconds must be greater than KubernetesRequestTimeoutSeconds so the end-to-end deadline leaves time for MCP error serialization and audit publication.");
+        }
+
+        var concurrencyValidation = ValidateMcpConcurrency(options);
+        if (concurrencyValidation is not null)
+        {
+            return concurrencyValidation;
+        }
+
+        var admissionValidation = ValidateMcpAdmission(options);
+        if (admissionValidation is not null)
+        {
+            return admissionValidation;
+        }
+
+        var forwardedHeadersValidation = ValidateForwardedHeaders(options.ForwardedHeaders);
+        if (forwardedHeadersValidation is not null)
+        {
+            return forwardedHeadersValidation;
+        }
+
         return ValidateAuthentication(options.Authentication);
     }
 
@@ -111,7 +178,7 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         }
     }
 
-    private static ValidateOptionsResult ValidateAuthentication(KubeMcpAuthenticationOptions authentication)
+    private ValidateOptionsResult ValidateAuthentication(KubeMcpAuthenticationOptions authentication)
     {
         const string path = $"{KubeMcpOptions.SectionName}:Authentication";
 
@@ -122,6 +189,16 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
 
         if (authentication.Mode == AuthenticationMode.None)
         {
+            var isDevelopment = environment.IsDevelopment();
+            if (!isDevelopment && !authentication.AllowUnauthenticated)
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{path}:Mode=None is not permitted outside the Development environment. " +
+                    "Set Mode to ApiKey or OAuthClientCredentials for any non-development deployment, " +
+                    "or explicitly set KubeMcp:Authentication:AllowUnauthenticated=true for a deliberate " +
+                    "development-only deployment.");
+            }
+
             return ValidateOptionsResult.Success;
         }
 
@@ -184,6 +261,121 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         return ValidateOptionsResult.Success;
     }
 
+    private static ValidateOptionsResult? ValidateMcpAdmission(KubeMcpOptions options)
+    {
+        const string path = $"{KubeMcpOptions.SectionName}:McpAdmission";
+        var admission = options.McpAdmission;
+        if (admission is null)
+        {
+            return ValidateOptionsResult.Fail($"{path} is required.");
+        }
+
+        if (admission.PermitLimit is < 1 or > 128)
+        {
+            return ValidateOptionsResult.Fail($"{path}:PermitLimit must be between 1 and 128.");
+        }
+
+        if (admission.QueueLimit is < 0 or > 128)
+        {
+            return ValidateOptionsResult.Fail($"{path}:QueueLimit must be between 0 and 128.");
+        }
+
+        var authenticatedCapacity =
+            options.McpConcurrency.PermitLimit + options.McpConcurrency.QueueLimit;
+        if (admission.PermitLimit < authenticatedCapacity)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{path}:PermitLimit must be at least {KubeMcpOptions.SectionName}:McpConcurrency:PermitLimit plus QueueLimit ({authenticatedCapacity}) so authenticated requests can reach the complete inner oldest-first queue.");
+        }
+
+        return null;
+    }
+
+    private static ValidateOptionsResult? ValidateMcpConcurrency(KubeMcpOptions options)
+    {
+        const string path = $"{KubeMcpOptions.SectionName}:McpConcurrency";
+        var concurrency = options.McpConcurrency;
+        if (concurrency is null)
+        {
+            return ValidateOptionsResult.Fail($"{path} is required.");
+        }
+
+        if (concurrency.PermitLimit is < 1 or > 16)
+        {
+            return ValidateOptionsResult.Fail($"{path}:PermitLimit must be between 1 and 16.");
+        }
+
+        if (concurrency.QueueLimit is < 0 or > 4)
+        {
+            return ValidateOptionsResult.Fail($"{path}:QueueLimit must be between 0 and 4.");
+        }
+
+        // A refresh occupies one MCP permit but can have DiscoveryParallelism
+        // group bodies in flight at once. Every other active MCP permit can also
+        // retain one capped upstream body, so validate the actual worst case.
+        var allowAll = options.ResourcePolicy.Mode == ResourcePolicyMode.AllowAll;
+        var maximumConcurrentBodies = allowAll
+            ? (long)concurrency.PermitLimit - 1 + options.DiscoveryParallelism
+            : concurrency.PermitLimit;
+        var aggregateUpstreamBytes = maximumConcurrentBodies * options.MaxUpstreamBodyBytes;
+        if (aggregateUpstreamBytes > MaximumAggregateUpstreamBodyBytes)
+        {
+            var discoveryDetail = allowAll
+                ? ", including AllowAll discovery parallelism,"
+                : string.Empty;
+            return ValidateOptionsResult.Fail(
+                $"{path}:the worst-case concurrent Kubernetes body count multiplied by {KubeMcpOptions.SectionName}:MaxUpstreamBodyBytes must not exceed {MaximumAggregateUpstreamBodyBytes} bytes{discoveryDetail} while preserving memory headroom within the 256 MiB pod limit.");
+        }
+
+        return null;
+    }
+
+    private static ValidateOptionsResult? ValidateForwardedHeaders(KubeMcpForwardedHeadersOptions forwardedHeaders)
+    {
+        const string path = $"{KubeMcpOptions.SectionName}:ForwardedHeaders";
+
+        if (forwardedHeaders is null)
+        {
+            return ValidateOptionsResult.Fail($"{path} is required.");
+        }
+
+        foreach (var proxy in forwardedHeaders.KnownProxies ?? [])
+        {
+            if (!IPAddress.TryParse(proxy, out _))
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{path}:KnownProxies contains invalid IP address \"{proxy}\".");
+            }
+        }
+
+        foreach (var network in forwardedHeaders.KnownNetworks ?? [])
+        {
+            if (!System.Net.IPNetwork.TryParse(network, out var parsed))
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{path}:KnownNetworks contains invalid CIDR network \"{network}\".");
+            }
+
+            if (parsed.PrefixLength == 0)
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{path}:KnownNetworks must not trust every address with \"{network}\".");
+            }
+        }
+
+        const ForwardedHeaders supportedHeaders =
+            ForwardedHeaders.XForwardedFor |
+            ForwardedHeaders.XForwardedProto |
+            ForwardedHeaders.XForwardedHost;
+        if ((forwardedHeaders.AllowedForwardedHeaders & ~supportedHeaders) != 0)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{path}:AllowedForwardedHeaders may contain only XForwardedFor, XForwardedProto, and XForwardedHost.");
+        }
+
+        return null;
+    }
+
     private static string? ValidateResource(
         string configuredName,
         KubernetesResourceOptions? resource)
@@ -201,18 +393,22 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
             return $"{path} must contain a resource mapping.";
         }
 
-        if (!IsDnsLabel(resource.Resource))
+        if (!IsDns1035Label(resource.Resource))
         {
-            return $"{path}:Resource must be a lowercase Kubernetes resource name.";
+            return $"{path}:Resource must be a lowercase Kubernetes resource name (DNS-1035 label).";
         }
 
-        if (string.IsNullOrWhiteSpace(resource.Version) ||
-            !ApiVersionRegex().IsMatch(resource.Version))
+        if (!IsDns1035Label(resource.Version))
         {
-            return $"{path}:Version is invalid.";
+            return $"{path}:Version must be a lowercase DNS-1035 label such as v1 or v1beta1.";
         }
 
-        if (!string.IsNullOrEmpty(resource.Group) &&
+        if (resource.Group is null)
+        {
+            return $"{path}:Group must not be null; use an empty string for the core Kubernetes API group.";
+        }
+
+        if (resource.Group.Length > 0 &&
             (resource.Group.Length > 253 ||
              resource.Group.Split('.').Any(part => !IsDnsLabel(part))))
         {
@@ -220,9 +416,9 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         }
 
         if (string.IsNullOrWhiteSpace(resource.Kind) ||
-            !KindRegex().IsMatch(resource.Kind))
+            !IsDns1035Label(resource.Kind.ToLowerInvariant()))
         {
-            return $"{path}:Kind is invalid.";
+            return $"{path}:Kind must be a mixed-case DNS-1035 label (max 63 characters).";
         }
 
         return null;
@@ -233,12 +429,17 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         value.Length <= 63 &&
         DnsLabelRegex().IsMatch(value);
 
+    // A DNS-1035 label matches Kubernetes resource/version naming: lowercase
+    // alphanumeric and internal hyphens, starting with a letter, ending with
+    // an alphanumeric character, and at most 63 characters long.
+    private static bool IsDns1035Label(string value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value.Length <= 63 &&
+        Dns1035LabelRegex().IsMatch(value);
+
     [GeneratedRegex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")]
     private static partial Regex DnsLabelRegex();
 
-    [GeneratedRegex("^[a-z][a-z0-9]*$")]
-    private static partial Regex ApiVersionRegex();
-
-    [GeneratedRegex("^[A-Za-z][A-Za-z0-9]*$")]
-    private static partial Regex KindRegex();
+    [GeneratedRegex("^[a-z]([-a-z0-9]*[a-z0-9])?$")]
+    private static partial Regex Dns1035LabelRegex();
 }

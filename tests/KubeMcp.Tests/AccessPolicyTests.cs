@@ -61,7 +61,12 @@ public sealed class ResourceAllowlistTests
             SecretHmacKey = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
             ResourcePolicy = resourcePolicy ?? new ResourcePolicyOptions(),
             AllowedResources = resources,
-            NamespacePolicy = namespacePolicy ?? new NamespacePolicyOptions()
+            NamespacePolicy = namespacePolicy ?? new NamespacePolicyOptions(),
+            Authentication = new KubeMcpAuthenticationOptions
+            {
+                Mode = AuthenticationMode.None,
+                AllowUnauthenticated = true
+            }
         };
 
     internal static KubernetesResourceOptions Resource(
@@ -126,7 +131,8 @@ public sealed class NamespaceAccessPolicyTests
 
 public sealed class KubeMcpOptionsValidatorTests
 {
-    private readonly KubeMcpOptionsValidator validator = new();
+    private readonly KubeMcpOptionsValidator validator =
+        new(new TestHostEnvironment("Production"));
 
     [Fact]
     public void AcceptsValidBlacklistConfiguration()
@@ -177,6 +183,169 @@ public sealed class KubeMcpOptionsValidatorTests
     }
 
     [Fact]
+    public void RejectsNullResourceGroupButAcceptsEmptyCoreGroup()
+    {
+        var nullGroup = OptionsWithResource(new KubernetesResourceOptions
+        {
+            Group = null!,
+            Version = "v1",
+            Resource = "pods",
+            Kind = "Pod"
+        });
+        var coreGroup = OptionsWithResource(
+            ResourceAllowlistTests.Resource("", "v1", "pods", "Pod"));
+
+        var nullResult = validator.Validate(null, nullGroup);
+        var coreResult = validator.Validate(null, coreGroup);
+
+        Assert.True(nullResult.Failed);
+        Assert.Contains("Group must not be null", nullResult.FailureMessage);
+        Assert.True(coreResult.Succeeded);
+    }
+
+    [Fact]
+    public void RejectsConcurrencyThatExceedsAggregateUpstreamMemoryBudget()
+    {
+        var baseline = ValidOptions();
+        var options = new KubeMcpOptions
+        {
+            SecretHmacKey = baseline.SecretHmacKey,
+            ResourcePolicy = baseline.ResourcePolicy,
+            AllowedResources = baseline.AllowedResources,
+            NamespacePolicy = baseline.NamespacePolicy,
+            Authentication = baseline.Authentication,
+            MaxUpstreamBodyBytes = 8 * 1024 * 1024,
+            McpConcurrency = new McpConcurrencyOptions
+            {
+                PermitLimit = 9,
+                QueueLimit = 1
+            }
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains("worst-case concurrent Kubernetes body count", result.FailureMessage);
+    }
+
+    [Theory]
+    [InlineData(0, 0, "PermitLimit")]
+    [InlineData(1, 5, "QueueLimit")]
+    public void RejectsConcurrencyLimitsOutsideValidatedBounds(
+        int permitLimit,
+        int queueLimit,
+        string expectedSetting)
+    {
+        var baseline = ValidOptions();
+        var options = new KubeMcpOptions
+        {
+            SecretHmacKey = baseline.SecretHmacKey,
+            ResourcePolicy = baseline.ResourcePolicy,
+            AllowedResources = baseline.AllowedResources,
+            NamespacePolicy = baseline.NamespacePolicy,
+            Authentication = baseline.Authentication,
+            McpConcurrency = new McpConcurrencyOptions
+            {
+                PermitLimit = permitLimit,
+                QueueLimit = queueLimit
+            }
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(expectedSetting, result.FailureMessage);
+    }
+
+    [Theory]
+    [InlineData("v1")]
+    [InlineData("v1beta1")]
+    [InlineData("v1-beta-1")]
+    public void AcceptsDns1035ApiVersionsIncludingInternalHyphens(string version)
+    {
+        var options = OptionsWithResource(
+            ResourceAllowlistTests.Resource("example.test", version, "widgets", "Widget"));
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
+    }
+
+    [Fact]
+    public void AcceptsApiVersionAtDns1035MaximumLength()
+    {
+        var version = $"v{new string('1', 62)}";
+        var options = OptionsWithResource(
+            ResourceAllowlistTests.Resource("example.test", version, "widgets", "Widget"));
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
+    }
+
+    [Theory]
+    [InlineData("1v1")]
+    [InlineData("-v1")]
+    [InlineData("v1-")]
+    [InlineData("v1_beta1")]
+    [InlineData("V1")]
+    public void RejectsApiVersionsOutsideDns1035Rules(string version)
+    {
+        var options = OptionsWithResource(
+            ResourceAllowlistTests.Resource("example.test", version, "widgets", "Widget"));
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains("Version must be a lowercase DNS-1035 label", result.FailureMessage);
+    }
+
+    [Fact]
+    public void RejectsApiVersionLongerThanDns1035Maximum()
+    {
+        var version = $"v{new string('1', 63)}";
+        var options = OptionsWithResource(
+            ResourceAllowlistTests.Resource("example.test", version, "widgets", "Widget"));
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains("Version must be a lowercase DNS-1035 label", result.FailureMessage);
+    }
+
+    [Fact]
+    public void EnforcesDns1035ResourceLengthAndAllowsInternalHyphens()
+    {
+        var maximumResource = $"r-{new string('x', 61)}";
+        var validResult = validator.Validate(
+            null,
+            OptionsWithResource(ResourceAllowlistTests.Resource("example.test", "v1", maximumResource, "Widget")));
+        var invalidResult = validator.Validate(
+            null,
+            OptionsWithResource(ResourceAllowlistTests.Resource("example.test", "v1", $"r{new string('x', 63)}", "Widget")));
+
+        Assert.True(validResult.Succeeded);
+        Assert.True(invalidResult.Failed);
+        Assert.Contains("Resource must be a lowercase Kubernetes resource name", invalidResult.FailureMessage);
+    }
+
+    [Fact]
+    public void EnforcesMixedCaseDns1035KindLength()
+    {
+        var maximumKind = $"K-{new string('x', 61)}";
+        var validResult = validator.Validate(
+            null,
+            OptionsWithResource(ResourceAllowlistTests.Resource("example.test", "v1", "widgets", maximumKind)));
+        var invalidResult = validator.Validate(
+            null,
+            OptionsWithResource(ResourceAllowlistTests.Resource("example.test", "v1", "widgets", $"K{new string('x', 63)}")));
+
+        Assert.True(validResult.Succeeded);
+        Assert.True(invalidResult.Failed);
+        Assert.Contains("Kind must be a mixed-case DNS-1035 label", invalidResult.FailureMessage);
+    }
+
+    [Fact]
     public void LabelSelectorModeRequiresSelector()
     {
         var options = ResourceAllowlistTests.OptionsWithResources(
@@ -210,6 +379,12 @@ public sealed class KubeMcpOptionsValidatorTests
         Assert.Contains("contains invalid namespace", result.FailureMessage);
     }
 
+    private static KubeMcpOptions OptionsWithResource(KubernetesResourceOptions resource) =>
+        ValidOptions().WithResources(new Dictionary<string, KubernetesResourceOptions>
+        {
+            ["test-resource"] = resource
+        });
+
     private static KubeMcpOptions ValidOptions() =>
         ResourceAllowlistTests.OptionsWithResources(
             new Dictionary<string, KubernetesResourceOptions>
@@ -228,6 +403,8 @@ file static class OptionsTestExtensions
             ResourcePolicy = options.ResourcePolicy,
             AllowedResources = resources,
             NamespacePolicy = options.NamespacePolicy,
+            Authentication = options.Authentication,
+            ForwardedHeaders = options.ForwardedHeaders,
             MaxListItems = options.MaxListItems,
             MaxResponseBytes = options.MaxResponseBytes,
             KubernetesRequestTimeoutSeconds = options.KubernetesRequestTimeoutSeconds,

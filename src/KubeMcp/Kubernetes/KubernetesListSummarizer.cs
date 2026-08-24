@@ -22,8 +22,14 @@ public sealed class KubernetesListSummarizer(
             {
                 "pods" => SummarizePod(item),
                 "services" => SummarizeService(item),
+                "endpoints" => SummarizeEndpoints(item),
                 "configmaps" => SummarizeConfigMap(item),
                 "secrets" => SummarizeSecret(item),
+                "events" => SummarizeEvent(item),
+                "persistentvolumeclaims" => SummarizePersistentVolumeClaim(item),
+                "replicationcontrollers" => SummarizeReplicationController(item),
+                "limitranges" => SummarizeLimitRange(item),
+                "resourcequotas" => SummarizeResourceQuota(item),
                 _ => SummarizeFallback(item, descriptor)
             };
         }
@@ -48,7 +54,39 @@ public sealed class KubernetesListSummarizer(
             };
         }
 
+        if (group == "discovery.k8s.io" && resource == "endpointslices")
+        {
+            return SummarizeEndpointSlice(item);
+        }
+
+        if (group == "networking.k8s.io")
+        {
+            return resource switch
+            {
+                "ingresses" => SummarizeIngress(item),
+                "networkpolicies" => SummarizeNetworkPolicy(item),
+                _ => SummarizeFallback(item, descriptor)
+            };
+        }
+
+        if (group == "autoscaling" && resource == "horizontalpodautoscalers")
+        {
+            return SummarizeHorizontalPodAutoscaler(item);
+        }
+
+        if (group == "policy" && resource == "poddisruptionbudgets")
+        {
+            return SummarizePodDisruptionBudget(item);
+        }
+
         return SummarizeFallback(item, descriptor);
+    }
+
+    internal JsonObject SummarizeSecret(JsonElement item)
+    {
+        var result = secretSanitizer.SanitizeListItem(item);
+        AddAge(result, item);
+        return result;
     }
 
     private JsonObject SummarizePod(DynamicKubernetesObject item)
@@ -159,6 +197,131 @@ public sealed class KubernetesListSummarizer(
         return result;
     }
 
+    private JsonObject SummarizeEndpoints(DynamicKubernetesObject item)
+    {
+        long readyAddresses = 0;
+        long notReadyAddresses = 0;
+        var ports = new SortedDictionary<string, JsonObject>(StringComparer.Ordinal);
+        var subsets = ObjectProperty(item, "subsets");
+        if (subsets?.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var subset in subsets.Value.EnumerateArray())
+            {
+                readyAddresses += ArrayLength(ObjectProperty(subset, "addresses"));
+                notReadyAddresses += ArrayLength(ObjectProperty(subset, "notReadyAddresses"));
+                AddEndpointPorts(ports, ObjectProperty(subset, "ports"));
+            }
+        }
+
+        var result = new JsonObject
+        {
+            ["name"] = MetadataString(item, "name"),
+            ["readyAddresses"] = readyAddresses,
+            ["notReadyAddresses"] = notReadyAddresses,
+            ["ports"] = ToJsonArray(ports.Values)
+        };
+        AddAge(result, item);
+        return result;
+    }
+
+    private JsonObject SummarizeEndpointSlice(DynamicKubernetesObject item)
+    {
+        long ready = 0;
+        long terminating = 0;
+        long addressCount = 0;
+        var endpoints = ObjectProperty(item, "endpoints");
+        if (endpoints?.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var endpoint in endpoints.Value.EnumerateArray())
+            {
+                addressCount += ArrayLength(ObjectProperty(endpoint, "addresses"));
+                var conditions = ObjectProperty(endpoint, "conditions");
+                if (BooleanProperty(conditions, "ready") != false)
+                {
+                    ready++;
+                }
+
+                if (BooleanProperty(conditions, "terminating") == true)
+                {
+                    terminating++;
+                }
+            }
+        }
+
+        var ports = new SortedDictionary<string, JsonObject>(StringComparer.Ordinal);
+        AddEndpointPorts(ports, ObjectProperty(item, "ports"));
+        var result = new JsonObject
+        {
+            ["name"] = MetadataString(item, "name"),
+            ["service"] = MetadataStringMapValue(item, "labels", "kubernetes.io/service-name"),
+            ["addressType"] = StringValue(ObjectProperty(item, "addressType")),
+            ["endpoints"] = ArrayLength(endpoints),
+            ["ready"] = ready,
+            ["terminating"] = terminating,
+            ["addresses"] = addressCount,
+            ["ports"] = ToJsonArray(ports.Values)
+        };
+        AddAge(result, item);
+        return result;
+    }
+
+    private JsonObject SummarizeEvent(DynamicKubernetesObject item)
+    {
+        var series = ObjectProperty(item, "series");
+        var source = ObjectProperty(item, "source");
+        var result = new JsonObject
+        {
+            ["name"] = MetadataString(item, "name"),
+            ["type"] = StringValue(ObjectProperty(item, "type")),
+            ["reason"] = StringValue(ObjectProperty(item, "reason")),
+            ["object"] = FormatObjectReference(ObjectProperty(item, "involvedObject") ?? ObjectProperty(item, "regarding")),
+            ["message"] = StringValue(ObjectProperty(item, "message")) ?? StringValue(ObjectProperty(item, "note")),
+            ["count"] = IntegerProperty(series, "count") ?? IntegerValue(ObjectProperty(item, "count")) ?? 1,
+            ["lastSeen"] = StringProperty(series, "lastObservedTime") ??
+                           StringValue(ObjectProperty(item, "eventTime")) ??
+                           StringValue(ObjectProperty(item, "lastTimestamp")),
+            ["reporting"] = StringValue(ObjectProperty(item, "reportingController")) ??
+                            StringProperty(source, "component")
+        };
+        AddAge(result, item);
+        return result;
+    }
+
+    private JsonObject SummarizePersistentVolumeClaim(DynamicKubernetesObject item)
+    {
+        var spec = ObjectProperty(item, "spec");
+        var status = ObjectProperty(item, "status");
+        var result = new JsonObject
+        {
+            ["name"] = MetadataString(item, "name"),
+            ["status"] = StringProperty(status, "phase"),
+            ["volume"] = StringProperty(spec, "volumeName"),
+            ["capacity"] = StringProperty(ObjectProperty(status, "capacity"), "storage"),
+            ["accessModes"] = StringArray(ObjectProperty(spec, "accessModes")),
+            ["storageClass"] = StringProperty(spec, "storageClassName") ??
+                               MetadataStringMapValue(item, "annotations", "volume.beta.kubernetes.io/storage-class"),
+            ["volumeMode"] = StringProperty(spec, "volumeMode") ?? "Filesystem"
+        };
+        AddAge(result, item);
+        return result;
+    }
+
+    private JsonObject SummarizeReplicationController(DynamicKubernetesObject item)
+    {
+        var spec = ObjectProperty(item, "spec");
+        var status = ObjectProperty(item, "status");
+        var result = new JsonObject
+        {
+            ["name"] = MetadataString(item, "name"),
+            ["desired"] = IntegerProperty(spec, "replicas") ?? 1,
+            ["current"] = IntegerProperty(status, "replicas") ?? 0,
+            ["ready"] = IntegerProperty(status, "readyReplicas") ?? 0,
+            ["available"] = IntegerProperty(status, "availableReplicas") ?? 0
+        };
+        AddAge(result, item);
+        return result;
+    }
+
     private JsonObject SummarizeConfigMap(DynamicKubernetesObject item)
     {
         var keys = new SortedSet<string>(StringComparer.Ordinal);
@@ -178,6 +341,168 @@ public sealed class KubernetesListSummarizer(
     private JsonObject SummarizeSecret(DynamicKubernetesObject item)
     {
         var result = secretSanitizer.SanitizeListItem(item);
+        AddAge(result, item);
+        return result;
+    }
+
+    private JsonObject SummarizeIngress(DynamicKubernetesObject item)
+    {
+        var spec = ObjectProperty(item, "spec");
+        var hosts = new SortedSet<string>(StringComparer.Ordinal);
+        var rules = ObjectProperty(spec, "rules");
+        if (rules?.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var rule in rules.Value.EnumerateArray())
+            {
+                hosts.Add(StringProperty(rule, "host") ?? "*");
+            }
+        }
+
+        var addresses = new SortedSet<string>(StringComparer.Ordinal);
+        var loadBalancer = ObjectProperty(ObjectProperty(item, "status"), "loadBalancer");
+        var ingress = ObjectProperty(loadBalancer, "ingress");
+        if (ingress?.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in ingress.Value.EnumerateArray())
+            {
+                AddIfPresent(addresses, StringProperty(entry, "ip"));
+                AddIfPresent(addresses, StringProperty(entry, "hostname"));
+            }
+        }
+
+        var ports = new JsonArray(80);
+        if (ArrayLength(ObjectProperty(spec, "tls")) > 0)
+        {
+            ports.Add(443);
+        }
+
+        var result = new JsonObject
+        {
+            ["name"] = MetadataString(item, "name"),
+            ["class"] = StringProperty(spec, "ingressClassName") ??
+                        MetadataStringMapValue(item, "annotations", "kubernetes.io/ingress.class"),
+            ["hosts"] = ToJsonArray(hosts),
+            ["addresses"] = ToJsonArray(addresses),
+            ["ports"] = ports
+        };
+        AddAge(result, item);
+        return result;
+    }
+
+    private JsonObject SummarizeNetworkPolicy(DynamicKubernetesObject item)
+    {
+        var spec = ObjectProperty(item, "spec");
+        var policyTypes = new SortedSet<string>(StringComparer.Ordinal);
+        AddStrings(policyTypes, ObjectProperty(spec, "policyTypes"));
+        if (policyTypes.Count == 0)
+        {
+            policyTypes.Add("Ingress");
+            if (ObjectProperty(spec, "egress") is not null)
+            {
+                policyTypes.Add("Egress");
+            }
+        }
+
+        var result = new JsonObject
+        {
+            ["name"] = MetadataString(item, "name"),
+            ["podSelector"] = FormatLabelSelector(ObjectProperty(spec, "podSelector")),
+            ["policyTypes"] = ToJsonArray(policyTypes),
+            ["ingressRules"] = ArrayLength(ObjectProperty(spec, "ingress")),
+            ["egressRules"] = ArrayLength(ObjectProperty(spec, "egress"))
+        };
+        AddAge(result, item);
+        return result;
+    }
+
+    private JsonObject SummarizeHorizontalPodAutoscaler(DynamicKubernetesObject item)
+    {
+        var spec = ObjectProperty(item, "spec");
+        var status = ObjectProperty(item, "status");
+        var target = ObjectProperty(spec, "scaleTargetRef");
+        var result = new JsonObject
+        {
+            ["name"] = MetadataString(item, "name"),
+            ["target"] = FormatObjectReference(target),
+            ["minReplicas"] = IntegerProperty(spec, "minReplicas") ?? 1,
+            ["maxReplicas"] = IntegerProperty(spec, "maxReplicas"),
+            ["currentReplicas"] = IntegerProperty(status, "currentReplicas") ?? 0,
+            ["desiredReplicas"] = IntegerProperty(status, "desiredReplicas") ?? 0,
+            ["metrics"] = ArrayLength(ObjectProperty(spec, "metrics"))
+        };
+        AddAge(result, item);
+        return result;
+    }
+
+    private JsonObject SummarizePodDisruptionBudget(DynamicKubernetesObject item)
+    {
+        var spec = ObjectProperty(item, "spec");
+        var status = ObjectProperty(item, "status");
+        var result = new JsonObject
+        {
+            ["name"] = MetadataString(item, "name"),
+            ["minAvailable"] = ScalarNode(ObjectProperty(spec, "minAvailable")),
+            ["maxUnavailable"] = ScalarNode(ObjectProperty(spec, "maxUnavailable")),
+            ["disruptionsAllowed"] = IntegerProperty(status, "disruptionsAllowed") ?? 0,
+            ["currentHealthy"] = IntegerProperty(status, "currentHealthy") ?? 0,
+            ["desiredHealthy"] = IntegerProperty(status, "desiredHealthy") ?? 0,
+            ["expectedPods"] = IntegerProperty(status, "expectedPods") ?? 0
+        };
+        AddAge(result, item);
+        return result;
+    }
+
+    private JsonObject SummarizeLimitRange(DynamicKubernetesObject item)
+    {
+        var summaries = new JsonArray();
+        var limits = ObjectProperty(ObjectProperty(item, "spec"), "limits");
+        if (limits?.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var limit in limits.Value.EnumerateArray())
+            {
+                AddLimitSummaries(summaries, limit);
+            }
+        }
+
+        var result = new JsonObject
+        {
+            ["name"] = MetadataString(item, "name"),
+            ["limits"] = summaries,
+            ["limitCount"] = summaries.Count
+        };
+        AddAge(result, item);
+        return result;
+    }
+
+    private JsonObject SummarizeResourceQuota(DynamicKubernetesObject item)
+    {
+        var spec = ObjectProperty(item, "spec");
+        var status = ObjectProperty(item, "status");
+        var hard = ObjectProperty(status, "hard") ?? ObjectProperty(spec, "hard");
+        var used = ObjectProperty(status, "used");
+        var resourceNames = new SortedSet<string>(StringComparer.Ordinal);
+        AddPropertyNames(resourceNames, hard);
+        AddPropertyNames(resourceNames, used);
+
+        var resources = new JsonArray();
+        foreach (var resourceName in resourceNames)
+        {
+            var summary = new JsonObject
+            {
+                ["name"] = resourceName
+            };
+            AddScalar(summary, "used", ObjectProperty(used, resourceName));
+            AddScalar(summary, "hard", ObjectProperty(hard, resourceName));
+            resources.Add(summary);
+        }
+
+        var result = new JsonObject
+        {
+            ["name"] = MetadataString(item, "name"),
+            ["scopes"] = StringArray(ObjectProperty(spec, "scopes")),
+            ["resources"] = resources,
+            ["resourceCount"] = resources.Count
+        };
         AddAge(result, item);
         return result;
     }
@@ -230,6 +555,23 @@ public sealed class KubernetesListSummarizer(
     }
 
     private void AddAge(JsonObject result, DynamicKubernetesObject item)
+    {
+        var creationTimestamp = MetadataString(item, "creationTimestamp");
+        if (DateTimeOffset.TryParse(
+                creationTimestamp,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal,
+                out var created))
+        {
+            result["age"] = FormatAge(timeProvider.GetUtcNow() - created);
+        }
+        else
+        {
+            result["age"] = null;
+        }
+    }
+
+    private void AddAge(JsonObject result, JsonElement item)
     {
         var creationTimestamp = MetadataString(item, "creationTimestamp");
         if (DateTimeOffset.TryParse(
@@ -358,6 +700,200 @@ public sealed class KubernetesListSummarizer(
         return total;
     }
 
+    private static void AddEndpointPorts(
+        IDictionary<string, JsonObject> destination,
+        JsonElement? sourcePorts)
+    {
+        if (sourcePorts?.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var port in sourcePorts.Value.EnumerateArray())
+        {
+            var name = StringProperty(port, "name");
+            var number = IntegerProperty(port, "port");
+            var protocol = StringProperty(port, "protocol") ?? "TCP";
+            var appProtocol = StringProperty(port, "appProtocol");
+            var key = $"{name}\u001f{number?.ToString(CultureInfo.InvariantCulture)}\u001f{protocol}\u001f{appProtocol}";
+            if (destination.ContainsKey(key))
+            {
+                continue;
+            }
+
+            var summary = new JsonObject
+            {
+                ["protocol"] = protocol
+            };
+            AddString(summary, "name", name);
+            AddInteger(summary, "port", number);
+            AddString(summary, "appProtocol", appProtocol);
+            destination[key] = summary;
+        }
+    }
+
+    private static void AddLimitSummaries(JsonArray destination, JsonElement limit)
+    {
+        var type = StringProperty(limit, "type");
+        var valueNames = new[]
+        {
+            "min",
+            "max",
+            "default",
+            "defaultRequest",
+            "maxLimitRequestRatio"
+        };
+        var resources = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var valueName in valueNames)
+        {
+            AddPropertyNames(resources, ObjectProperty(limit, valueName));
+        }
+
+        if (resources.Count == 0)
+        {
+            var typeOnly = new JsonObject();
+            AddString(typeOnly, "type", type);
+            destination.Add(typeOnly);
+            return;
+        }
+
+        foreach (var resource in resources)
+        {
+            var summary = new JsonObject
+            {
+                ["resource"] = resource
+            };
+            AddString(summary, "type", type);
+            foreach (var valueName in valueNames)
+            {
+                AddScalar(summary, valueName, ObjectProperty(ObjectProperty(limit, valueName), resource));
+            }
+
+            destination.Add(summary);
+        }
+    }
+
+    private static string? FormatObjectReference(JsonElement? reference)
+    {
+        var name = StringProperty(reference, "name");
+        var kind = StringProperty(reference, "kind");
+        if (name is null)
+        {
+            return kind;
+        }
+
+        return kind is null ? name : $"{kind}/{name}";
+    }
+
+    private static string? FormatLabelSelector(JsonElement? selector)
+    {
+        if (selector?.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var parts = new SortedSet<string>(StringComparer.Ordinal);
+        var matchLabels = ObjectProperty(selector, "matchLabels");
+        if (matchLabels?.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var label in matchLabels.Value.EnumerateObject())
+            {
+                if (label.Value.ValueKind == JsonValueKind.String)
+                {
+                    parts.Add($"{label.Name}={label.Value.GetString()}");
+                }
+            }
+        }
+
+        var expressions = ObjectProperty(selector, "matchExpressions");
+        if (expressions?.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var expression in expressions.Value.EnumerateArray())
+            {
+                var key = StringProperty(expression, "key");
+                var operation = StringProperty(expression, "operator");
+                if (key is null || operation is null)
+                {
+                    continue;
+                }
+
+                var values = new SortedSet<string>(StringComparer.Ordinal);
+                AddStrings(values, ObjectProperty(expression, "values"));
+                parts.Add(operation switch
+                {
+                    "Exists" => key,
+                    "DoesNotExist" => $"!{key}",
+                    "In" => $"{key} in ({string.Join(',', values)})",
+                    "NotIn" => $"{key} notin ({string.Join(',', values)})",
+                    _ => $"{key} {operation} ({string.Join(',', values)})"
+                });
+            }
+        }
+
+        return parts.Count == 0 ? "<all>" : string.Join(',', parts);
+    }
+
+    private static string? MetadataStringMapValue(
+        DynamicKubernetesObject item,
+        string mapName,
+        string key) =>
+        StringProperty(ObjectProperty(ObjectProperty(item, "metadata"), mapName), key);
+
+    private static JsonArray StringArray(JsonElement? value)
+    {
+        var result = new JsonArray();
+        if (value?.ValueKind != JsonValueKind.Array)
+        {
+            return result;
+        }
+
+        foreach (var entry in value.Value.EnumerateArray())
+        {
+            if (entry.ValueKind == JsonValueKind.String)
+            {
+                result.Add(entry.GetString());
+            }
+        }
+
+        return result;
+    }
+
+    private static string? StringValue(JsonElement? value) =>
+        value is { ValueKind: JsonValueKind.String } element ? element.GetString() : null;
+
+    private static long? IntegerValue(JsonElement? value) =>
+        value is { ValueKind: JsonValueKind.Number } element && element.TryGetInt64(out var number)
+            ? number
+            : null;
+
+    private static JsonNode? ScalarNode(JsonElement? value) => value?.ValueKind switch
+    {
+        JsonValueKind.String => JsonValue.Create(value.Value.GetString()),
+        JsonValueKind.Number => JsonNode.Parse(value.Value.GetRawText()),
+        JsonValueKind.True => JsonValue.Create(true),
+        JsonValueKind.False => JsonValue.Create(false),
+        _ => null
+    };
+
+    private static void AddScalar(JsonObject target, string name, JsonElement? value)
+    {
+        if (ScalarNode(value) is { } node)
+        {
+            target[name] = node;
+        }
+    }
+
+    private static JsonArray ToJsonArray(IEnumerable<JsonObject> values)
+    {
+        var result = new JsonArray();
+        foreach (var value in values)
+        {
+            result.Add(value);
+        }
+
+        return result;
+    }
+
     private static JsonElement? ObjectProperty(DynamicKubernetesObject item, string name) =>
         item.Properties.TryGetValue(name, out var value) ? value : null;
 
@@ -372,6 +908,9 @@ public sealed class KubernetesListSummarizer(
             : null;
 
     private static string? MetadataString(DynamicKubernetesObject item, string name) =>
+        StringProperty(ObjectProperty(item, "metadata"), name);
+
+    private static string? MetadataString(JsonElement item, string name) =>
         StringProperty(ObjectProperty(item, "metadata"), name);
 
     private static string? StringProperty(JsonElement? source, string name) =>

@@ -1,0 +1,52 @@
+# Optional Traefik RBAC overlay.
+#
+# The default ClusterRole in deployment.yaml grants only core Kubernetes
+# resources. Apply this overlay to additionally grant read-only (get/list) access
+# to the Traefik CRDs listed in overlays/traefik/resources.json. Application
+# resource mode and Kubernetes RBAC are independent: enabling only one does not
+# allow access to the other, so you must also add the CRD mappings to the
+# kube-mcp configuration (see overlays/README.md).
+#
+#   kubectl apply --filename overlays/traefik/rbac.yaml
+#
+# This overlay is purely additive. To withdraw access, delete the resources:
+#
+#   kubectl delete clusterrole kube-mcp-reader-traefik
+#   kubectl delete clusterrolebinding kube-mcp-reader-traefik
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-mcp-reader-traefik
+  labels:
+    app.kubernetes.io/name: kube-mcp
+    app.kubernetes.io/component: traefik-overlay
+rules:
+  - apiGroups: ["traefik.io"]
+    resources:
+      - ingressroutes
+      - middlewares
+      - traefikservices
+      - tlsoptions
+      - tlsstores
+      - serverstransports
+      - ingressroutetcps
+      - middlewaretcps
+      - serverstransporttcps
+      - ingressrouteudps
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-mcp-reader-traefik
+  labels:
+    app.kubernetes.io/name: kube-mcp
+    app.kubernetes.io/component: traefik-overlay
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-mcp-reader-traefik
+subjects:
+  - kind: ServiceAccount
+    name: kube-mcp
+    namespace: kube-mcp

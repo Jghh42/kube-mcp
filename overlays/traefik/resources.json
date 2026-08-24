@@ -1,0 +1,16 @@
+{
+  "KubeMcp": {
+    "AllowedResources": {
+      "ingressroutes.traefik.io": { "Group": "traefik.io", "Version": "v1alpha1", "Resource": "ingressroutes", "Kind": "IngressRoute" },
+      "middlewares.traefik.io": { "Group": "traefik.io", "Version": "v1alpha1", "Resource": "middlewares", "Kind": "Middleware" },
+      "traefikservices.traefik.io": { "Group": "traefik.io", "Version": "v1alpha1", "Resource": "traefikservices", "Kind": "TraefikService" },
+      "tlsoptions.traefik.io": { "Group": "traefik.io", "Version": "v1alpha1", "Resource": "tlsoptions", "Kind": "TLSOption" },
+      "tlsstores.traefik.io": { "Group": "traefik.io", "Version": "v1alpha1", "Resource": "tlsstores", "Kind": "TLSStore" },
+      "serverstransports.traefik.io": { "Group": "traefik.io", "Version": "v1alpha1", "Resource": "serverstransports", "Kind": "ServersTransport" },
+      "ingressroutetcps.traefik.io": { "Group": "traefik.io", "Version": "v1alpha1", "Resource": "ingressroutetcps", "Kind": "IngressRouteTCP" },
+      "middlewaretcps.traefik.io": { "Group": "traefik.io", "Version": "v1alpha1", "Resource": "middlewaretcps", "Kind": "MiddlewareTCP" },
+      "serverstransporttcps.traefik.io": { "Group": "traefik.io", "Version": "v1alpha1", "Resource": "serverstransporttcps", "Kind": "ServersTransportTCP" },
+      "ingressrouteudps.traefik.io": { "Group": "traefik.io", "Version": "v1alpha1", "Resource": "ingressrouteudps", "Kind": "IngressRouteUDP" }
+    }
+  }
+}

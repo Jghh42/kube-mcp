@@ -4,12 +4,14 @@ using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.Json;
+using KubeMcp.Audit;
 using KubeMcp.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using ModelContextProtocol.Client;
@@ -24,11 +26,12 @@ public sealed class AuthenticationTests
     [Fact]
     public async Task ApiKeyModeProtectsOnlyMcpEndpoint()
     {
+        var auditSink = new CapturingAuditSink();
         await using var factory = CreateFactory(new Dictionary<string, string?>
         {
             ["KubeMcp:Authentication:Mode"] = "ApiKey",
             ["KubeMcp:Authentication:ApiKey"] = ApiKey
-        });
+        }, services => services.AddSingleton<IAuditSink>(auditSink));
         using var client = factory.CreateClient();
 
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/healthz")).StatusCode);
@@ -37,6 +40,13 @@ public sealed class AuthenticationTests
             Assert.Equal(HttpStatusCode.Unauthorized, missing.StatusCode);
             Assert.Equal("Bearer", Assert.Single(missing.Headers.WwwAuthenticate).Scheme);
         }
+
+        var authenticationDenial = await auditSink.WaitForAsync(AuditCategories.AuthenticationDenied);
+        Assert.Equal(AuditEventType.McpAccessDenied, authenticationDenial.EventType);
+        Assert.Null(authenticationDenial.Operation);
+        Assert.Null(authenticationDenial.Resource);
+        Assert.Null(authenticationDenial.Namespace);
+        Assert.Null(authenticationDenial.Name);
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer",
@@ -54,6 +64,7 @@ public sealed class AuthenticationTests
     public async Task OAuthModeValidatesSignatureIssuerAudienceLifetimeScopeAndRole()
     {
         await using var oidc = await TestOidcServer.StartAsync();
+        var auditSink = new CapturingAuditSink();
         await using var factory = CreateFactory(new Dictionary<string, string?>
         {
             ["KubeMcp:Authentication:Mode"] = "OAuthClientCredentials",
@@ -63,10 +74,10 @@ public sealed class AuthenticationTests
             ["KubeMcp:Authentication:OAuth:RequiredRoles:0"] = "k-mcp:read",
             ["KubeMcp:Authentication:OAuth:RequireHttpsMetadata"] = "false",
             ["KubeMcp:Authentication:OAuth:ClockSkewSeconds"] = "0"
-        });
+        }, services => services.AddSingleton<IAuditSink>(auditSink));
         using var client = factory.CreateClient();
 
-        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/readyz")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/healthz")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(client));
 
         var valid = oidc.IssueToken("k-mcp", [
@@ -84,6 +95,9 @@ public sealed class AuthenticationTests
 
         SetBearer(client, oidc.IssueToken("k-mcp", [new Claim("roles", "k-mcp:read")]));
         Assert.Equal(HttpStatusCode.Forbidden, await PostMcpAsync(client));
+        var authorizationDenial = await auditSink.WaitForAsync(AuditCategories.AuthorizationDenied);
+        Assert.Equal("test-client", authorizationDenial.ClientIdentity);
+        Assert.Null(authorizationDenial.Resource);
 
         SetBearer(client, oidc.IssueToken("k-mcp", [new Claim("scope", "k-mcp:read")]));
         Assert.Equal(HttpStatusCode.Forbidden, await PostMcpAsync(client));
@@ -117,13 +131,20 @@ public sealed class AuthenticationTests
         Assert.False(OAuthClaimEvaluator.HasAllRoles(principal, ["client-reader"], "other-api"));
     }
 
-    private static WebApplicationFactory<Program> CreateFactory(IReadOnlyDictionary<string, string?> settings) =>
+    private static WebApplicationFactory<Program> CreateFactory(
+        IReadOnlyDictionary<string, string?> settings,
+        Action<IServiceCollection>? configureServices = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
             foreach (var setting in settings)
             {
                 builder.UseSetting(setting.Key, setting.Value);
+            }
+
+            if (configureServices is not null)
+            {
+                builder.ConfigureServices(configureServices);
             }
         });
 
@@ -151,6 +172,43 @@ public sealed class AuthenticationTests
 
     private static void SetBearer(HttpClient client, string token) =>
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+    private sealed class CapturingAuditSink : IAuditSink
+    {
+        private readonly object sync = new();
+        private readonly List<AuditRecord> records = [];
+
+        public ValueTask WriteAsync(AuditRecord record, CancellationToken cancellationToken)
+        {
+            lock (sync)
+            {
+                records.Add(record);
+                Monitor.PulseAll(sync);
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
+        public async Task<AuditRecord> WaitForAsync(string category)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                lock (sync)
+                {
+                    var found = records.FirstOrDefault(record => record.Category == category);
+                    if (found is not null)
+                    {
+                        return found;
+                    }
+                }
+
+                await Task.Delay(10);
+            }
+
+            throw new TimeoutException($"Audit category {category} was not delivered.");
+        }
+    }
 
     private sealed class TestOidcServer : IAsyncDisposable
     {
