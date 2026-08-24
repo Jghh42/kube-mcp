@@ -255,6 +255,34 @@ public sealed class KubernetesApiTests
     }
 
     [Fact]
+    public async Task ResourceAccessReviewUsesCurrentIdentityAndParsesAllowedStatus()
+    {
+        var setup = CreateClientAndHandler(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"status\":{\"allowed\":true}}")
+        });
+        using var k = setup.Client;
+        using var api = new KubernetesApi(k, ownsClient: true);
+
+        var allowed = await api.IsResourceAccessAllowedAsync(
+            Descriptor("apps", "v1", "deployments", "Deployment"),
+            "list",
+            4096,
+            CancellationToken.None);
+
+        Assert.True(allowed);
+        Assert.Equal(HttpMethod.Post, Assert.Single(setup.Handler.Methods));
+        Assert.Equal(
+            "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+            Assert.Single(setup.Handler.Requests).AbsolutePath);
+        var body = Assert.Single(setup.Handler.Bodies);
+        Assert.Contains("\"group\":\"apps\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"resource\":\"deployments\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"verb\":\"list\"", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("namespace", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task NamespaceLabelCheckUsesBoundedFilteredList()
     {
         var setup = CreateClientAndHandler(() => new HttpResponseMessage(HttpStatusCode.OK)
@@ -361,15 +389,25 @@ public sealed class KubernetesApiTests
 
         public List<Uri> Requests { get; } = [];
 
+        public List<HttpMethod> Methods { get; } = [];
+
+        public List<string> Bodies { get; } = [];
+
         public List<string?> AuthorizationHeaders { get; } = [];
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
         {
             Requests.Add(request.RequestUri!);
+            Methods.Add(request.Method);
+            Bodies.Add(request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken));
             AuthorizationHeaders.Add(request.Headers.Authorization?.ToString());
             var response = respond();
             response.Content!.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-            return Task.FromResult(response);
+            return response;
         }
     }
 }

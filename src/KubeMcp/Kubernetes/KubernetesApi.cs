@@ -86,6 +86,39 @@ internal sealed class KubernetesApi : IKubernetesApi
         return ParseApiResources(body, cancellationToken);
     }
 
+    public async Task<bool> IsResourceAccessAllowedAsync(
+        KubernetesResourceDescriptor descriptor,
+        string verb,
+        int maxBodyBytes,
+        CancellationToken cancellationToken)
+    {
+        var uri = AppendPath(
+            client.BaseUri,
+            "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            apiVersion = "authorization.k8s.io/v1",
+            kind = "SelfSubjectAccessReview",
+            spec = new
+            {
+                resourceAttributes = new
+                {
+                    group = descriptor.Group,
+                    resource = descriptor.Resource,
+                    verb
+                }
+            }
+        });
+        using var content = new ByteArrayContent(payload);
+        content.Headers.ContentType = new MediaTypeHeaderValue(JsonMediaType);
+        var body = await PostRawAsync(
+            uri,
+            content,
+            maxBodyBytes,
+            cancellationToken).ConfigureAwait(false);
+        return ParseResourceAccessReview(body, cancellationToken);
+    }
+
     public async Task<bool> NamespaceMatchesLabelSelectorAsync(
         string @namespace,
         string labelSelector,
@@ -103,6 +136,27 @@ internal sealed class KubernetesApi : IKubernetesApi
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        return await SendRawAsync(request, maxBodyBytes, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ReadOnlyMemory<byte>> PostRawAsync(
+        Uri uri,
+        HttpContent content,
+        int maxBodyBytes,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, uri)
+        {
+            Content = content
+        };
+        return await SendRawAsync(request, maxBodyBytes, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ReadOnlyMemory<byte>> SendRawAsync(
+        HttpRequestMessage request,
+        int maxBodyBytes,
+        CancellationToken cancellationToken)
+    {
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(JsonMediaType));
         using var response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
         EnsureSuccess(response);
@@ -367,6 +421,22 @@ internal sealed class KubernetesApi : IKubernetesApi
         }
 
         return result;
+    }
+
+    private static bool ParseResourceAccessReview(
+        ReadOnlyMemory<byte> body,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var document = ParseJson(body);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!document.RootElement.TryGetProperty("status", out var status))
+        {
+            throw MalformedResponseException();
+        }
+
+        EnsureObject(status);
+        return RequiredBoolean(status, "allowed");
     }
 
     private static bool ParseNamespaceMatch(

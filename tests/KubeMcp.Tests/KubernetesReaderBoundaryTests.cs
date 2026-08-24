@@ -29,6 +29,7 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
     public Func<CancellationToken, Task<IReadOnlyList<ApiResourceInfo>>>? CoreResourcesHandler { get; set; }
     public Func<CancellationToken, Task<IReadOnlyList<ApiGroupInfo>>>? ApiGroupsHandler { get; set; }
     public Func<string, string, CancellationToken, Task<IReadOnlyList<ApiResourceInfo>>>? GroupResourcesHandler { get; set; }
+    public Func<KubernetesResourceDescriptor, string, CancellationToken, Task<bool>>? ResourceAccessHandler { get; set; }
     public Func<string, string, CancellationToken, Task<bool>>? NamespaceLabelHandler { get; set; }
 
     public async Task<ReadOnlyMemory<byte>> GetNamespacedAsync(
@@ -84,6 +85,18 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
         return GroupResourcesHandler is null
             ? []
             : await GroupResourcesHandler(group, version, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<bool> IsResourceAccessAllowedAsync(
+        KubernetesResourceDescriptor descriptor,
+        string verb,
+        int maxBodyBytes,
+        CancellationToken cancellationToken)
+    {
+        Record($"AUTH {verb} {descriptor.QualifiedName} maxBody={maxBodyBytes}");
+        return ResourceAccessHandler is null
+            ? true
+            : await ResourceAccessHandler(descriptor, verb, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<bool> NamespaceMatchesLabelSelectorAsync(

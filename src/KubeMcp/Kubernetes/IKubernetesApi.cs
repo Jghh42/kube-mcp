@@ -17,7 +17,7 @@ public sealed record ApiGroupInfo(string Name, string PreferredVersion);
 
 /// <summary>
 /// Narrow, testable access to the Kubernetes API. All network access used by
-/// <see cref="KubernetesReader"/> passes through this boundary.
+/// <see cref="KubernetesReader"/> and readiness passes through this boundary.
 /// </summary>
 /// <remarks>
 /// GET and LIST bodies remain capped UTF-8 bytes until the reader parses them.
@@ -53,6 +53,12 @@ public interface IKubernetesApi : IDisposable
     Task<IReadOnlyList<ApiResourceInfo>> GetGroupResourcesAsync(
         string group,
         string version,
+        int maxBodyBytes,
+        CancellationToken cancellationToken);
+
+    Task<bool> IsResourceAccessAllowedAsync(
+        KubernetesResourceDescriptor descriptor,
+        string verb,
         int maxBodyBytes,
         CancellationToken cancellationToken);
 

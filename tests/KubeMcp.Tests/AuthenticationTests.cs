@@ -77,7 +77,7 @@ public sealed class AuthenticationTests
         }, services => services.AddSingleton<IAuditSink>(auditSink));
         using var client = factory.CreateClient();
 
-        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/readyz")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/healthz")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(client));
 
         var valid = oidc.IssueToken("k-mcp", [

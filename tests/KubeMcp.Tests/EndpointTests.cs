@@ -37,12 +37,10 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
         Assert.Equal(new ServiceStatus("kube-mcp", "running"), body);
     }
 
-    [Theory]
-    [InlineData("/healthz")]
-    [InlineData("/readyz")]
-    public async Task HealthEndpointsReportHealthy(string path)
+    [Fact]
+    public async Task LivenessEndpointReportsHealthy()
     {
-        var response = await client.GetAsync(path);
+        var response = await client.GetAsync("/healthz");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("Healthy", await response.Content.ReadAsStringAsync());
