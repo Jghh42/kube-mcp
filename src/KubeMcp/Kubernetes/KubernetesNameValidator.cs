@@ -9,7 +9,8 @@ public static partial class KubernetesNameValidator
         if (@namespace.Length > 63 || !DnsLabelRegex().IsMatch(@namespace))
         {
             throw new KubernetesReadException(
-                "namespace must be a valid lowercase Kubernetes DNS label.");
+                "namespace must be a valid lowercase Kubernetes DNS label.",
+                KubernetesErrorCategory.InvalidRequest);
         }
     }
 
@@ -19,7 +20,8 @@ public static partial class KubernetesNameValidator
                 label.Length > 63 || !DnsLabelRegex().IsMatch(label)))
         {
             throw new KubernetesReadException(
-                "name must be a valid lowercase Kubernetes DNS subdomain.");
+                "name must be a valid lowercase Kubernetes DNS subdomain.",
+                KubernetesErrorCategory.InvalidRequest);
         }
     }
 

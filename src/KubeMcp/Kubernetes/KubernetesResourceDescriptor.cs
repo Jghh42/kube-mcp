@@ -1,6 +1,6 @@
 namespace KubeMcp.Kubernetes;
 
-internal sealed record KubernetesResourceDescriptor(
+public sealed record KubernetesResourceDescriptor(
     string Group,
     string Version,
     string Resource,

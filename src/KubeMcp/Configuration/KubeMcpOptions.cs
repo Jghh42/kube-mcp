@@ -28,6 +28,36 @@ public sealed class KubeMcpOptions
     [Range(1024, 10 * 1024 * 1024)]
     public int MaxResponseBytes { get; init; } = 1024 * 1024;
 
+    /// <summary>
+    /// Per-response upstream byte cap enforced before deserialization. Bounds peak
+    /// memory for a single object or one LIST page. Must be at least
+    /// <see cref="MaxResponseBytes"/> so a single object's safe output can fit.
+    /// </summary>
+    [Range(64 * 1024, 64 * 1024 * 1024)]
+    public int MaxUpstreamBodyBytes { get; init; } = 4 * 1024 * 1024;
+
+    /// <summary>Page size used when fetching non-Secret LISTs.</summary>
+    [Range(1, 1000)]
+    public int ListPageSize { get; init; } = 50;
+
+    /// <summary>
+    /// Maximum pages fetched for one LIST, bounding continuation-token chains
+    /// even when an upstream server returns empty or undersized pages.
+    /// </summary>
+    [Range(1, 100)]
+    public int MaxListPages { get; init; } = 20;
+
+    /// <summary>
+    /// Especially small page size for Secret LISTs to limit raw-secret memory
+    /// lifetime and peak memory.
+    /// </summary>
+    [Range(1, 1000)]
+    public int SecretListPageSize { get; init; } = 10;
+
+    /// <summary>Bounded parallelism for AllowAll API group discovery.</summary>
+    [Range(1, 16)]
+    public int DiscoveryParallelism { get; init; } = 4;
+
     [Range(1, 120)]
     public int KubernetesRequestTimeoutSeconds { get; init; } = 15;
 

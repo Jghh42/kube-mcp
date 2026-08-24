@@ -88,6 +88,18 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
                 $"{KubeMcpOptions.SectionName}:NamespacePolicy:LabelSelector must not exceed 1024 characters.");
         }
 
+        if (options.MaxUpstreamBodyBytes < options.MaxResponseBytes)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:MaxUpstreamBodyBytes must be at least MaxResponseBytes so a single object's safe output can fit within the upstream body budget.");
+        }
+
+        if (options.SecretListPageSize > options.ListPageSize)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:SecretListPageSize must not exceed ListPageSize.");
+        }
+
         var forwardedHeadersValidation = ValidateForwardedHeaders(options.ForwardedHeaders);
         if (forwardedHeadersValidation is not null)
         {

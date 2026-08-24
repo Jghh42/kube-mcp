@@ -30,6 +30,7 @@ public sealed class ResourceAllowlist
         }
 
         throw new KubernetesReadException(
-            $"Resource \"{requestedResource}\" is not included in the configured resource allowlist.");
+            $"Resource \"{requestedResource}\" is not included in the configured resource allowlist.",
+            KubernetesErrorCategory.ResourceNotAllowed);
     }
 }

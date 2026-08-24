@@ -16,17 +16,7 @@ public sealed class DynamicKubernetesObject : IKubernetesObject
     public Dictionary<string, JsonElement> Properties { get; set; } = [];
 }
 
-public sealed class DynamicKubernetesObjectList : IKubernetesObject
-{
-    [JsonPropertyName("apiVersion")]
-    public string ApiVersion { get; set; } = string.Empty;
-
-    [JsonPropertyName("kind")]
-    public string Kind { get; set; } = string.Empty;
-
-    [JsonPropertyName("metadata")]
-    public JsonElement Metadata { get; set; }
-
-    [JsonPropertyName("items")]
-    public List<DynamicKubernetesObject> Items { get; set; } = [];
-}
+// LIST responses are parsed directly from the capped raw JSON body and are not
+// deserialized into a typed list object, so no DynamicKubernetesObjectList is
+// needed. Keeping raw Secret lists out of a long-lived typed object bounds the
+// raw-secret memory lifetime to a single small page.
