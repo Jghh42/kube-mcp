@@ -284,15 +284,14 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
             return $"{path} must contain a resource mapping.";
         }
 
-        if (!IsDnsLabel(resource.Resource))
+        if (!IsDns1035Label(resource.Resource))
         {
-            return $"{path}:Resource must be a lowercase Kubernetes resource name.";
+            return $"{path}:Resource must be a lowercase Kubernetes resource name (DNS-1035 label).";
         }
 
-        if (string.IsNullOrWhiteSpace(resource.Version) ||
-            !ApiVersionRegex().IsMatch(resource.Version))
+        if (!IsDns1035Label(resource.Version))
         {
-            return $"{path}:Version is invalid.";
+            return $"{path}:Version must be a lowercase DNS-1035 label such as v1 or v1beta1.";
         }
 
         if (!string.IsNullOrEmpty(resource.Group) &&
@@ -303,9 +302,9 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         }
 
         if (string.IsNullOrWhiteSpace(resource.Kind) ||
-            !KindRegex().IsMatch(resource.Kind))
+            !IsDns1035Label(resource.Kind.ToLowerInvariant()))
         {
-            return $"{path}:Kind is invalid.";
+            return $"{path}:Kind must be a mixed-case DNS-1035 label (max 63 characters).";
         }
 
         return null;
@@ -316,12 +315,17 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         value.Length <= 63 &&
         DnsLabelRegex().IsMatch(value);
 
+    // A DNS-1035 label matches Kubernetes resource/version naming: lowercase
+    // alphanumeric and internal hyphens, starting with a letter, ending with
+    // an alphanumeric character, and at most 63 characters long.
+    private static bool IsDns1035Label(string value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value.Length <= 63 &&
+        Dns1035LabelRegex().IsMatch(value);
+
     [GeneratedRegex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")]
     private static partial Regex DnsLabelRegex();
 
-    [GeneratedRegex("^[a-z][a-z0-9]*$")]
-    private static partial Regex ApiVersionRegex();
-
-    [GeneratedRegex("^[A-Za-z][A-Za-z0-9]*$")]
-    private static partial Regex KindRegex();
+    [GeneratedRegex("^[a-z]([-a-z0-9]*[a-z0-9])?$")]
+    private static partial Regex Dns1035LabelRegex();
 }

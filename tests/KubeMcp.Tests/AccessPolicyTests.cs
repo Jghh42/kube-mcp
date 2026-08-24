@@ -182,6 +182,94 @@ public sealed class KubeMcpOptionsValidatorTests
         Assert.Contains("Resource must be a lowercase Kubernetes resource name", result.FailureMessage);
     }
 
+    [Theory]
+    [InlineData("v1")]
+    [InlineData("v1beta1")]
+    [InlineData("v1-beta-1")]
+    public void AcceptsDns1035ApiVersionsIncludingInternalHyphens(string version)
+    {
+        var options = OptionsWithResource(
+            ResourceAllowlistTests.Resource("example.test", version, "widgets", "Widget"));
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
+    }
+
+    [Fact]
+    public void AcceptsApiVersionAtDns1035MaximumLength()
+    {
+        var version = $"v{new string('1', 62)}";
+        var options = OptionsWithResource(
+            ResourceAllowlistTests.Resource("example.test", version, "widgets", "Widget"));
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
+    }
+
+    [Theory]
+    [InlineData("1v1")]
+    [InlineData("-v1")]
+    [InlineData("v1-")]
+    [InlineData("v1_beta1")]
+    [InlineData("V1")]
+    public void RejectsApiVersionsOutsideDns1035Rules(string version)
+    {
+        var options = OptionsWithResource(
+            ResourceAllowlistTests.Resource("example.test", version, "widgets", "Widget"));
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains("Version must be a lowercase DNS-1035 label", result.FailureMessage);
+    }
+
+    [Fact]
+    public void RejectsApiVersionLongerThanDns1035Maximum()
+    {
+        var version = $"v{new string('1', 63)}";
+        var options = OptionsWithResource(
+            ResourceAllowlistTests.Resource("example.test", version, "widgets", "Widget"));
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains("Version must be a lowercase DNS-1035 label", result.FailureMessage);
+    }
+
+    [Fact]
+    public void EnforcesDns1035ResourceLengthAndAllowsInternalHyphens()
+    {
+        var maximumResource = $"r-{new string('x', 61)}";
+        var validResult = validator.Validate(
+            null,
+            OptionsWithResource(ResourceAllowlistTests.Resource("example.test", "v1", maximumResource, "Widget")));
+        var invalidResult = validator.Validate(
+            null,
+            OptionsWithResource(ResourceAllowlistTests.Resource("example.test", "v1", $"r{new string('x', 63)}", "Widget")));
+
+        Assert.True(validResult.Succeeded);
+        Assert.True(invalidResult.Failed);
+        Assert.Contains("Resource must be a lowercase Kubernetes resource name", invalidResult.FailureMessage);
+    }
+
+    [Fact]
+    public void EnforcesMixedCaseDns1035KindLength()
+    {
+        var maximumKind = $"K-{new string('x', 61)}";
+        var validResult = validator.Validate(
+            null,
+            OptionsWithResource(ResourceAllowlistTests.Resource("example.test", "v1", "widgets", maximumKind)));
+        var invalidResult = validator.Validate(
+            null,
+            OptionsWithResource(ResourceAllowlistTests.Resource("example.test", "v1", "widgets", $"K{new string('x', 63)}")));
+
+        Assert.True(validResult.Succeeded);
+        Assert.True(invalidResult.Failed);
+        Assert.Contains("Kind must be a mixed-case DNS-1035 label", invalidResult.FailureMessage);
+    }
+
     [Fact]
     public void LabelSelectorModeRequiresSelector()
     {
@@ -215,6 +303,12 @@ public sealed class KubeMcpOptionsValidatorTests
         Assert.True(result.Failed);
         Assert.Contains("contains invalid namespace", result.FailureMessage);
     }
+
+    private static KubeMcpOptions OptionsWithResource(KubernetesResourceOptions resource) =>
+        ValidOptions().WithResources(new Dictionary<string, KubernetesResourceOptions>
+        {
+            ["test-resource"] = resource
+        });
 
     private static KubeMcpOptions ValidOptions() =>
         ResourceAllowlistTests.OptionsWithResources(
