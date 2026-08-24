@@ -41,6 +41,23 @@ public sealed class ProductionDeploymentTests
     }
 
     [Fact]
+    public void ReadinessProbeTimeoutExceedsInternalDeadline()
+    {
+        foreach (var manifestName in new[] { "deployment.yaml", "deployment-development.yaml" })
+        {
+            var manifest = File.ReadAllText(RepositoryFile(manifestName));
+            var readiness = Regex.Match(
+                manifest,
+                @"(?s)readinessProbe:.*?timeoutSeconds:\s*(\d+).*?livenessProbe:");
+
+            Assert.True(readiness.Success, $"{manifestName} readinessProbe must set timeoutSeconds.");
+            Assert.True(
+                int.Parse(readiness.Groups[1].Value) > 2,
+                $"{manifestName} readinessProbe timeout must exceed the internal 2s deadline.");
+        }
+    }
+
+    [Fact]
     public void DefaultDeploymentExcludesOptionalCrdRbac()
     {
         var production = File.ReadAllText(RepositoryFile("deployment.yaml"));

@@ -429,6 +429,7 @@ public sealed class KubernetesApiTests
         var allowed = await api.IsResourceAccessAllowedAsync(
             Descriptor("apps", "v1", "deployments", "Deployment"),
             "list",
+            "production",
             4096,
             CancellationToken.None);
 
@@ -441,7 +442,31 @@ public sealed class KubernetesApiTests
         Assert.Contains("\"group\":\"apps\"", body, StringComparison.Ordinal);
         Assert.Contains("\"resource\":\"deployments\"", body, StringComparison.Ordinal);
         Assert.Contains("\"verb\":\"list\"", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("namespace", body, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"namespace\":\"production\"", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ClusterScopedAccessReviewOmitsNamespace()
+    {
+        var setup = CreateClientAndHandler(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"status\":{\"allowed\":true}}")
+        });
+        using var k = setup.Client;
+        using var api = new KubernetesApi(k, ownsClient: true);
+
+        var allowed = await api.IsResourceAccessAllowedAsync(
+            Descriptor("", "v1", "namespaces", "Namespace"),
+            "list",
+            @namespace: null,
+            maxBodyBytes: 4096,
+            CancellationToken.None);
+
+        Assert.True(allowed);
+        Assert.DoesNotContain(
+            "\"namespace\":",
+            Assert.Single(setup.Handler.Bodies),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

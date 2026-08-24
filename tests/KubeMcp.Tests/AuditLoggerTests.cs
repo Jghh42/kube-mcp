@@ -185,7 +185,7 @@ public sealed class AuditLoggerTests
 
     internal sealed class CapturingLogger<T> : ILogger<T>
     {
-        public List<LogEntry> Entries { get; } = [];
+        public System.Collections.Concurrent.ConcurrentQueue<LogEntry> Entries { get; } = new();
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -201,7 +201,7 @@ public sealed class AuditLoggerTests
             var properties = ((IEnumerable<KeyValuePair<string, object?>>)state!)
                 .Where(property => property.Key != "{OriginalFormat}")
                 .ToDictionary(property => property.Key, property => property.Value);
-            Entries.Add(new LogEntry(logLevel, eventId, properties, exception));
+            Entries.Enqueue(new LogEntry(logLevel, eventId, properties, exception));
         }
     }
 

@@ -68,6 +68,7 @@ public interface IKubernetesApi : IDisposable
     Task<bool> IsResourceAccessAllowedAsync(
         KubernetesResourceDescriptor descriptor,
         string verb,
+        string? @namespace,
         int maxBodyBytes,
         CancellationToken cancellationToken);
 

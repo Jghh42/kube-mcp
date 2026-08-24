@@ -129,10 +129,16 @@ spec:
                 secretKeyRef:
                   name: kube-mcp-hmac
                   key: key
-            # Process-wide MCP concurrency bound for this 256Mi pod. At most two
-            # authenticated requests execute MCP/Kubernetes work and two wait;
-            # overflow receives 429. Keep PermitLimit * MaxUpstreamBodyBytes at
-            # or below the validated 64Mi aggregate upstream-body budget.
+            # Cheap outer admission bounds authentication work before the smaller
+            # authenticated MCP/Kubernetes limiter. Both queues are oldest-first;
+            # overflow receives 429. The request body cap remains fixed at 64KiB.
+            - name: KubeMcp__McpAdmission__PermitLimit
+              value: "16"
+            - name: KubeMcp__McpAdmission__QueueLimit
+              value: "16"
+            # At most two authenticated requests execute MCP/Kubernetes work and
+            # two wait. Keep PermitLimit * MaxUpstreamBodyBytes at or below the
+            # validated 64Mi aggregate upstream-body budget for this 256Mi pod.
             - name: KubeMcp__McpConcurrency__PermitLimit
               value: "2"
             - name: KubeMcp__McpConcurrency__QueueLimit
@@ -163,6 +169,8 @@ spec:
                   value: kube-mcp
             initialDelaySeconds: 2
             periodSeconds: 5
+            # Must exceed the application's internal 2s Kubernetes readiness deadline.
+            timeoutSeconds: 3
           livenessProbe:
             httpGet:
               path: /healthz

@@ -91,6 +91,13 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
                 $"{KubeMcpOptions.SectionName}:NamespacePolicy:LabelSelector must not exceed 1024 characters.");
         }
 
+        if (options.ReadinessNamespace is not null &&
+            !IsDnsLabel(options.ReadinessNamespace))
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:ReadinessNamespace must be a valid Kubernetes namespace name.");
+        }
+
         if (options.MaxUpstreamBodyBytes < options.MaxResponseBytes)
         {
             return ValidateOptionsResult.Fail(
@@ -125,6 +132,12 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         if (concurrencyValidation is not null)
         {
             return concurrencyValidation;
+        }
+
+        var admissionValidation = ValidateMcpAdmission(options);
+        if (admissionValidation is not null)
+        {
+            return admissionValidation;
         }
 
         var forwardedHeadersValidation = ValidateForwardedHeaders(options.ForwardedHeaders);
@@ -246,6 +259,36 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         }
 
         return ValidateOptionsResult.Success;
+    }
+
+    private static ValidateOptionsResult? ValidateMcpAdmission(KubeMcpOptions options)
+    {
+        const string path = $"{KubeMcpOptions.SectionName}:McpAdmission";
+        var admission = options.McpAdmission;
+        if (admission is null)
+        {
+            return ValidateOptionsResult.Fail($"{path} is required.");
+        }
+
+        if (admission.PermitLimit is < 1 or > 128)
+        {
+            return ValidateOptionsResult.Fail($"{path}:PermitLimit must be between 1 and 128.");
+        }
+
+        if (admission.QueueLimit is < 0 or > 128)
+        {
+            return ValidateOptionsResult.Fail($"{path}:QueueLimit must be between 0 and 128.");
+        }
+
+        var authenticatedCapacity =
+            options.McpConcurrency.PermitLimit + options.McpConcurrency.QueueLimit;
+        if (admission.PermitLimit < authenticatedCapacity)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{path}:PermitLimit must be at least {KubeMcpOptions.SectionName}:McpConcurrency:PermitLimit plus QueueLimit ({authenticatedCapacity}) so authenticated requests can reach the complete inner oldest-first queue.");
+        }
+
+        return null;
     }
 
     private static ValidateOptionsResult? ValidateMcpConcurrency(KubeMcpOptions options)

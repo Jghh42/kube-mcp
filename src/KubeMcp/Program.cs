@@ -24,9 +24,11 @@ var authenticationMode = builder.Services.AddKubeMcpAuthentication(builder.Confi
 
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHttpContextAccessor();
-// Structured ILogger audit output is the immediate best-effort default. Any
-// additional IAuditSink registrations are fanned out through the bounded queue.
+// The default structured ILogger sink and any organization sinks are all invoked
+// only by the bounded background dispatcher, never on request threads.
 builder.Services.AddSingleton<StructuredLoggerAuditSink>();
+builder.Services.AddSingleton<IAuditSink>(serviceProvider =>
+    serviceProvider.GetRequiredService<StructuredLoggerAuditSink>());
 builder.Services.AddSingleton<CompositeAuditSink>();
 builder.Services.AddSingleton<AuditSinkDispatcher>();
 builder.Services.AddSingleton<IAuditEventPublisher>(serviceProvider =>
@@ -39,6 +41,7 @@ builder.Services.AddRequestTimeouts();
 builder.Services.AddSingleton<IConfigureOptions<RequestTimeoutOptions>, McpRequestTimeoutOptionsSetup>();
 builder.Services.AddRateLimiter();
 builder.Services.AddSingleton<IConfigureOptions<RateLimiterOptions>, McpConcurrencyRateLimiterOptionsSetup>();
+builder.Services.AddSingleton<McpPreAuthenticationAdmissionGate>();
 builder.Services.AddSingleton<SecretFingerprinter>();
 builder.Services.AddSingleton<SecretSanitizer>();
 builder.Services.AddSingleton<KubernetesListSummarizer>();
@@ -90,13 +93,18 @@ ForwardedHeadersConfiguration.Apply(
 app.UseForwardedHeaders(forwardedHeadersOptions);
 
 app.UseRouting();
-// The end-to-end deadline is deliberately scoped to the MCP branch. Health,
-// readiness, and root responses are not governed by the MCP timeout policy.
+// The MCP-only body cap and outer admission gate run before authentication and
+// observability. Oversized or admission-overflow requests therefore receive a
+// cheap 413/429 without body parsing or per-request audit amplification. Admitted
+// requests remain subject to the end-to-end timeout, authentication audit, and
+// the smaller post-authentication MCP/Kubernetes limiter below.
 app.UseWhen(
     context => context.Request.Path.StartsWithSegments("/mcp"),
     branch =>
     {
+        branch.UseMiddleware<McpRequestBodyLimitMiddleware>();
         branch.UseRequestTimeouts();
+        branch.UseMiddleware<McpPreAuthenticationAdmissionMiddleware>();
         branch.UseMiddleware<McpRequestObservabilityMiddleware>();
     });
 

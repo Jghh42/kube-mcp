@@ -91,6 +91,7 @@ public sealed class TelemetryTests
         ActivitySource.AddActivityListener(listener);
         using var telemetry = new KubeMcpTelemetry(new HttpContextAccessor());
 
+        ActivityTraceId mcpTraceId = default;
         using (var hostingActivity = new Activity("Microsoft.AspNetCore.Hosting.HttpRequestIn")
                    .SetParentId("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
                    .AddTag("url.query", "?token=must-not-propagate")
@@ -100,21 +101,26 @@ public sealed class TelemetryTests
             hostingActivity.TraceStateString = "vendor=caller-controlled-sensitive-value";
             hostingActivity.AddBaggage("token", "caller-controlled-sensitive-value");
             using var mcpActivity = telemetry.StartMcpRequest();
+            mcpTraceId = mcpActivity?.TraceId ?? default;
             Assert.Null(mcpActivity?.TraceStateString);
             Assert.Empty(mcpActivity?.Baggage ?? []);
             KubeMcpTelemetry.CompleteActivity(mcpActivity, AuditCategories.Success);
         }
 
+        ActivityTraceId kubernetesTraceId;
         using (var activity = telemetry.StartKubernetesRequest("GET"))
         {
+            kubernetesTraceId = activity?.TraceId ?? default;
             KubeMcpTelemetry.CompleteActivity(activity, "kubernetes_access_denied");
         }
 
-        var mcpTrace = Assert.Single(stopped, activity => activity.OperationName == "mcp.request");
+        var mcpTrace = Assert.Single(stopped, activity =>
+            activity.OperationName == "mcp.request" && activity.TraceId == mcpTraceId);
         Assert.DoesNotContain(mcpTrace.TagObjects, tag =>
             tag.Key is "url.query" or "user_agent.original");
 
-        var trace = Assert.Single(stopped, activity => activity.OperationName == "kubernetes.read");
+        var trace = Assert.Single(stopped, activity =>
+            activity.OperationName == "kubernetes.read" && activity.TraceId == kubernetesTraceId);
         Assert.Equal("GET", trace.GetTagItem("kubernetes.operation"));
         Assert.Equal("kubernetes_access_denied", trace.GetTagItem("mcp.error.category"));
         Assert.Equal(ActivityStatusCode.Error, trace.Status);

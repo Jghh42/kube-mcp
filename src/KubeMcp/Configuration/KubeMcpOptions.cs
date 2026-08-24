@@ -12,6 +12,12 @@ public sealed class KubeMcpOptions
 
     public string? KubeConfigPath { get; init; }
 
+    /// <summary>
+    /// Optional representative namespace included in readiness SelfSubjectAccessReview
+    /// checks for namespaced resources. Null retains a cluster-wide authorization check.
+    /// </summary>
+    public string? ReadinessNamespace { get; init; }
+
     public ResourcePolicyOptions ResourcePolicy { get; init; } = new();
 
     public Dictionary<string, KubernetesResourceOptions> AllowedResources { get; init; } = [];
@@ -21,6 +27,8 @@ public sealed class KubeMcpOptions
     public KubeMcpAuthenticationOptions Authentication { get; init; } = new();
 
     public KubeMcpForwardedHeadersOptions ForwardedHeaders { get; init; } = new();
+
+    public McpAdmissionOptions McpAdmission { get; init; } = new();
 
     public McpConcurrencyOptions McpConcurrency { get; init; } = new();
 
@@ -146,6 +154,23 @@ public sealed class KubeMcpForwardedHeadersOptions
     // originating client and production hostname behind a reverse proxy.
     public ForwardedHeaders AllowedForwardedHeaders { get; init; } =
         ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
+}
+
+public sealed class McpAdmissionOptions
+{
+    /// <summary>
+    /// Maximum number of MCP requests admitted ahead of authentication. This
+    /// must cover the post-authentication permits and complete inner queue.
+    /// </summary>
+    [Range(1, 128)]
+    public int PermitLimit { get; init; } = 16;
+
+    /// <summary>
+    /// Bounded oldest-first admission queue. Overflow is rejected before
+    /// authentication, request parsing, observability, or per-request audit work.
+    /// </summary>
+    [Range(0, 128)]
+    public int QueueLimit { get; init; } = 16;
 }
 
 public sealed class McpConcurrencyOptions

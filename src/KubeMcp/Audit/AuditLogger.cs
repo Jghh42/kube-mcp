@@ -8,8 +8,7 @@ public sealed class AuditLogger(
     IAuditEventPublisher publisher,
     IHttpContextAccessor httpContextAccessor,
     IOptions<KubeMcpOptions> options,
-    TimeProvider timeProvider,
-    StructuredLoggerAuditSink? structuredLoggerSink = null) : IAuditLogger
+    TimeProvider timeProvider) : IAuditLogger
 {
     private const int MaximumValueLength = 256;
     internal static readonly EventId KubernetesAccessEvent = new(1000, "KubernetesAccess");
@@ -59,23 +58,6 @@ public sealed class AuditLogger(
 
     private void TryPublish(AuditRecord record)
     {
-        if (structuredLoggerSink is not null)
-        {
-            try
-            {
-                // Preserve immediate structured logs as the default audit path.
-                // This sink completes synchronously; provider exceptions are
-                // contained before fan-out to organization sinks.
-                structuredLoggerSink.WriteAsync(record, CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult();
-            }
-            catch
-            {
-                // Audit logging is best effort and cannot alter request handling.
-            }
-        }
-
         try
         {
             _ = publisher.TryPublish(record);

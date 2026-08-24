@@ -34,7 +34,7 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
     public Func<CancellationToken, Task<IReadOnlyList<ApiResourceInfo>>>? CoreResourcesHandler { get; set; }
     public Func<CancellationToken, Task<IReadOnlyList<ApiGroupInfo>>>? ApiGroupsHandler { get; set; }
     public Func<string, string, CancellationToken, Task<IReadOnlyList<ApiResourceInfo>>>? GroupResourcesHandler { get; set; }
-    public Func<KubernetesResourceDescriptor, string, CancellationToken, Task<bool>>? ResourceAccessHandler { get; set; }
+    public Func<KubernetesResourceDescriptor, string, string?, CancellationToken, Task<bool>>? ResourceAccessHandler { get; set; }
     public Func<string, string, CancellationToken, Task<bool>>? NamespaceLabelHandler { get; set; }
 
     public async Task<ReadOnlyMemory<byte>> GetNamespacedAsync(
@@ -104,13 +104,14 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
     public async Task<bool> IsResourceAccessAllowedAsync(
         KubernetesResourceDescriptor descriptor,
         string verb,
+        string? @namespace,
         int maxBodyBytes,
         CancellationToken cancellationToken)
     {
-        Record($"AUTH {verb} {descriptor.QualifiedName} maxBody={maxBodyBytes}");
+        Record($"AUTH {verb} {descriptor.QualifiedName} namespace={@namespace ?? "<cluster>"} maxBody={maxBodyBytes}");
         return ResourceAccessHandler is null
             ? true
-            : await ResourceAccessHandler(descriptor, verb, cancellationToken).ConfigureAwait(false);
+            : await ResourceAccessHandler(descriptor, verb, @namespace, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<bool> NamespaceMatchesLabelSelectorAsync(
@@ -141,12 +142,21 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
 internal sealed class FakeTimeProvider : TimeProvider
 {
     private DateTimeOffset now;
+    private long timestamp;
 
     public FakeTimeProvider(DateTimeOffset initial) => now = initial;
 
-    public void Advance(TimeSpan duration) => now += duration;
+    public void Advance(TimeSpan duration)
+    {
+        now += duration;
+        timestamp += duration.Ticks;
+    }
 
     public override DateTimeOffset GetUtcNow() => now;
+
+    public override long GetTimestamp() => timestamp;
+
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
 }
 
 internal sealed class ReaderHost : IDisposable
@@ -403,6 +413,55 @@ public sealed class KubernetesBoundaryOptionsTests
 
         Assert.True(result.Failed);
         Assert.Contains("AllowAll discovery parallelism", result.FailureMessage);
+    }
+
+    [Fact]
+    public void OuterAdmissionMustCoverAuthenticatedPermitsAndQueue()
+    {
+        var baseline = ReaderTestOptions.Options();
+        var options = new KubeMcpOptions
+        {
+            SecretHmacKey = baseline.SecretHmacKey,
+            ResourcePolicy = baseline.ResourcePolicy,
+            AllowedResources = baseline.AllowedResources,
+            NamespacePolicy = baseline.NamespacePolicy,
+            McpAdmission = new McpAdmissionOptions
+            {
+                PermitLimit = 2,
+                QueueLimit = 0
+            },
+            McpConcurrency = new McpConcurrencyOptions
+            {
+                PermitLimit = 2,
+                QueueLimit = 1
+            }
+        };
+
+        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
+            .Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains("plus QueueLimit (3)", result.FailureMessage);
+    }
+
+    [Fact]
+    public void InvalidReadinessNamespaceIsRejected()
+    {
+        var baseline = ReaderTestOptions.Options();
+        var options = new KubeMcpOptions
+        {
+            SecretHmacKey = baseline.SecretHmacKey,
+            ReadinessNamespace = "Not A Namespace",
+            ResourcePolicy = baseline.ResourcePolicy,
+            AllowedResources = baseline.AllowedResources,
+            NamespacePolicy = baseline.NamespacePolicy
+        };
+
+        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
+            .Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains("ReadinessNamespace", result.FailureMessage);
     }
 
     [Fact]

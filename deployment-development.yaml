@@ -67,6 +67,8 @@ spec:
                   value: kube-mcp
             initialDelaySeconds: 2
             periodSeconds: 5
+            # Must exceed the application's internal 2s Kubernetes readiness deadline.
+            timeoutSeconds: 3
           livenessProbe:
             httpGet:
               path: /healthz

@@ -26,11 +26,17 @@ environment, `None` is rejected at startup unless the deployment deliberately se
 issuer, audience, lifetime, all configured scopes, and all configured roles before
 MCP execution. Resource and namespace access policies are enforced independently.
 
-A process-wide ASP.NET concurrency limiter applies only to `/mcp`, after successful
-authentication and authorization. By default, at most two requests execute MCP and
-Kubernetes work while two more wait oldest-first; overflow fails with HTTP `429`.
-This globally bounds simultaneous upstream response allocations while leaving the
-root, liveness, and readiness endpoints outside the limiter.
+Two process-wide admission layers apply only to `/mcp`. A cheap outer bound admits
+at most 16 requests before authentication and queues 16 oldest-first; overflow
+fails with HTTP `429` before authentication, protocol parsing, observability, or
+per-request audit publication. This prevents invalid JWT/API-key floods from
+creating unbounded authentication or logging work. After successful authentication
+and authorization, the smaller MCP/Kubernetes limiter allows two requests to
+execute while two wait oldest-first, preserving fair ordering for authenticated
+clients and bounding simultaneous upstream response allocations. Root, liveness,
+and readiness remain outside both limiters. `/mcp` request bodies are limited to
+64 KiB; declared oversized bodies receive HTTP `413` before body parsing or audit
+logging.
 
 Every dispatched `k8s_get` call emits a structured Kubernetes audit event. Requests
 rejected by authentication, authorization, or the concurrency limiter before tool
@@ -46,21 +52,21 @@ mode the client is recorded as `anonymous`; static API-key calls use the non-sec
 shared identity `static-api-key`; OAuth calls prefer the validated
 `client_id`/`azp`/`sub` claim.
 
-The structured `ILogger` audit sink remains enabled by default and is invoked
-immediately so records are visible when a request completes. Its behavior follows
-the configured logging provider: provider latency can delay request completion, so
-production logging providers should be non-blocking; provider exceptions are
-suppressed and never replace the response or original error. Additional
-organization sinks implement `IAuditSink` and use a bounded, non-blocking,
-best-effort queue. `CompositeAuditSink` fans each sanitized record out sequentially
-in the background. Organization-sink latency never blocks an MCP response, one sink
-exception does not stop the others, and sink exceptions never replace a response
-or the original tool error. If the 1,024-record queue is full, the newest record is
-dropped; aggregate local event `AuditQueueFull` is reported every 30 seconds from a
-separate background loop, never on the request path. The queue is drained during
-the host's graceful-shutdown window; cancellation of that window may leave records
+The structured `ILogger` audit sink remains enabled by default, but it and every
+additional organization `IAuditSink` run only behind the bounded, non-blocking,
+best-effort dispatcher—never on request threads. `CompositeAuditSink` fans each
+sanitized record out sequentially in the background with a two-second deadline per
+sink. Exceptions and deadline overruns do not stop later sinks. A sink that ignores
+cancellation is allowed at most one outstanding invocation and is skipped for later
+records until it completes, preventing a hung provider from permanently starving
+the fan-out. Sink/logging failures never replace a response or the original tool
+error. If the 1,024-record queue is full, the newest record is dropped; aggregate
+local event `AuditQueueFull` is reported every 30 seconds from a separate background
+loop, never on the request path. The queue is drained during the host's
+graceful-shutdown window; cancellation of that window may leave records
 undelivered. Deployments requiring durable, tamper-resistant retention should
-register their audit provider and alert on sink failures and queue drops.
+register their audit provider and alert on sink failures, deadlines, and queue
+drops.
 
 Kubernetes failures are mapped to fixed safe messages and categories such as
 `resource_not_found`, `kubernetes_access_denied`, `upstream_throttled`,
@@ -68,9 +74,11 @@ Kubernetes failures are mapped to fixed safe messages and categories such as
 `upstream_malformed_response`, `response_too_large`, `upstream_timeout`, and
 `internal_error`. Upstream error bodies and arbitrary exception messages never
 cross the Kubernetes boundary. Overall server deadlines use `server_timeout`, while
-a caller disconnect/cancellation uses `client_cancelled`. Local concurrency
-rejections use `rate_limited`, are returned as HTTP `429`, and are included in the
-same safe audit and low-cardinality telemetry paths as other pre-tool denials.
+a caller disconnect/cancellation uses `client_cancelled`. Authenticated inner
+concurrency rejections use `rate_limited`, return HTTP `429`, and use the same safe
+audit and low-cardinality telemetry paths as other pre-tool denials. Outer
+pre-authentication admission overflow also returns `429` but intentionally bypasses
+per-request observability/audit to prevent flood amplification.
 
 ### OpenTelemetry
 
@@ -222,6 +230,7 @@ use double underscores, for example `KubeMcp__SecretHmacKey`.
 | --- | ---: | --- |
 | `KubeMcp:SecretHmacKey` | required | Base64-encoded HMAC key of at least 32 bytes |
 | `KubeMcp:KubeConfigPath` | automatic | Optional kubeconfig path; in-cluster configuration is detected automatically |
+| `KubeMcp:ReadinessNamespace` | none | Optional representative namespace for accurately scoped namespaced readiness SSARs; omit for a cluster-wide authorization check |
 | `KubeMcp:ResourcePolicy:Mode` | `Allowlist` | `Allowlist` or the explicit `AllowAll` opt-in |
 | `KubeMcp:AllowedResources` | see `appsettings.json` | Explicit MCP name to Kubernetes group/version/resource/kind mappings in allowlist mode |
 | `KubeMcp:NamespacePolicy:Mode` | `Blacklist` | `Blacklist` or `LabelSelector` |
@@ -230,6 +239,8 @@ use double underscores, for example `KubeMcp__SecretHmacKey`.
 | `KubeMcp:MaxListItems` | `100` | Maximum objects returned by LIST |
 | `KubeMcp:MaxResponseBytes` | `1048576` | Maximum safe inner tool-content JSON size (not the complete MCP/HTTP wire envelope) |
 | `KubeMcp:MaxUpstreamBodyBytes` | `4194304` | Per-page or single-object Kubernetes response cap enforced before deserialization |
+| `KubeMcp:McpAdmission:PermitLimit` | `16` | Outer pre-authentication `/mcp` admission permits (1-128); must cover authenticated permits plus the complete inner queue |
+| `KubeMcp:McpAdmission:QueueLimit` | `16` | Oldest-first pre-authentication queue bound (0-128); overflow receives HTTP 429 without per-request audit work |
 | `KubeMcp:McpConcurrency:PermitLimit` | `2` | Process-wide maximum authenticated `/mcp` requests executing concurrently (1-16) |
 | `KubeMcp:McpConcurrency:QueueLimit` | `2` | Oldest-first waiting-request bound (0-4); `0` makes overflow fail fast with HTTP 429 |
 | `KubeMcp:ListPageSize` | `50` | Kubernetes page size for non-Secret LISTs |
@@ -253,15 +264,19 @@ use double underscores, for example `KubeMcp__SecretHmacKey`.
 | `KubeMcp:ForwardedHeaders:AllowedForwardedHeaders` | `XForwardedFor, XForwardedProto, XForwardedHost` | Headers honored only from the trusted proxies/networks |
 | `AllowedHosts` | localhost and in-cluster service names | Semicolon-delimited ASP.NET Core host allowlist; production manifests must add their public hostname(s) |
 
-`McpConcurrency` is one global partition, not a per-IP or per-token quota, so all
-authorized clients share the pod's memory budget fairly without trusting
-caller-controlled addressing. The limiter runs after authentication/authorization,
-so rejected credentials cannot consume permits or queue slots. Validation requires
-`PermitLimit * MaxUpstreamBodyBytes` to be at most 64 MiB, reserving at least three
-quarters of the reference 256 MiB pod limit for managed-object expansion, protocol
-envelopes, and runtime overhead. Raise either value only with the other value and
-the pod memory limit considered together. Queued requests remain subject to the
-overall MCP deadline.
+Both admission layers are global partitions, not per-IP or per-token quotas, so
+they do not trust caller-controlled addressing. `McpAdmission` is the larger,
+bounded oldest-first outer gate; its overflow is intentionally not audited per
+request to avoid turning a credential flood into a logging amplifier.
+`McpConcurrency` runs after authentication/authorization, where all authorized
+clients share the pod's memory budget in oldest-first order. Validation requires
+the outer permit limit to cover authenticated permits plus all inner queue slots,
+and requires `McpConcurrency:PermitLimit * MaxUpstreamBodyBytes` to be at most 64
+MiB, reserving
+at least three quarters of the reference 256 MiB pod limit for managed-object
+expansion, protocol envelopes, and runtime overhead. Raise values only with the pod
+memory limit considered. Queued requests remain subject to the overall MCP
+deadline.
 
 Resources are denied unless their MCP name has an explicit mapping. The defaults
 cover common namespaced, built-in Kubernetes resources only. Optional
@@ -356,6 +371,12 @@ use numeric suffixes, for example
 middleware obtains signing keys through OIDC discovery/JWKS. HTTPS metadata remains
 mandatory by default; the kind harness disables it only for cluster-local testing.
 Health, readiness, and the informational root endpoint remain public in every mode.
+Readiness uses an opaque two-second Kubernetes authorization probe. Concurrent
+callers share one probe and its result is cached for one second; label-selector mode
+also verifies cluster-scoped namespace LIST authorization. Set
+`KubeMcp:ReadinessNamespace` to a representative policy-allowed namespace when
+readiness should check namespaced GET/LIST RoleBinding access instead of the default
+cluster-wide authorization question.
 
 `None` is intended only for local development. It is selected by the explicitly
 named `appsettings.Development.json` and `deployment-development.yaml` examples.

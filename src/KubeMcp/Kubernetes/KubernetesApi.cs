@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using k8s;
 
 namespace KubeMcp.Kubernetes;
@@ -15,6 +16,10 @@ namespace KubeMcp.Kubernetes;
 internal sealed class KubernetesApi : IKubernetesApi
 {
     private const string JsonMediaType = "application/json";
+    private static readonly JsonSerializerOptions AccessReviewSerializerOptions = new()
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
 
     internal const int MaximumContinueTokenBytes = 8 * 1024;
     internal const int MaximumDiscoveryGroups = 256;
@@ -101,6 +106,7 @@ internal sealed class KubernetesApi : IKubernetesApi
     public async Task<bool> IsResourceAccessAllowedAsync(
         KubernetesResourceDescriptor descriptor,
         string verb,
+        string? @namespace,
         int maxBodyBytes,
         CancellationToken cancellationToken)
     {
@@ -117,10 +123,11 @@ internal sealed class KubernetesApi : IKubernetesApi
                 {
                     group = descriptor.Group,
                     resource = descriptor.Resource,
-                    verb
+                    verb,
+                    @namespace
                 }
             }
-        });
+        }, AccessReviewSerializerOptions);
         using var content = new ByteArrayContent(payload);
         content.Headers.ContentType = new MediaTypeHeaderValue(JsonMediaType);
         var body = await PostRawAsync(
