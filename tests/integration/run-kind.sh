@@ -348,10 +348,37 @@ wait_for_rollout() {
   local deployment=$1
   local selector=$2
   local timeout=$3
+  local desired_replicas
 
   if kubectl rollout status "deployment/$deployment" \
     --namespace "$kube_namespace" --timeout="$timeout"; then
-    return
+    desired_replicas=$(kubectl get "deployment/$deployment" \
+      --namespace "$kube_namespace" -o jsonpath='{.spec.replicas}')
+
+    # rollout status succeeds once the replacement is available, while an old
+    # pod can still be terminating. A service port-forward may select that old
+    # pod and then drop an in-flight response when it exits. Wait for the pod
+    # set to converge before choosing the test's forwarding target.
+    for _ in $(seq 1 60); do
+      if kubectl get pods --namespace "$kube_namespace" --selector "$selector" -o json |
+        python3 -c '
+import json, sys
+pods = json.load(sys.stdin)["items"]
+desired = int(sys.argv[1])
+
+def ready(pod):
+    if pod["metadata"].get("deletionTimestamp"):
+        return False
+    conditions = pod.get("status", {}).get("conditions", [])
+    return any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
+
+raise SystemExit(0 if len(pods) == desired and all(map(ready, pods)) else 1)
+' "$desired_replicas"; then
+        return
+      fi
+      sleep 1
+    done
+    echo "deployment/$deployment rollout did not converge to a stable pod set" >&2
   fi
 
   # Emit safe operational diagnostics without `describe`, which can print
@@ -374,9 +401,30 @@ wait_for_rollout() {
 }
 
 start_port_forward() {
+  local target_pod
+  target_pod=$(kubectl get pods --namespace "$kube_namespace" \
+    --selector app.kubernetes.io/name=kube-mcp -o json |
+    python3 -c '
+import json, sys
+pods = [
+    pod for pod in json.load(sys.stdin)["items"]
+    if not pod["metadata"].get("deletionTimestamp")
+    and any(
+        c.get("type") == "Ready" and c.get("status") == "True"
+        for c in pod.get("status", {}).get("conditions", [])
+    )
+]
+if len(pods) != 1:
+    raise SystemExit(f"expected one stable kube-mcp pod, found {len(pods)}")
+print(pods[0]["metadata"]["name"])
+')
+
   : >"$port_forward_log"
-  kubectl port-forward --namespace kube-mcp service/kube-mcp "$local_port:80" \
-    >"$port_forward_log" 2>&1 &
+  # Pin the forward to the stable replacement pod. Forwarding the Service lets
+  # kubectl choose from both current and terminating rollout pods, which can
+  # produce a premature HTTP response when the selected old pod exits.
+  kubectl port-forward --namespace "$kube_namespace" "pod/$target_pod" \
+    "$local_port:8080" >"$port_forward_log" 2>&1 &
   port_forward_pid=$!
 
   for _ in $(seq 1 30); do
