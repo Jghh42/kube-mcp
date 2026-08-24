@@ -118,6 +118,10 @@ metadata:
     app.kubernetes.io/name: kube-mcp-keycloak
 spec:
   replicas: 1
+  # This is an ephemeral single-replica integration dependency. Recreate avoids
+  # briefly running two memory-heavy Keycloak JVMs on the one-node kind runner.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: kube-mcp-keycloak

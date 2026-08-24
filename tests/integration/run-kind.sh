@@ -344,6 +344,29 @@ done
 capture_original_cluster_state
 cluster_state_snapshot_needed=true
 
+wait_for_rollout() {
+  local deployment=$1
+  local selector=$2
+  local timeout=$3
+
+  if kubectl rollout status "deployment/$deployment" \
+    --namespace "$kube_namespace" --timeout="$timeout"; then
+    return
+  fi
+
+  # Emit safe operational diagnostics without `describe`, which can print
+  # literal environment values. These summaries and logs make CI rollout
+  # failures actionable while avoiding Secret/config payloads.
+  echo "rollout diagnostics for deployment/$deployment:" >&2
+  kubectl get deployment,replicaset,pod --namespace "$kube_namespace" \
+    --selector "$selector" -o wide >&2 || true
+  kubectl get events --namespace "$kube_namespace" \
+    --field-selector type=Warning --sort-by=.lastTimestamp >&2 || true
+  kubectl logs "deployment/$deployment" --namespace "$kube_namespace" \
+    --all-containers --tail=100 >&2 || true
+  return 1
+}
+
 start_port_forward() {
   : >"$port_forward_log"
   kubectl port-forward --namespace kube-mcp service/kube-mcp "$local_port:80" \
@@ -414,8 +437,10 @@ grep -Fq "value: OAuthClientCredentials" "$deployment_manifest" || {
 kubectl create namespace "$kube_namespace" >/dev/null
 kube_namespace_owned=true
 kubectl apply --filename tests/integration/keycloak.yaml >/dev/null
-kubectl rollout restart deployment/keycloak --namespace kube-mcp >/dev/null
-kubectl rollout status deployment/keycloak --namespace kube-mcp --timeout=180s
+# The namespace is newly owned by this run, so apply already creates the only
+# required rollout. Restarting immediately would create a second ReplicaSet
+# while the first Keycloak JVM is still starting and can exhaust the kind node.
+wait_for_rollout keycloak app.kubernetes.io/name=kube-mcp-keycloak 240s
 
 kubectl port-forward --namespace kube-mcp service/keycloak "$keycloak_local_port:8080" \
   >"$keycloak_port_forward_log" 2>&1 &
@@ -461,8 +486,9 @@ kubectl apply --filename "$deployment_manifest" >/dev/null
 kubectl set env deployment/kube-mcp --namespace kube-mcp \
   KubeMcp__NamespacePolicy__Mode- \
   KubeMcp__NamespacePolicy__LabelSelector- >/dev/null
-kubectl rollout restart deployment/kube-mcp --namespace kube-mcp >/dev/null
-kubectl rollout status deployment/kube-mcp --namespace kube-mcp --timeout=120s
+# Both apply and set-env update the pod template when needed; an additional
+# rollout restart would race those revisions and is redundant.
+wait_for_rollout kube-mcp app.kubernetes.io/name=kube-mcp 120s
 
 # A handed-in archive is content-addressed before loading. Kubernetes runtimes
 # report either its manifest or config digest as imageID; accept only those two
@@ -566,7 +592,7 @@ kubectl label namespace "$fixture_namespace" kube-mcp.io/agent-access=allowed --
 kubectl set env deployment/kube-mcp --namespace kube-mcp \
   KubeMcp__NamespacePolicy__Mode=LabelSelector \
   KubeMcp__NamespacePolicy__LabelSelector=kube-mcp.io/agent-access=allowed >/dev/null
-kubectl rollout status deployment/kube-mcp --namespace kube-mcp --timeout=120s
+wait_for_rollout kube-mcp app.kubernetes.io/name=kube-mcp 120s
 start_port_forward
 
 run_integration_phase "label-selector namespace policy integration tests" \
@@ -579,7 +605,7 @@ port_forward_pid=
 kubectl apply --filename deployment-allow-all-rbac.yaml >/dev/null
 kubectl set env deployment/kube-mcp --namespace kube-mcp \
   KubeMcp__ResourcePolicy__Mode=AllowAll >/dev/null
-kubectl rollout status deployment/kube-mcp --namespace kube-mcp --timeout=120s
+wait_for_rollout kube-mcp app.kubernetes.io/name=kube-mcp 120s
 start_port_forward
 
 run_integration_phase "AllowAll resource policy integration tests" \
