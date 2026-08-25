@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -69,6 +70,66 @@ public sealed class ProductionDeploymentTests
         Assert.DoesNotContain("traefik.io", production, StringComparison.Ordinal);
         Assert.Contains("postgresql.cnpg.io", cnpgOverlay, StringComparison.Ordinal);
         Assert.Contains("traefik.io", traefikOverlay, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("cnpg")]
+    [InlineData("traefik")]
+    public void CrdOverlayMappingsMatchRbacResources(string overlay)
+    {
+        using var mappings = JsonDocument.Parse(File.ReadAllText(
+            RepositoryFile($"overlays/{overlay}/resources.json")));
+        var mappedValues = mappings.RootElement
+            .GetProperty("KubeMcp")
+            .GetProperty("AllowedResources")
+            .EnumerateObject()
+            .Select(entry => entry.Value)
+            .ToArray();
+        var mappedGroups = mappedValues
+            .Select(value => value.GetProperty("Group").GetString()!)
+            .ToHashSet(StringComparer.Ordinal);
+        var mappedResources = mappedValues
+            .Select(value => value.GetProperty("Resource").GetString()!)
+            .ToHashSet(StringComparer.Ordinal);
+        var rbac = File.ReadAllText(RepositoryFile($"overlays/{overlay}/rbac.yaml"));
+        var groupRule = Regex.Match(rbac, @"apiGroups:\s*\[\s*""(?<group>[^""]+)""\s*\]");
+        var resourcesBlock = Regex.Match(
+            rbac,
+            @"(?ms)^\s*resources:\s*(?<resources>\[[^\r\n]*\]|.*?)(?=^\s*verbs:)");
+        var verbsRule = Regex.Match(rbac, @"verbs:\s*\[(?<verbs>[^\]]+)\]");
+        var rbacResources = Regex.Matches(resourcesBlock.Groups["resources"].Value, @"[a-z][a-z0-9-]*")
+            .Select(match => match.Value)
+            .ToHashSet(StringComparer.Ordinal);
+        var rbacVerbs = Regex.Matches(verbsRule.Groups["verbs"].Value, @"[a-z]+")
+            .Select(match => match.Value)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.True(groupRule.Success, $"{overlay} RBAC must contain one explicit API group.");
+        Assert.True(resourcesBlock.Success, $"{overlay} RBAC must contain a resources rule.");
+        Assert.True(verbsRule.Success, $"{overlay} RBAC must contain a verbs rule.");
+        Assert.Equal(mappedGroups.Order(), new[] { groupRule.Groups["group"].Value });
+        Assert.Equal(mappedResources.Order(), rbacResources.Order());
+        Assert.Equal(new[] { "get", "list" }, rbacVerbs.Order());
+    }
+
+    [Fact]
+    public void NoWildcardResourceModeOrRbacManifestRemains()
+    {
+        Assert.False(File.Exists(RepositoryFile("deployment-allow-all-rbac.yaml")));
+        Assert.DoesNotContain(
+            "ResourcePolicy",
+            File.ReadAllText(RepositoryFile("src/KubeMcp/appsettings.json")),
+            StringComparison.Ordinal);
+
+        foreach (var manifest in Directory.EnumerateFiles(
+                     Path.GetDirectoryName(RepositoryFile("deployment.yaml"))!,
+                     "*.yaml",
+                     SearchOption.AllDirectories))
+        {
+            var yaml = File.ReadAllText(manifest);
+            Assert.DoesNotMatch("""(?m)^\s*(apiGroups|resources):[^\r\n]*["']?\*["']?""", yaml);
+            Assert.DoesNotMatch("""(?m)^\s*(apiGroups|resources):\s*\r?\n\s*-\s*["']?\*["']?""", yaml);
+        }
     }
 
     [Fact]

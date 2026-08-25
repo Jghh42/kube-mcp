@@ -16,10 +16,10 @@ public enum KubernetesErrorCategory
     /// <summary>The requested namespace is not permitted by the namespace policy.</summary>
     NamespaceNotAllowed,
 
-    /// <summary>The caller-supplied request shape is invalid (bad name, ambiguous resource, ...).</summary>
+    /// <summary>The caller-supplied request shape is invalid.</summary>
     InvalidRequest,
 
-    /// <summary>The Kubernetes resource or discovery entry was not found (HTTP 404 or discovery miss).</summary>
+    /// <summary>The Kubernetes resource was not found (HTTP 404).</summary>
     NotFound,
 
     /// <summary>Kubernetes RBAC denied access (HTTP 403).</summary>

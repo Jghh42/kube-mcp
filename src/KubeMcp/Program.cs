@@ -69,12 +69,6 @@ var app = builder.Build();
 
 var kubeMcpOptions = app.Services.GetRequiredService<IOptions<KubeMcpOptions>>().Value;
 
-if (kubeMcpOptions.ResourcePolicy.Mode == ResourcePolicyMode.AllowAll)
-{
-    app.Logger.LogWarning(
-        "Resource policy AllowAll is enabled. Every namespaced Kubernetes resource supporting GET or LIST may be requested, subject to namespace policy and Kubernetes RBAC.");
-}
-
 if (authenticationMode == AuthenticationMode.None)
 {
     app.Logger.LogWarning(

@@ -503,7 +503,11 @@ kubectl create secret generic kube-mcp-api-key \
 kubectl apply --filename "$deployment_manifest" >/dev/null
 kubectl set env deployment/kube-mcp --namespace kube-mcp \
   KubeMcp__NamespacePolicy__Mode- \
-  KubeMcp__NamespacePolicy__LabelSelector- >/dev/null
+  KubeMcp__NamespacePolicy__LabelSelector- \
+  KubeMcp__AllowedResources__roles.rbac.authorization.k8s.io__Group=rbac.authorization.k8s.io \
+  KubeMcp__AllowedResources__roles.rbac.authorization.k8s.io__Version=v1 \
+  KubeMcp__AllowedResources__roles.rbac.authorization.k8s.io__Resource=roles \
+  KubeMcp__AllowedResources__roles.rbac.authorization.k8s.io__Kind=Role >/dev/null
 # Both apply and set-env update the pod template when needed; an additional
 # rollout restart would race those revisions and is redundant.
 wait_for_rollout kube-mcp app.kubernetes.io/name=kube-mcp 120s
@@ -616,16 +620,6 @@ kill "$port_forward_pid" 2>/dev/null || true
 wait "$port_forward_pid" 2>/dev/null || true
 port_forward_pid=
 
-kubectl apply --filename deployment-allow-all-rbac.yaml >/dev/null
-kubectl set env deployment/kube-mcp --namespace kube-mcp \
-  KubeMcp__ResourcePolicy__Mode=AllowAll >/dev/null
-wait_for_rollout kube-mcp app.kubernetes.io/name=kube-mcp 120s
-start_port_forward
-
-run_integration_phase "AllowAll resource policy integration tests" \
-  KUBE_MCP_NAMESPACE_POLICY_MODE=LabelSelector \
-  KUBE_MCP_RESOURCE_POLICY_MODE=AllowAll
-
 # Explicit, checked cleanup on the success path. Keep the EXIT guard armed until
 # both owned namespaces (and therefore every namespaced fixture) are gone and
 # both cluster-scoped snapshots have been restored and exactly verified.
@@ -634,4 +628,4 @@ remove_owned_namespaces
 restore_original_cluster_state
 cluster_state_snapshot_needed=false
 
-echo "Integration tests passed for audit logging, API-key authentication, allowlist, AllowAll, blacklist, and label-selector modes. Owned namespaces removed; original ClusterRole and ClusterRoleBinding state restored."
+echo "Integration tests passed for audit logging, API-key authentication, explicit resource mappings, blacklist, and label-selector modes. Owned namespaces removed; original ClusterRole and ClusterRoleBinding state restored."

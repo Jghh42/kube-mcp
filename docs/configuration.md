@@ -9,7 +9,6 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | `KubeMcp:SecretHmacKey` | required | Base64-encoded HMAC key of at least 32 bytes. |
 | `KubeMcp:KubeConfigPath` | automatic | Optional kubeconfig path; in-cluster configuration is detected automatically. |
 | `KubeMcp:ReadinessNamespace` | none | Representative namespace for namespaced readiness authorization checks. |
-| `KubeMcp:ResourcePolicy:Mode` | `Allowlist` | `Allowlist` or explicit `AllowAll`. |
 | `KubeMcp:AllowedResources` | see `appsettings.json` | MCP names mapped to Kubernetes group/version/resource/kind. |
 | `KubeMcp:NamespacePolicy:Mode` | `Blacklist` | `Blacklist` or `LabelSelector`. |
 | `KubeMcp:NamespacePolicy:DeniedNamespaces` | system namespaces | Names denied in blacklist mode. |
@@ -20,10 +19,8 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | `KubeMcp:ListPageSize` | `50` | Page size for non-Secret LISTs. |
 | `KubeMcp:SecretListPageSize` | `10` | Page size for Secret LISTs. |
 | `KubeMcp:MaxListPages` | `20` | Maximum continuation pages per LIST. |
-| `KubeMcp:DiscoveryParallelism` | `4` | Maximum parallel API-group discovery requests in `AllowAll` mode. |
 | `KubeMcp:KubernetesRequestTimeoutSeconds` | `15` | Kubernetes operation timeout. |
 | `KubeMcp:OverallMcpRequestTimeoutSeconds` | `30` | End-to-end MCP deadline; must exceed the Kubernetes timeout. |
-| `KubeMcp:DiscoveryCacheSeconds` | `300` | Discovery cache lifetime in `AllowAll` mode. |
 | `KubeMcp:McpAdmission:PermitLimit` | `16` | Pre-authentication `/mcp` permits (1–128). |
 | `KubeMcp:McpAdmission:QueueLimit` | `16` | Pre-authentication queue bound (0–128). |
 | `KubeMcp:McpConcurrency:PermitLimit` | `2` | Concurrent authenticated `/mcp` requests (1–16). |
@@ -38,7 +35,7 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 
 ## Resource policy
 
-Allowlist mode resolves a resource only when its MCP name has an explicit mapping. Discovery cannot expand the allowlist. Every mapping must provide a non-null `Group`; use `""` for the core API group.
+A resource resolves only when its MCP name has an explicit mapping. Resolution is local and never performs Kubernetes API discovery. Every mapping must provide a non-null `Group`; use `""` for the core API group.
 
 ```json
 {
@@ -55,15 +52,7 @@ Allowlist mode resolves a resource only when its MCP name has an explicit mappin
 }
 ```
 
-Custom mappings also need matching read-only Kubernetes RBAC. See [optional overlays](../overlays/README.md) for examples.
-
-To resolve every discoverable namespaced resource supporting GET/LIST, explicitly set:
-
-```text
-KubeMcp__ResourcePolicy__Mode=AllowAll
-```
-
-This emits a startup warning and does not expand Kubernetes RBAC automatically. See the [deployment guide](deployment.md#resource-access-and-rbac).
+Custom mappings also need matching read-only Kubernetes RBAC. See [optional overlays](../overlays/README.md) for examples. There is no wildcard application resource mode; resources that are not explicitly mapped are denied before any Kubernetes request.
 
 ## Namespace policy
 

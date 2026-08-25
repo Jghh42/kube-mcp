@@ -23,20 +23,7 @@ public sealed class ResourceAllowlistTests
     }
 
     [Fact]
-    public void AllowAllModeIsExplicitAndDoesNotRequireConfiguredMappings()
-    {
-        var allowlist = new ResourceAllowlist(Options.Create(OptionsWithResources(
-            [],
-            resourcePolicy: new ResourcePolicyOptions
-            {
-                Mode = ResourcePolicyMode.AllowAll
-            })));
-
-        Assert.True(allowlist.AllowsAll);
-    }
-
-    [Fact]
-    public void ResolvesConfiguredCrdWithoutApiDiscovery()
+    public void ResolvesExplicitCrdMapping()
     {
         var allowlist = new ResourceAllowlist(Options.Create(OptionsWithResources(
             new Dictionary<string, KubernetesResourceOptions>
@@ -55,11 +42,9 @@ public sealed class ResourceAllowlistTests
 
     internal static KubeMcpOptions OptionsWithResources(
         Dictionary<string, KubernetesResourceOptions> resources,
-        NamespacePolicyOptions? namespacePolicy = null,
-        ResourcePolicyOptions? resourcePolicy = null) => new()
+        NamespacePolicyOptions? namespacePolicy = null) => new()
         {
             SecretHmacKey = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
-            ResourcePolicy = resourcePolicy ?? new ResourcePolicyOptions(),
             AllowedResources = resources,
             NamespacePolicy = namespacePolicy ?? new NamespacePolicyOptions(),
             Authentication = new KubeMcpAuthenticationOptions
@@ -154,21 +139,6 @@ public sealed class KubeMcpOptionsValidatorTests
     }
 
     [Fact]
-    public void AllowAllModeAcceptsAnEmptyConfiguredAllowlist()
-    {
-        var options = ResourceAllowlistTests.OptionsWithResources(
-            [],
-            resourcePolicy: new ResourcePolicyOptions
-            {
-                Mode = ResourcePolicyMode.AllowAll
-            });
-
-        var result = validator.Validate(null, options);
-
-        Assert.True(result.Succeeded);
-    }
-
-    [Fact]
     public void RejectsInvalidResourceMapping()
     {
         var options = ValidOptions().WithResources(new Dictionary<string, KubernetesResourceOptions>
@@ -210,7 +180,6 @@ public sealed class KubeMcpOptionsValidatorTests
         var options = new KubeMcpOptions
         {
             SecretHmacKey = baseline.SecretHmacKey,
-            ResourcePolicy = baseline.ResourcePolicy,
             AllowedResources = baseline.AllowedResources,
             NamespacePolicy = baseline.NamespacePolicy,
             Authentication = baseline.Authentication,
@@ -240,7 +209,6 @@ public sealed class KubeMcpOptionsValidatorTests
         var options = new KubeMcpOptions
         {
             SecretHmacKey = baseline.SecretHmacKey,
-            ResourcePolicy = baseline.ResourcePolicy,
             AllowedResources = baseline.AllowedResources,
             NamespacePolicy = baseline.NamespacePolicy,
             Authentication = baseline.Authentication,
@@ -400,7 +368,6 @@ file static class OptionsTestExtensions
         Dictionary<string, KubernetesResourceOptions> resources) => new()
         {
             SecretHmacKey = options.SecretHmacKey,
-            ResourcePolicy = options.ResourcePolicy,
             AllowedResources = resources,
             NamespacePolicy = options.NamespacePolicy,
             Authentication = options.Authentication,
@@ -408,6 +375,5 @@ file static class OptionsTestExtensions
             MaxListItems = options.MaxListItems,
             MaxResponseBytes = options.MaxResponseBytes,
             KubernetesRequestTimeoutSeconds = options.KubernetesRequestTimeoutSeconds,
-            DiscoveryCacheSeconds = options.DiscoveryCacheSeconds
         };
 }

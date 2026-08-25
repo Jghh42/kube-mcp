@@ -33,9 +33,9 @@ The harness creates ephemeral HMAC and API keys, loads the API key through a Kub
 - exactly one exposed MCP tool
 - compact LIST and detailed GET responses
 - Secret sanitization
-- resource and namespace denials
+- application resource-policy and Kubernetes RBAC denials
 - both namespace-policy modes
-- explicit resource `AllowAll` mode
+- explicit built-in resource mappings
 
 Harness-owned namespaces are deleted afterward. Any pre-existing `kube-mcp-reader` ClusterRole and ClusterRoleBinding are restored from exact snapshots, or removed when they did not exist before the run.
 

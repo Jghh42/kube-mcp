@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -15,9 +14,6 @@ namespace KubeMcp.Kubernetes;
 
 public sealed class KubernetesReader : IKubernetesReader, IDisposable
 {
-    internal const int MaximumCachedDiscoveryResources = 2048;
-    private const int MaximumAliasesPerDiscoveredResource = 16;
-
     private const string ListPrefix = "{\"operation\":\"LIST\",\"resource\":";
     private const string ListCanonicalResource = ",\"canonicalResource\":";
     private const string ListNamespace = ",\"namespace\":";
@@ -45,10 +41,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     private readonly ResourceAllowlist resourceAllowlist;
     private readonly NamespaceAccessPolicy namespacePolicy;
     private readonly KubeMcpOptions options;
-    private readonly TimeProvider timeProvider;
     private readonly ILogger<KubernetesReader> logger;
-    private readonly SemaphoreSlim discoveryLock = new(1, 1);
-    private DiscoveryCache? discoveryCache;
 
     public KubernetesReader(
         SecretSanitizer secretSanitizer,
@@ -57,7 +50,6 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         NamespaceAccessPolicy namespacePolicy,
         IOptions<KubeMcpOptions> options,
         IKubernetesClientFactory? clientFactory = null,
-        TimeProvider? timeProvider = null,
         ILogger<KubernetesReader>? logger = null)
     {
         this.secretSanitizer = secretSanitizer;
@@ -65,7 +57,6 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         this.resourceAllowlist = resourceAllowlist;
         this.namespacePolicy = namespacePolicy;
         this.options = options.Value;
-        this.timeProvider = timeProvider ?? TimeProvider.System;
         this.logger = logger ?? NullLogger<KubernetesReader>.Instance;
 
         var factory = clientFactory ?? new KubernetesClientFactory(this.options);
@@ -79,7 +70,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         CancellationToken cancellationToken)
     {
         // Reject an oversized caller value before trimming or copying it into
-        // allowlist/discovery lookups and dynamic error text.
+        // mapping lookups and dynamic error text.
         KubernetesNameValidator.ValidateResourceIdentifierLength(resource);
         resource = RequiredValue(resource, nameof(resource));
         @namespace = RequiredValue(@namespace, nameof(@namespace));
@@ -90,11 +81,8 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
             KubernetesNameValidator.ValidateResourceName(name);
         }
 
-        // Resolve the resource descriptor synchronously from the allowlist (no
-        // network). In AllowAll mode the descriptor is resolved later via discovery.
-        KubernetesResourceDescriptor? descriptor = resourceAllowlist.AllowsAll
-            ? null
-            : resourceAllowlist.Resolve(resource);
+        // Resolve the explicit mapping synchronously before any network access.
+        var descriptor = resourceAllowlist.Resolve(resource);
 
         // Static namespace denial (blacklist) happens before any Kubernetes call.
         namespacePolicy.EnsureStaticallyAllowed(@namespace);
@@ -104,13 +92,9 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
 
         try
         {
-            // Label-selector namespace check happens before discovery and before the
-            // requested GET/LIST, and is the only Kubernetes call that may precede them.
+            // The optional label-selector check is the only Kubernetes call that may
+            // precede the requested namespaced GET/LIST.
             await EnsureNamespaceAllowedAsync(@namespace, timeout.Token).ConfigureAwait(false);
-            descriptor ??= await ResolveDiscoveredResourceAsync(
-                resource,
-                requiredVerb: name is null ? "list" : "get",
-                timeout.Token).ConfigureAwait(false);
 
             JsonNode safeResult = name is null
                 ? await ListAsync(descriptor, resource, @namespace, timeout.Token).ConfigureAwait(false)
@@ -797,346 +781,6 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         namespacePolicy.EnsureLabelCheckMatched(@namespace, matched);
     }
 
-    private async Task<KubernetesResourceDescriptor> ResolveDiscoveredResourceAsync(
-        string requestedResource,
-        string requiredVerb,
-        CancellationToken cancellationToken)
-    {
-        var discovery = await GetDiscoveryAsync(cancellationToken).ConfigureAwait(false);
-        var matches = discovery.Resources
-            .Where(resource => resource.Aliases.Contains(
-                requestedResource,
-                StringComparer.OrdinalIgnoreCase))
-            .Where(resource => resource.Verbs.Contains(
-                requiredVerb,
-                StringComparer.OrdinalIgnoreCase));
-
-        if (!discovery.IsComplete)
-        {
-            // Missing groups can hide an alias collision. During partial discovery,
-            // only a grouped resource's canonical qualified name is safe to resolve;
-            // this makes a discovery failure reduce access rather than turning a
-            // formerly ambiguous short alias into an allowed request.
-            matches = matches.Where(resource =>
-                resource.Descriptor.Group.Length > 0 &&
-                resource.Descriptor.QualifiedName.Equals(
-                    requestedResource,
-                    StringComparison.OrdinalIgnoreCase));
-        }
-
-        var resolvedMatches = matches.ToArray();
-
-        if (resolvedMatches.Length == 0)
-        {
-            throw new KubernetesReadException(
-                $"Resource \"{requestedResource}\" was not found among namespaced Kubernetes resources supporting {requiredVerb.ToUpperInvariant()}.",
-                KubernetesErrorCategory.NotFound);
-        }
-
-        if (resolvedMatches.Length > 1)
-        {
-            var names = string.Join(", ", resolvedMatches
-                .Select(match => match.Descriptor.QualifiedName)
-                .Order());
-            throw new KubernetesReadException(
-                $"Resource \"{requestedResource}\" is ambiguous; use one of: {names}.",
-                KubernetesErrorCategory.InvalidRequest);
-        }
-
-        return resolvedMatches[0].Descriptor;
-    }
-
-    private async Task<DiscoveryCache> GetDiscoveryAsync(CancellationToken cancellationToken)
-    {
-        var cached = Volatile.Read(ref discoveryCache);
-        if (cached is not null && timeProvider.GetUtcNow() < cached.ExpiresAt)
-        {
-            return cached;
-        }
-
-        await discoveryLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            cached = Volatile.Read(ref discoveryCache);
-            if (cached is not null && timeProvider.GetUtcNow() < cached.ExpiresAt)
-            {
-                return cached;
-            }
-
-            var (resources, coreAvailable, complete, failureCategory) =
-                await DiscoverResourcesAsync(cancellationToken).ConfigureAwait(false);
-            if (coreAvailable)
-            {
-                var cacheSeconds = complete
-                    ? options.DiscoveryCacheSeconds
-                    : Math.Min(options.DiscoveryCacheSeconds, 15);
-                var refreshed = new DiscoveryCache(
-                    resources,
-                    complete,
-                    timeProvider.GetUtcNow().AddSeconds(cacheSeconds));
-                Volatile.Write(ref discoveryCache, refreshed);
-                return refreshed;
-            }
-
-            // Total discovery failure: never expand access. Serve the last-known-good
-            // stale cache if one exists, and use a short retry window so concurrent
-            // requests do not serialize into repeated failing refreshes.
-            if (cached is not null)
-            {
-                logger.LogWarning(
-                    "Kubernetes discovery refresh failed; serving the last-known-good cached discovery.");
-                var stale = cached with
-                {
-                    ExpiresAt = timeProvider.GetUtcNow().AddSeconds(
-                        Math.Min(options.DiscoveryCacheSeconds, 15))
-                };
-                Volatile.Write(ref discoveryCache, stale);
-                return stale;
-            }
-
-            var category = failureCategory ?? KubernetesErrorCategory.ServerError;
-            throw new KubernetesReadException(
-                KubernetesApi.SafeMessage(category),
-                category);
-        }
-        finally
-        {
-            discoveryLock.Release();
-        }
-    }
-
-    private async Task<(
-        List<DiscoveredResource> Resources,
-        bool CoreAvailable,
-        bool Complete,
-        KubernetesErrorCategory? FailureCategory)> DiscoverResourcesAsync(
-        CancellationToken cancellationToken)
-    {
-        var discovered = new List<DiscoveredResource>();
-
-        ApiDiscoveryResult<ApiResourceInfo> coreResources;
-        try
-        {
-            coreResources = await api.GetCoreResourcesAsync(
-                options.MaxUpstreamBodyBytes,
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(
-                "Kubernetes core API discovery failed with {ExceptionType}; discovery is unavailable.",
-                ex.GetType().Name);
-            var category = ex is KubernetesApiException apiException
-                ? apiException.Category
-                : KubernetesErrorCategory.Internal;
-            return (
-                discovered,
-                CoreAvailable: false,
-                Complete: false,
-                FailureCategory: category);
-        }
-
-        var discoveryComplete = coreResources.IsComplete;
-        discoveryComplete &= AddDiscoveredResources(
-            discovered,
-            string.Empty,
-            "v1",
-            coreResources.Items,
-            MaximumCachedDiscoveryResources);
-
-        ApiDiscoveryResult<ApiGroupInfo> groups;
-        try
-        {
-            groups = await api.GetApiGroupsAsync(
-                options.MaxUpstreamBodyBytes,
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(
-                "Kubernetes API group index discovery failed with {ExceptionType}; only core resources are available.",
-                ex.GetType().Name);
-            return (
-                discovered,
-                CoreAvailable: true,
-                Complete: false,
-                FailureCategory: null);
-        }
-
-        var bag = new ConcurrentBag<DiscoveredResource>();
-        var partialFailure = discoveryComplete && groups.IsComplete ? 0 : 1;
-        var cachedResourceCount = discovered.Count;
-        try
-        {
-            await Parallel.ForEachAsync(groups.Items, new ParallelOptions
-            {
-                MaxDegreeOfParallelism = Math.Max(1, options.DiscoveryParallelism),
-                CancellationToken = cancellationToken
-            }, async (group, token) =>
-            {
-                try
-                {
-                    if (Volatile.Read(ref cachedResourceCount) >= MaximumCachedDiscoveryResources)
-                    {
-                        Interlocked.Exchange(ref partialFailure, 1);
-                        return;
-                    }
-
-                    var groupResources = await api.GetGroupResourcesAsync(
-                        group.Name,
-                        group.PreferredVersion,
-                        options.MaxUpstreamBodyBytes,
-                        token).ConfigureAwait(false);
-                    if (!groupResources.IsComplete)
-                    {
-                        Interlocked.Exchange(ref partialFailure, 1);
-                    }
-
-                    var local = new List<DiscoveredResource>();
-                    if (!AddDiscoveredResources(
-                            local,
-                            group.Name,
-                            group.PreferredVersion,
-                            groupResources.Items,
-                            KubernetesApi.MaximumResourcesPerDiscoveryDocument))
-                    {
-                        Interlocked.Exchange(ref partialFailure, 1);
-                    }
-
-                    foreach (var discoveredResource in local)
-                    {
-                        var position = Interlocked.Increment(ref cachedResourceCount);
-                        if (position > MaximumCachedDiscoveryResources)
-                        {
-                            Interlocked.Exchange(ref partialFailure, 1);
-                            break;
-                        }
-
-                        bag.Add(discoveredResource);
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    // A single unavailable aggregated API group reduces access to that
-                    // group only; it must never abort discovery for unrelated groups.
-                    Interlocked.Exchange(ref partialFailure, 1);
-                    logger.LogWarning(
-                        "Kubernetes API discovery for group {Group}/{Version} failed with {ExceptionType}; the group is unavailable.",
-                        group.Name,
-                        group.PreferredVersion,
-                        ex.GetType().Name);
-                }
-            }).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-
-        discovered.AddRange(bag);
-        return (
-            discovered,
-            CoreAvailable: true,
-            Complete: Volatile.Read(ref partialFailure) == 0,
-            FailureCategory: null);
-    }
-
-    private static bool AddDiscoveredResources(
-        ICollection<DiscoveredResource> destination,
-        string group,
-        string version,
-        IEnumerable<ApiResourceInfo> resources,
-        int maximumResources)
-    {
-        var complete = true;
-        foreach (var resource in resources)
-        {
-            if (!resource.Namespaced || resource.Name.Contains('/'))
-            {
-                continue;
-            }
-
-            if (destination.Count >= maximumResources)
-            {
-                complete = false;
-                break;
-            }
-
-            var descriptor = new KubernetesResourceDescriptor(
-                group,
-                version,
-                resource.Name,
-                resource.Kind);
-            if (!IsBoundedDiscoveryValue(resource.Name) ||
-                !IsBoundedDiscoveryValue(resource.Kind) ||
-                !IsBoundedDiscoveryValue(descriptor.QualifiedName))
-            {
-                complete = false;
-                continue;
-            }
-
-            var aliases = new List<string>(MaximumAliasesPerDiscoveredResource);
-            var aliasCandidates = new[]
-            {
-                resource.Name,
-                resource.SingularName,
-                resource.Kind,
-                descriptor.QualifiedName
-            }.Concat(resource.ShortNames ?? []);
-            foreach (var alias in aliasCandidates)
-            {
-                if (string.IsNullOrWhiteSpace(alias))
-                {
-                    continue;
-                }
-
-                if (!IsBoundedDiscoveryValue(alias))
-                {
-                    complete = false;
-                    continue;
-                }
-
-                if (aliases.Contains(alias, StringComparer.Ordinal))
-                {
-                    continue;
-                }
-
-                if (aliases.Count >= MaximumAliasesPerDiscoveredResource)
-                {
-                    complete = false;
-                    break;
-                }
-
-                aliases.Add(alias);
-            }
-
-            var verbs = (resource.Verbs ?? [])
-                .Where(verb => verb.Equals("get", StringComparison.OrdinalIgnoreCase) ||
-                               verb.Equals("list", StringComparison.OrdinalIgnoreCase))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            destination.Add(new DiscoveredResource(descriptor, aliases, verbs));
-        }
-
-        return complete;
-    }
-
-    private static bool IsBoundedDiscoveryValue(string? value) =>
-        !string.IsNullOrWhiteSpace(value) &&
-        value.Length <= KubernetesNameValidator.MaximumQualifiedNameLength;
-
     private static KubernetesReadException Translate(KubernetesApiException exception) =>
         new(KubernetesApi.SafeMessage(exception.Category), exception.Category);
 
@@ -1171,16 +815,6 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     public void Dispose()
     {
         api.Dispose();
-        discoveryLock.Dispose();
     }
 
-    private sealed record DiscoveryCache(
-        IReadOnlyList<DiscoveredResource> Resources,
-        bool IsComplete,
-        DateTimeOffset ExpiresAt);
-
-    private sealed record DiscoveredResource(
-        KubernetesResourceDescriptor Descriptor,
-        IReadOnlyList<string> Aliases,
-        IReadOnlyList<string> Verbs);
 }

@@ -63,7 +63,7 @@ public sealed class SecretSanitizerTests : IDisposable
     }
 
     [Fact]
-    public void ListReturnsOnlySafeDiscoveryFieldsAndKeyNames()
+    public void ListReturnsOnlySafeSummaryFieldsAndKeyNames()
     {
         var secret = ParseSecret($$"""
             {

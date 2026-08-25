@@ -19,7 +19,7 @@ LIST responses use compact resource-specific summaries for the default built-in 
 A request must pass all applicable controls:
 
 1. ASP.NET Core authentication and authorization.
-2. Resource allowlist or explicit `AllowAll` mode.
+2. Explicit resource mapping policy.
 3. Namespace blacklist or label-selector policy.
 4. GET/LIST-only application behavior.
 5. Kubernetes RBAC for the service identity.
@@ -31,7 +31,7 @@ The production reference deployment uses a static bearer API key loaded from a K
 
 Raw Kubernetes Secret values are never returned:
 
-- LIST returns safe discovery fields and key names.
+- LIST returns safe summary fields and key names.
 - GET replaces each value with a keyed HMAC-SHA256 fingerprint.
 
 The HMAC key remains on the server. Keep it stable only when fingerprints need to be comparable across restarts. Audit records and telemetry never contain Secret values or fingerprints.
@@ -83,4 +83,4 @@ Forwarded headers are trusted only from explicitly configured proxy addresses or
 
 ## RBAC
 
-The default ClusterRole grants narrow GET/LIST access for the default built-in resource set and namespace LIST for namespace-policy evaluation. Optional CRDs and wildcard reads require explicit, separate application and RBAC changes. See the [deployment guide](deployment.md#resource-access-and-rbac) and [resource overlays](../overlays/README.md).
+The default ClusterRole grants narrow GET/LIST access for the default built-in resource set and namespace LIST for namespace-policy evaluation. Optional CRDs require explicit, coordinated application mappings and narrow RBAC changes; wildcard reads are not supported. See the [deployment guide](deployment.md#resource-access-and-rbac) and [resource overlays](../overlays/README.md).

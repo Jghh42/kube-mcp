@@ -167,11 +167,6 @@ internal sealed class KubernetesReadinessHealthCheck : IHealthCheck
     private static KubernetesResourceDescriptor SelectAuthorizationTarget(
         KubeMcpOptions options)
     {
-        if (options.ResourcePolicy.Mode == ResourcePolicyMode.AllowAll)
-        {
-            return PodDescriptor;
-        }
-
         var configured = options.AllowedResources.TryGetValue("pods", out var pods)
             ? pods
             : options.AllowedResources

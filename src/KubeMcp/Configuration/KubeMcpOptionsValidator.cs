@@ -29,23 +29,10 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
             return ValidateOptionsResult.Fail(hmacValidation);
         }
 
-        if (options.ResourcePolicy is null)
+        if (options.AllowedResources is null || options.AllowedResources.Count == 0)
         {
             return ValidateOptionsResult.Fail(
-                $"{KubeMcpOptions.SectionName}:ResourcePolicy is required.");
-        }
-
-        if (!Enum.IsDefined(options.ResourcePolicy.Mode))
-        {
-            return ValidateOptionsResult.Fail(
-                $"{KubeMcpOptions.SectionName}:ResourcePolicy:Mode must be Allowlist or AllowAll.");
-        }
-
-        if (options.ResourcePolicy.Mode == ResourcePolicyMode.Allowlist &&
-            (options.AllowedResources is null || options.AllowedResources.Count == 0))
-        {
-            return ValidateOptionsResult.Fail(
-                $"{KubeMcpOptions.SectionName}:AllowedResources must contain at least one resource when ResourcePolicy:Mode is Allowlist.");
+                $"{KubeMcpOptions.SectionName}:AllowedResources must contain at least one resource.");
         }
 
         foreach (var (configuredName, resource) in options.AllowedResources ?? [])
@@ -108,12 +95,6 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         {
             return ValidateOptionsResult.Fail(
                 $"{KubeMcpOptions.SectionName}:SecretListPageSize must not exceed ListPageSize.");
-        }
-
-        if (options.DiscoveryParallelism is < 1 or > 16)
-        {
-            return ValidateOptionsResult.Fail(
-                $"{KubeMcpOptions.SectionName}:DiscoveryParallelism must be between 1 and 16.");
         }
 
         if (options.OverallMcpRequestTimeoutSeconds is < 1 or > 3600)
@@ -255,21 +236,12 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
             return ValidateOptionsResult.Fail($"{path}:QueueLimit must be between 0 and 4.");
         }
 
-        // A refresh occupies one MCP permit but can have DiscoveryParallelism
-        // group bodies in flight at once. Every other active MCP permit can also
-        // retain one capped upstream body, so validate the actual worst case.
-        var allowAll = options.ResourcePolicy.Mode == ResourcePolicyMode.AllowAll;
-        var maximumConcurrentBodies = allowAll
-            ? (long)concurrency.PermitLimit - 1 + options.DiscoveryParallelism
-            : concurrency.PermitLimit;
-        var aggregateUpstreamBytes = maximumConcurrentBodies * options.MaxUpstreamBodyBytes;
+        var aggregateUpstreamBytes =
+            (long)concurrency.PermitLimit * options.MaxUpstreamBodyBytes;
         if (aggregateUpstreamBytes > MaximumAggregateUpstreamBodyBytes)
         {
-            var discoveryDetail = allowAll
-                ? ", including AllowAll discovery parallelism,"
-                : string.Empty;
             return ValidateOptionsResult.Fail(
-                $"{path}:the worst-case concurrent Kubernetes body count multiplied by {KubeMcpOptions.SectionName}:MaxUpstreamBodyBytes must not exceed {MaximumAggregateUpstreamBodyBytes} bytes{discoveryDetail} while preserving memory headroom within the 256 MiB pod limit.");
+                $"{path}:the worst-case concurrent Kubernetes body count multiplied by {KubeMcpOptions.SectionName}:MaxUpstreamBodyBytes must not exceed {MaximumAggregateUpstreamBodyBytes} bytes while preserving memory headroom within the 256 MiB pod limit.");
         }
 
         return null;

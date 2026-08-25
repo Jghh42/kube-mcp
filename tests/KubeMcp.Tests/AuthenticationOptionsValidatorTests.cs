@@ -89,7 +89,10 @@ public sealed class AuthenticationOptionsValidatorTests
         new()
         {
             SecretHmacKey = TestHmacKey,
-            ResourcePolicy = new ResourcePolicyOptions { Mode = ResourcePolicyMode.AllowAll },
+            AllowedResources = new Dictionary<string, KubernetesResourceOptions>
+            {
+                ["pods"] = new() { Group = "", Version = "v1", Resource = "pods", Kind = "Pod" }
+            },
             Authentication = new KubeMcpAuthenticationOptions
             {
                 Mode = AuthenticationMode.ApiKey,
@@ -105,7 +108,10 @@ public sealed class AuthenticationOptionsValidatorTests
     private static KubeMcpOptions Options(KubeMcpAuthenticationOptions authentication) => new()
     {
         SecretHmacKey = TestHmacKey,
-        ResourcePolicy = new ResourcePolicyOptions { Mode = ResourcePolicyMode.AllowAll },
+        AllowedResources = new Dictionary<string, KubernetesResourceOptions>
+        {
+            ["pods"] = new() { Group = "", Version = "v1", Resource = "pods", Kind = "Pod" }
+        },
         Authentication = authentication
     };
 }

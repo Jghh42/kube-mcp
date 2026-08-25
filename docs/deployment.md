@@ -67,19 +67,7 @@ By default, readiness asks a cluster-wide authorization question. Set `KubeMcp:R
 
 The default `ClusterRole` grants only `get` and `list` for the built-in resource allowlist. It also grants namespace `list` so label-selector namespace policy can be evaluated. It does not grant mutation, watch, exec, proxy, wildcard resources, or optional CRDs.
 
-Application policy and Kubernetes RBAC are independent; both must allow a request. Optional CloudNativePG and Traefik mappings have coordinated [resource and RBAC overlays](../overlays/README.md).
-
-To permit every discoverable namespaced GET/LIST resource, both of these deliberate changes are required:
-
-```text
-KubeMcp__ResourcePolicy__Mode=AllowAll
-```
-
-```sh
-kubectl apply --filename deployment-allow-all-rbac.yaml
-```
-
-This grants broad cluster-wide read access. Namespace policy, GET/LIST-only behavior, Secret sanitization, and response limits still apply. Reapply `deployment.yaml` to restore narrow RBAC.
+Application policy and Kubernetes RBAC are independent; both must allow a request. There is no wildcard application mode or wildcard RBAC manifest. Optional CloudNativePG and Traefik mappings have coordinated [resource and RBAC overlays](../overlays/README.md); each overlay must add both the explicit mapping and matching narrow read-only RBAC.
 
 ## Container image availability
 

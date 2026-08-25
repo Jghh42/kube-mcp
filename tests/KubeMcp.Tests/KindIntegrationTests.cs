@@ -143,24 +143,16 @@ public sealed class KindIntegrationTests
             Assert.NotEqual(password, data.GetProperty("username").GetString());
         }
 
-        var resourcePolicyMode = Environment.GetEnvironmentVariable("KUBE_MCP_RESOURCE_POLICY_MODE");
         var unknownResource = await CallAsync(client, "definitely-not-a-resource");
         Assert.True(unknownResource.IsError);
-        Assert.Contains(
-            resourcePolicyMode == "AllowAll"
-                ? "The Kubernetes resource was not found."
-                : "The Kubernetes resource is not allowed.",
-            Text(unknownResource));
+        Assert.Contains("The Kubernetes resource is not allowed.", Text(unknownResource));
 
-        if (resourcePolicyMode == "AllowAll")
-        {
-            var discoveredResource = await CallAsync(
-                client,
-                "leases.coordination.k8s.io");
-            Assert.NotEqual(true, discoveredResource.IsError);
-            using var json = ParseText(discoveredResource);
-            Assert.Equal("leases.coordination.k8s.io", json.RootElement.GetProperty("resource").GetString());
-        }
+        // The harness explicitly maps Roles but deliberately does not grant them
+        // in Kubernetes RBAC, proving that application policy cannot substitute
+        // for the service account's independent authorization boundary.
+        var rbacDenied = await CallAsync(client, "roles.rbac.authorization.k8s.io");
+        Assert.True(rbacDenied.IsError);
+        Assert.Contains("Access to the Kubernetes resource was denied.", Text(rbacDenied));
 
         var policyMode = Environment.GetEnvironmentVariable("KUBE_MCP_NAMESPACE_POLICY_MODE");
         var deniedNamespace = await CallAsync(client, "pods", @namespace: "kube-system");

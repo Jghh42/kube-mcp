@@ -18,8 +18,6 @@ public sealed class KubeMcpOptions
     /// </summary>
     public string? ReadinessNamespace { get; init; }
 
-    public ResourcePolicyOptions ResourcePolicy { get; init; } = new();
-
     public Dictionary<string, KubernetesResourceOptions> AllowedResources { get; init; } = [];
 
     public NamespacePolicyOptions NamespacePolicy { get; init; } = new();
@@ -64,10 +62,6 @@ public sealed class KubeMcpOptions
     [Range(1, 1000)]
     public int SecretListPageSize { get; init; } = 10;
 
-    /// <summary>Bounded parallelism for AllowAll API group discovery.</summary>
-    [Range(1, 16)]
-    public int DiscoveryParallelism { get; init; } = 4;
-
     [Range(1, 120)]
     public int KubernetesRequestTimeoutSeconds { get; init; } = 15;
 
@@ -78,21 +72,7 @@ public sealed class KubeMcpOptions
     [Range(1, 3600)]
     public int OverallMcpRequestTimeoutSeconds { get; init; } = 30;
 
-    [Range(1, 3600)]
-    public int DiscoveryCacheSeconds { get; init; } = 300;
-
     public KubeMcpTelemetryOptions Telemetry { get; init; } = new();
-}
-
-public sealed class ResourcePolicyOptions
-{
-    public ResourcePolicyMode Mode { get; init; } = ResourcePolicyMode.Allowlist;
-}
-
-public enum ResourcePolicyMode
-{
-    Allowlist,
-    AllowAll
 }
 
 public sealed class KubernetesResourceOptions

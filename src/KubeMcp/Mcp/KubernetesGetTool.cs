@@ -50,7 +50,7 @@ public sealed class KubernetesGetTool
     {
         // Never copy an oversized caller-controlled resource into policy errors,
         // logs, or audit records. The validator below rejects it before the
-        // reader can perform allowlist or discovery work.
+        // reader can resolve the explicit resource mapping.
         var diagnosticResource = KubernetesNameValidator.BoundedResourceForDiagnostics(resource);
         var operation = name is null ? "LIST" : "GET";
         var stopwatch = Stopwatch.StartNew();

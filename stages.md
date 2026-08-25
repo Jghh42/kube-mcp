@@ -91,7 +91,7 @@ Stage 6 is complete and running in the kind cluster.
 - Release build: 0 warnings, 0 errors.
 - Automated tests: 56/56 passed.
 - Docker image built and loaded into kind.
-- End-to-end tests passed in blacklist, label-selector, and resource `AllowAll` modes.
+- End-to-end tests passed in blacklist and label-selector namespace-policy modes with explicit resource mappings.
 - Console audit output verified for an authenticated Secret GET, including client identity and object count.
 - Audit logs verified not to contain the raw Secret value or unsafe Secret annotation.
 - Narrow default RBAC and resource policy restored after integration testing.
