@@ -109,6 +109,9 @@ jobs:
           echo "4f6a959dcc5b702135f8354cc7109b542a2933c46b808b248a214c1f69f817ea  kubectl" | sha256sum -c -
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/kubectl
+          kind version
+          kubectl version --client=true
+          kubectl kustomize --load-restrictor LoadRestrictionsNone overlays/development >/dev/null
 
       - name: Build pull-request candidate image
         if: github.event_name == 'pull_request'
@@ -172,6 +175,7 @@ jobs:
           sudo mv kubectl /usr/local/bin/kubectl
           kind version
           kubectl version --client=true
+          kubectl kustomize --load-restrictor LoadRestrictionsNone overlays/development >/dev/null
 
       # Build once. Do not add arm64 publication without exercising arm64 in kind.
       - name: Build candidate image

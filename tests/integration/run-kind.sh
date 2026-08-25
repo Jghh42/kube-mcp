@@ -192,12 +192,12 @@ service_account=system:serviceaccount:kube-mcp:kube-mcp
 # This namespace is intentionally created after the service starts, proving that
 # eligible namespaces are onboarded without discovery caches or restarts.
 kubectl create namespace "$fixture_namespace" >/dev/null
-kubectl apply -f - <<'EOF' >/dev/null
+kubectl apply -f - <<EOF >/dev/null
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: stage-ten
-  namespace: kube-mcp-e2e
+  namespace: $fixture_namespace
 data:
   test: integration
 ---
@@ -205,7 +205,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: boundary-safe-output
-  namespace: kube-mcp-e2e
+  namespace: $fixture_namespace
 data:
   payload: placeholder
 ---
@@ -213,7 +213,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: boundary-upstream
-  namespace: kube-mcp-e2e
+  namespace: $fixture_namespace
 stringData:
   payload: placeholder
 ---
@@ -221,7 +221,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: integration-secret
-  namespace: kube-mcp-e2e
+  namespace: $fixture_namespace
   annotations:
     dangerous.example.test/value: annotation-must-not-leak
 type: Opaque

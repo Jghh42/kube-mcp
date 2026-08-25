@@ -348,7 +348,7 @@ Retain:
 - locked NuGet dependencies;
 - vulnerability scanning;
 - an SBOM and standard provenance where practical;
-- immutable `sha-<commit>` image tags;
+- full-revision `sha-<commit>` traceability tags and immutable digest references;
 - a real Kubernetes/Secret boundary test before publication.
 
 Remove custom archive hashing, manifest/config graph verification, cross-job candidate artifacts, and registry round-trip verification.
