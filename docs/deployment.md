@@ -20,19 +20,23 @@ Create the namespace and a stable server-held HMAC key. Keep the key stable when
 
 ```sh
 kubectl create namespace kube-mcp --dry-run=client -o yaml | kubectl apply -f -
-hmac_key=$(openssl rand -base64 32)
-# Store $hmac_key if Secret fingerprints must remain stable across recreation.
-kubectl create secret generic kube-mcp-hmac \
-  --namespace kube-mcp \
-  --from-literal="key=$hmac_key" \
-  --dry-run=client -o yaml | kubectl apply -f -
 
-api_key=$(openssl rand -hex 32)
-# Store $api_key in your secret manager now; clients must use this same value.
-kubectl create secret generic kube-mcp-api-key \
-  --namespace kube-mcp \
-  --from-literal="api-key=$api_key" \
-  --dry-run=client -o yaml | kubectl apply -f -
+# Preserve existing credentials on reruns; rotate them only deliberately.
+if ! kubectl get secret kube-mcp-hmac --namespace kube-mcp >/dev/null 2>&1; then
+  hmac_key=$(openssl rand -base64 32)
+  # Store $hmac_key if Secret fingerprints must remain stable across recreation.
+  kubectl create secret generic kube-mcp-hmac \
+    --namespace kube-mcp \
+    --from-literal="key=$hmac_key"
+fi
+
+if ! kubectl get secret kube-mcp-api-key --namespace kube-mcp >/dev/null 2>&1; then
+  api_key=$(openssl rand -hex 32)
+  # Store $api_key in your secret manager now; clients use this same value.
+  kubectl create secret generic kube-mcp-api-key \
+    --namespace kube-mcp \
+    --from-literal="api-key=$api_key"
+fi
 ```
 
 The shell variables are only a convenient handoff during setup. Retain the API key in your secret manager and configure MCP clients with that same bearer value. Retain the HMAC key too when fingerprints must survive Secret recreation. Do not print either value into logs or commit it.
