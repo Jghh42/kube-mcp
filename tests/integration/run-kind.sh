@@ -581,11 +581,28 @@ start_port_forward
 run_integration_phase "MCP-to-kind integration tests"
 
 audit_logs=$(kubectl logs deployment/kube-mcp --namespace kube-mcp)
+grep -Fq 'KubeMcp.Audit.AuditLogger' <<<"$audit_logs"
 grep -Fq 'Kubernetes audit:' <<<"$audit_logs"
 grep -Fq 'client=static-api-key authentication=ApiKey' <<<"$audit_logs"
 grep -Fq 'operation=GET resource=secrets namespace=kube-mcp-e2e name=integration-secret result=success objectCount=1' <<<"$audit_logs"
+grep -F 'resource=definitely-not-a-resource namespace=kube-mcp-e2e' <<<"$audit_logs" |
+  grep -Fq 'result=failed'
+grep -F 'resource=definitely-not-a-resource namespace=kube-mcp-e2e' <<<"$audit_logs" |
+  grep -Fq 'category=resource_not_allowed'
+grep -F 'resource=roles.rbac.authorization.k8s.io namespace=kube-mcp-e2e' <<<"$audit_logs" |
+  grep -Fq 'result=failed'
+grep -F 'resource=roles.rbac.authorization.k8s.io namespace=kube-mcp-e2e' <<<"$audit_logs" |
+  grep -Fq 'category=kubernetes_access_denied'
 if grep -Fq "$api_key" <<<"$audit_logs"; then
   echo "API key leaked into application logs" >&2
+  exit 1
+fi
+if grep -Fq "$hmac_key" <<<"$audit_logs"; then
+  echo "HMAC key leaked into application logs" >&2
+  exit 1
+fi
+if grep -Fq 'hmac-sha256:' <<<"$audit_logs"; then
+  echo "Secret fingerprint leaked into application logs" >&2
   exit 1
 fi
 if grep -Fq "$secret_value" <<<"$audit_logs"; then

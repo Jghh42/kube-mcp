@@ -1,22 +1,16 @@
 # Observability and audit logging
 
-The application emits sanitized structured logs and audit records. Infrastructure-provided ingress, pod, and container metrics remain available through the deployment platform; the application does not configure a telemetry exporter.
+The application emits sanitized structured logs. Infrastructure-provided ingress, pod, and container metrics remain available through the deployment platform; the application does not configure a telemetry exporter.
 
 ## Audit logging
 
-The structured `ILogger` audit sink is enabled by default. Additional organization-specific sinks can implement `IAuditSink` and be composed with it.
+Already-sanitized audit events are written directly through a dedicated `ILogger<AuditLogger>` category and the standard logging pipeline. There is no application audit queue, fan-out layer, custom sink interface, or background delivery service. Logging is best effort: a logging-provider failure never replaces the HTTP/MCP response or original tool error.
 
-All sinks run behind a bounded, non-blocking, best-effort dispatcher rather than on request threads:
+Every dispatched `k8s_get` call logs its result, including success, application-policy denial, Kubernetes/RBAC failure, timeout, cancellation, and internal failure. Application-owned authorization denials are logged without Kubernetes coordinates and without reading arbitrary MCP request bodies. Authentication failures remain the responsibility of ASP.NET Core and infrastructure access logs.
 
-- The queue holds 1,024 records and drops the newest record when full.
-- `AuditQueueFull` reports aggregate local drops every 30 seconds from a separate background loop.
-- `CompositeAuditSink` invokes sinks sequentially with a two-second deadline per sink.
-- Sink exceptions and deadlines do not prevent later sinks from running.
-- A sink that ignores cancellation may have at most one outstanding invocation; later records skip it until it completes.
-- Sink failures never replace the HTTP/MCP response or the original tool error.
-- Graceful shutdown drains the queue within the host shutdown window; cancellation can leave records undelivered.
+Each Kubernetes audit event includes UTC timestamp, client identity, authentication mode, GET/LIST operation, resource, namespace, optional name, result, object count when available, fixed error category, duration, and request ID. Untrusted string fields are length-bounded and have control characters replaced. Events exclude Kubernetes response bodies, Secret values and fingerprints, credentials, keys, tokens, arbitrary exception text, client IP addresses, and forwarded-header values.
 
-Deployments needing durable, tamper-resistant retention should register an appropriate audit provider and alert on sink failures, deadlines, and queue drops.
+Deployments needing durable, tamper-resistant retention should configure their standard logging infrastructure to retain and protect the `KubeMcp.Audit.AuditLogger` category.
 
 See the [security model](security.md#audit-guarantees) for event contents and redaction guarantees.
 

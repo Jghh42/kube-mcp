@@ -3,8 +3,9 @@ using System.Diagnostics;
 namespace KubeMcp.Audit;
 
 /// <summary>
-/// Audits authentication and authorization denials on the MCP endpoint without
+/// Audits application-owned authorization denials on the MCP endpoint without
 /// reading the request body or inventing Kubernetes resource coordinates.
+/// Authentication failures are left to ASP.NET Core and infrastructure access logs.
 /// </summary>
 internal sealed class McpAccessAuditMiddleware(
     RequestDelegate next,
@@ -21,12 +22,9 @@ internal sealed class McpAccessAuditMiddleware(
         finally
         {
             stopwatch.Stop();
-            var category = context.Response.StatusCode switch
-            {
-                StatusCodes.Status401Unauthorized => AuditCategories.AuthenticationDenied,
-                StatusCodes.Status403Forbidden => AuditCategories.AuthorizationDenied,
-                _ => null
-            };
+            var category = context.Response.StatusCode == StatusCodes.Status403Forbidden
+                ? AuditCategories.AuthorizationDenied
+                : null;
 
             if (category is not null)
             {
@@ -39,8 +37,8 @@ internal sealed class McpAccessAuditMiddleware(
                 }
                 catch
                 {
-                    // Audit integration is explicitly best effort and must never
-                    // replace an authentication/authorization response.
+                    // Audit logging is explicitly best effort and must never
+                    // replace the authorization response.
                 }
             }
         }

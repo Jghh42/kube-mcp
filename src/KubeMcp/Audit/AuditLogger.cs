@@ -5,7 +5,7 @@ using Microsoft.Extensions.Options;
 namespace KubeMcp.Audit;
 
 public sealed class AuditLogger(
-    IAuditEventPublisher publisher,
+    ILogger<AuditLogger> logger,
     IHttpContextAccessor httpContextAccessor,
     IOptions<KubeMcpOptions> options,
     TimeProvider timeProvider) : IAuditLogger
@@ -17,8 +17,9 @@ public sealed class AuditLogger(
     public void LogKubernetesAccess(KubernetesAuditEvent auditEvent)
     {
         var common = CommonFields();
-        TryPublish(new AuditRecord(
-            AuditEventType.KubernetesAccess,
+        TryLog(() => logger.LogInformation(
+            KubernetesAccessEvent,
+            "Kubernetes audit: timestamp={Timestamp} client={ClientIdentity} authentication={AuthenticationMethod} operation={Operation} resource={Resource} namespace={Namespace} name={ResourceName} result={Result} objectCount={ObjectCount} category={Category} durationMs={DurationMs} requestId={RequestId}",
             common.Timestamp,
             common.Identity,
             common.AuthenticationMethod,
@@ -27,43 +28,37 @@ public sealed class AuditLogger(
             Safe(auditEvent.Namespace),
             Safe(auditEvent.Name ?? "-"),
             Safe(auditEvent.Result),
-            Safe(auditEvent.Category),
             auditEvent.ObjectCount,
-            auditEvent.Duration,
-            common.RequestId,
-            StatusCode: null));
+            Safe(auditEvent.Category),
+            Math.Round(auditEvent.Duration.TotalMilliseconds, 2),
+            common.RequestId));
     }
 
     public void LogMcpAccessDenied(McpAccessDeniedAuditEvent auditEvent)
     {
         var common = CommonFields();
-        TryPublish(new AuditRecord(
-            AuditEventType.McpAccessDenied,
+        TryLog(() => logger.LogInformation(
+            McpAccessDeniedEvent,
+            "MCP access-denial audit: timestamp={Timestamp} client={ClientIdentity} authentication={AuthenticationMethod} result={Result} category={Category} statusCode={StatusCode} durationMs={DurationMs} requestId={RequestId}",
             common.Timestamp,
             common.Identity,
             common.AuthenticationMethod,
-            Operation: null,
-            Resource: null,
-            Namespace: null,
-            Name: null,
-            Result: "denied",
-            Category: Safe(auditEvent.Category),
-            ObjectCount: null,
-            auditEvent.Duration,
-            common.RequestId,
-            auditEvent.StatusCode));
+            "denied",
+            Safe(auditEvent.Category),
+            auditEvent.StatusCode,
+            Math.Round(auditEvent.Duration.TotalMilliseconds, 2),
+            common.RequestId));
     }
 
-    private void TryPublish(AuditRecord record)
+    private static void TryLog(Action write)
     {
         try
         {
-            _ = publisher.TryPublish(record);
+            write();
         }
         catch
         {
-            // The production publisher is no-throw. Keep this final guard so a
-            // replacement publisher can never alter the response or original error.
+            // Logging is best effort and must never alter the response or original error.
         }
     }
 

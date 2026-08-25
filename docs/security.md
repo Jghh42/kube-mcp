@@ -60,7 +60,7 @@ Overall server deadlines use `server_timeout`; caller disconnects use `client_ca
 
 ## Audit guarantees
 
-Every dispatched `k8s_get` call publishes a sanitized Kubernetes audit record. Authentication and authorization denials publish an MCP access-denial record without invented resource coordinates. Middleware does not inspect arbitrary request bodies to infer audit fields.
+Every dispatched `k8s_get` call writes a sanitized structured Kubernetes audit event through the standard `ILogger` pipeline. Application-owned authorization denials write a coordinate-free MCP access-denial event. Authentication failures are handled by ASP.NET Core and infrastructure access logging. Middleware does not inspect arbitrary request bodies to infer audit fields.
 
 Records can include:
 
@@ -72,7 +72,7 @@ Records can include:
 - duration and request ID
 - successful object count
 
-They do not include Kubernetes response bodies, Secret values or fingerprints, credentials, tokens, or arbitrary exception text. See [observability and audit logging](observability.md#audit-logging) for dispatch and sink behavior.
+They do not include Kubernetes response bodies, Secret values or fingerprints, credentials, tokens, or arbitrary exception text. See [observability and audit logging](observability.md#audit-logging) for logging behavior.
 
 ## RBAC
 

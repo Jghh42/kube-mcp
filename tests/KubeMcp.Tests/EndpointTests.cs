@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
 
@@ -154,7 +155,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     public async Task OverallDeadlineCancelsTheReaderAndIsAuditedAsServerTimeout()
     {
         var reader = new CancellationObservingReader();
-        var sink = new CapturingAuditSink();
+        var auditLogs = new CapturingAuditLogProvider();
         await using var timeoutFactory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
@@ -165,7 +166,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
             {
                 services.RemoveAll<IKubernetesReader>();
                 services.AddSingleton<IKubernetesReader>(reader);
-                services.AddSingleton<IAuditSink>(sink);
+                services.AddSingleton<ILoggerProvider>(auditLogs);
             });
         });
         using var timeoutClient = timeoutFactory.CreateClient();
@@ -190,15 +191,15 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
             cancellationToken: CancellationToken.None).AsTask());
 
         await reader.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var audit = await sink.WaitForKubernetesCategoryAsync(AuditCategories.ServerTimeout);
-        Assert.Equal("timeout", audit.Result);
+        var audit = await auditLogs.WaitForCategoryAsync(AuditCategories.ServerTimeout);
+        Assert.Equal("timeout", audit.Properties["Result"]);
     }
 
     [Fact]
     public async Task CallerCancellationPropagatesWithoutBecomingServerTimeout()
     {
         var reader = new CancellationObservingReader();
-        var sink = new CapturingAuditSink();
+        var auditLogs = new CapturingAuditLogProvider();
         await using var cancellationFactory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
@@ -209,7 +210,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
             {
                 services.RemoveAll<IKubernetesReader>();
                 services.AddSingleton<IKubernetesReader>(reader);
-                services.AddSingleton<IAuditSink>(sink);
+                services.AddSingleton<ILoggerProvider>(auditLogs);
             });
         });
         using var cancellationClient = cancellationFactory.CreateClient();
@@ -243,9 +244,10 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
         // the server-side audit category below is the cancellation source of truth.
         await Assert.ThrowsAnyAsync<Exception>(() => call);
         await reader.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var audit = await sink.WaitForKubernetesCategoryAsync(AuditCategories.ClientCancelled);
-        Assert.Equal("cancelled", audit.Result);
-        Assert.DoesNotContain(sink.Snapshot(), record => record.Category == AuditCategories.ServerTimeout);
+        var audit = await auditLogs.WaitForCategoryAsync(AuditCategories.ClientCancelled);
+        Assert.Equal("cancelled", audit.Properties["Result"]);
+        Assert.DoesNotContain(auditLogs.Snapshot(), entry =>
+            Equals(entry.Properties.GetValueOrDefault("Category"), AuditCategories.ServerTimeout));
     }
 
     private sealed record ServiceStatus(string Service, string Status);
@@ -271,49 +273,4 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
         }
     }
 
-    private sealed class CapturingAuditSink : IAuditSink
-    {
-        private readonly object sync = new();
-        private readonly List<AuditRecord> records = [];
-
-        public ValueTask WriteAsync(AuditRecord record, CancellationToken cancellationToken)
-        {
-            lock (sync)
-            {
-                records.Add(record);
-            }
-
-            return ValueTask.CompletedTask;
-        }
-
-        public IReadOnlyList<AuditRecord> Snapshot()
-        {
-            lock (sync)
-            {
-                return records.ToArray();
-            }
-        }
-
-        public async Task<AuditRecord> WaitForKubernetesCategoryAsync(string category)
-        {
-            var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (DateTime.UtcNow < deadline)
-            {
-                lock (sync)
-                {
-                    var found = records.FirstOrDefault(record =>
-                        record.EventType == AuditEventType.KubernetesAccess &&
-                        record.Category == category);
-                    if (found is not null)
-                    {
-                        return found;
-                    }
-                }
-
-                await Task.Delay(10);
-            }
-
-            throw new TimeoutException($"Audit category {category} was not delivered.");
-        }
-    }
 }

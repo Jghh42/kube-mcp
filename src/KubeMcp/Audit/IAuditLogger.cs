@@ -29,7 +29,6 @@ public sealed record McpAccessDeniedAuditEvent(
 public static class AuditCategories
 {
     public const string Success = "success";
-    public const string AuthenticationDenied = "authentication_denied";
     public const string AuthorizationDenied = "authorization_denied";
     public const string ClientCancelled = "client_cancelled";
     public const string ServerTimeout = "server_timeout";

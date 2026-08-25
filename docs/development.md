@@ -17,7 +17,7 @@ dotnet build --configuration Release --no-restore
 dotnet test --configuration Release --no-build --no-restore
 ```
 
-The test suite covers access policy, authentication, Secret sanitization and fingerprinting, generic compact LIST summaries, upstream and safe-output boundaries, pagination, cancellation, timeouts, process health, audit sinks, production deployment settings, and the single-tool MCP surface.
+The test suite covers access policy, authentication, Secret sanitization and fingerprinting, generic compact LIST summaries, upstream and safe-output boundaries, pagination, cancellation, timeouts, process health, structured audit logging, production deployment settings, and the single-tool MCP surface.
 
 ## End-to-end tests with kind
 

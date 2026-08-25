@@ -20,17 +20,6 @@ var authenticationMode = builder.Services.AddKubeMcpAuthentication(builder.Confi
 
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHttpContextAccessor();
-// The default structured ILogger sink and any organization sinks are all invoked
-// only by the bounded background dispatcher, never on request threads.
-builder.Services.AddSingleton<StructuredLoggerAuditSink>();
-builder.Services.AddSingleton<IAuditSink>(serviceProvider =>
-    serviceProvider.GetRequiredService<StructuredLoggerAuditSink>());
-builder.Services.AddSingleton<CompositeAuditSink>();
-builder.Services.AddSingleton<AuditSinkDispatcher>();
-builder.Services.AddSingleton<IAuditEventPublisher>(serviceProvider =>
-    serviceProvider.GetRequiredService<AuditSinkDispatcher>());
-builder.Services.AddHostedService(serviceProvider =>
-    serviceProvider.GetRequiredService<AuditSinkDispatcher>());
 builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
 builder.Services.AddRequestTimeouts();
 builder.Services.AddSingleton<IConfigureOptions<RequestTimeoutOptions>, McpRequestTimeoutOptionsSetup>();

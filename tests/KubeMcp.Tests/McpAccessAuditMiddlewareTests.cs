@@ -5,13 +5,11 @@ namespace KubeMcp.Tests;
 
 public sealed class McpAccessAuditMiddlewareTests
 {
-    [Theory]
-    [InlineData(StatusCodes.Status401Unauthorized, AuditCategories.AuthenticationDenied)]
-    [InlineData(StatusCodes.Status403Forbidden, AuditCategories.AuthorizationDenied)]
-    public async Task AuditsPreToolDenialWithoutReadingBodyOrInventingCoordinates(
-        int statusCode,
-        string expectedCategory)
+    [Fact]
+    public async Task AuditsApplicationAuthorizationDenialWithoutReadingBodyOrInventingCoordinates()
     {
+        const int statusCode = StatusCodes.Status403Forbidden;
+        const string expectedCategory = AuditCategories.AuthorizationDenied;
         var body = new ThrowIfReadStream();
         var context = new DefaultHttpContext();
         context.Request.Path = "/mcp";
@@ -35,13 +33,35 @@ public sealed class McpAccessAuditMiddlewareTests
     }
 
     [Fact]
+    public async Task LeavesAuthenticationFailuresToAspNetAccessLogging()
+    {
+        var body = new ThrowIfReadStream();
+        var context = new DefaultHttpContext();
+        context.Request.Body = body;
+        var audit = new CapturingAuditLogger();
+        var middleware = new McpAccessAuditMiddleware(
+            next: requestContext =>
+            {
+                requestContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return Task.CompletedTask;
+            },
+            audit);
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(0, body.ReadAttempts);
+        Assert.Empty(audit.Denials);
+        Assert.Empty(audit.KubernetesEvents);
+    }
+
+    [Fact]
     public async Task AuditExceptionCannotReplaceDenialResponse()
     {
         var context = new DefaultHttpContext();
         var middleware = new McpAccessAuditMiddleware(
             next: requestContext =>
             {
-                requestContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                requestContext.Response.StatusCode = StatusCodes.Status403Forbidden;
                 return Task.CompletedTask;
             },
             new ThrowingAuditLogger());
@@ -49,7 +69,7 @@ public sealed class McpAccessAuditMiddlewareTests
         var exception = await Record.ExceptionAsync(() => middleware.InvokeAsync(context));
 
         Assert.Null(exception);
-        Assert.Equal(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
     }
 
     private sealed class CapturingAuditLogger : IAuditLogger

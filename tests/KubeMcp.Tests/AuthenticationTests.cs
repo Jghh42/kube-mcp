@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using KubeMcp.Audit;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,12 +18,11 @@ public sealed class AuthenticationTests
     [Fact]
     public async Task ApiKeyModeRejectsInvalidCredentialsAndExposesOneToolForCorrectKey()
     {
-        var auditSink = new CapturingAuditSink();
         await using var factory = CreateFactory(new Dictionary<string, string?>
         {
             ["KubeMcp:Authentication:Mode"] = "ApiKey",
             ["KubeMcp:Authentication:ApiKey"] = ApiKey
-        }, services => services.AddSingleton<IAuditSink>(auditSink));
+        });
         using var client = factory.CreateClient();
 
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/healthz")).StatusCode);
@@ -33,13 +31,6 @@ public sealed class AuthenticationTests
             Assert.Equal(HttpStatusCode.Unauthorized, missing.StatusCode);
             Assert.Equal("Bearer", Assert.Single(missing.Headers.WwwAuthenticate).Scheme);
         }
-
-        var authenticationDenial = await auditSink.WaitForAsync(AuditCategories.AuthenticationDenied);
-        Assert.Equal(AuditEventType.McpAccessDenied, authenticationDenial.EventType);
-        Assert.Null(authenticationDenial.Operation);
-        Assert.Null(authenticationDenial.Resource);
-        Assert.Null(authenticationDenial.Namespace);
-        Assert.Null(authenticationDenial.Name);
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer",
@@ -112,43 +103,6 @@ public sealed class AuthenticationTests
     {
         using var response = await client.PostAsync("/mcp", JsonContent.Create(new { }));
         return response.StatusCode;
-    }
-
-    private sealed class CapturingAuditSink : IAuditSink
-    {
-        private readonly object sync = new();
-        private readonly List<AuditRecord> records = [];
-
-        public ValueTask WriteAsync(AuditRecord record, CancellationToken cancellationToken)
-        {
-            lock (sync)
-            {
-                records.Add(record);
-                Monitor.PulseAll(sync);
-            }
-
-            return ValueTask.CompletedTask;
-        }
-
-        public async Task<AuditRecord> WaitForAsync(string category)
-        {
-            var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (DateTime.UtcNow < deadline)
-            {
-                lock (sync)
-                {
-                    var found = records.FirstOrDefault(record => record.Category == category);
-                    if (found is not null)
-                    {
-                        return found;
-                    }
-                }
-
-                await Task.Delay(10);
-            }
-
-            throw new TimeoutException($"Audit category {category} was not delivered.");
-        }
     }
 
     private sealed class CapturingLogProvider : ILoggerProvider
