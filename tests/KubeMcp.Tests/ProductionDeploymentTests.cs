@@ -68,13 +68,7 @@ public sealed class ProductionDeploymentTests
         Assert.DoesNotContain("resources:", patch, StringComparison.Ordinal);
         Assert.False(File.Exists(RepositoryFile("deployment-development.yaml")));
 
-        var rendered = await TryRenderKustomizationAsync("overlays/development");
-        if (rendered is null)
-        {
-            // Source-level overlay assertions above still run everywhere. CI and
-            // the kind harness render with a checksum-pinned kubectl.
-            return;
-        }
+        var rendered = await RenderKustomizationAsync("overlays/development");
 
         Assert.Equal(6, Regex.Matches(rendered, @"(?m)^kind: ").Count);
         foreach (var kind in new[]
@@ -367,7 +361,7 @@ public sealed class ProductionDeploymentTests
             manifest);
     }
 
-    private static async Task<string?> TryRenderKustomizationAsync(string relativePath)
+    private static async Task<string> RenderKustomizationAsync(string relativePath)
     {
         var startInfo = new ProcessStartInfo("kubectl")
         {
@@ -385,9 +379,10 @@ public sealed class ProductionDeploymentTests
         {
             process = Process.Start(startInfo);
         }
-        catch (Win32Exception)
+        catch (Win32Exception exception)
         {
-            return null;
+            throw new InvalidOperationException(
+                "kubectl must be installed before running this test.", exception);
         }
 
         using (process)

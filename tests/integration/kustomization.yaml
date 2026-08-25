@@ -4,7 +4,7 @@ resources:
   - ../../deployment.yaml
 
 images:
-  - name: ghcr.io/jghh42/kube-mcp:latest
+  - name: ghcr.io/jghh42/kube-mcp
     newName: kube-mcp
     newTag: integration
 
