@@ -64,8 +64,8 @@ public sealed class ResourceAllowlistTests
             NamespacePolicy = namespacePolicy ?? new NamespacePolicyOptions(),
             Authentication = new KubeMcpAuthenticationOptions
             {
-                Mode = AuthenticationMode.None,
-                AllowUnauthenticated = true
+                Mode = AuthenticationMode.ApiKey,
+                ApiKey = "stage-one-test-api-key-32-bytes-minimum"
             }
         };
 

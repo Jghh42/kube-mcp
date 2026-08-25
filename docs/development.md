@@ -6,8 +6,8 @@
 - Docker
 - kind
 - kubectl
-- curl and Python 3 for the kind OAuth harness
-- OpenSSL for generating development HMAC keys
+- curl and Python 3 for the kind harness
+- OpenSSL for generating development HMAC and API keys
 
 ## Build and test
 
@@ -27,10 +27,10 @@ The test suite covers access policy, authentication, Secret sanitization and fin
 
 For local runs, the harness builds and loads a test image. In CI, it receives the same content-addressed image archive that is later scanned, SBOMed, and published, without rebuilding it.
 
-The harness creates an ephemeral HMAC key and a one-pod Keycloak development server with an imported test realm. It uses the real OAuth `client_credentials` flow and checks:
+The harness creates ephemeral HMAC and API keys, loads the API key through a Kubernetes Secret, and checks:
 
-- invalid client secrets
-- audience, scope, and role enforcement
+- missing, malformed, incorrect, and correct API-key credentials
+- exactly one exposed MCP tool
 - compact LIST and detailed GET responses
 - Secret sanitization
 - resource and namespace denials
@@ -38,8 +38,6 @@ The harness creates an ephemeral HMAC key and a one-pod Keycloak development ser
 - explicit resource `AllowAll` mode
 
 Harness-owned namespaces are deleted afterward. Any pre-existing `kube-mcp-reader` ClusterRole and ClusterRoleBinding are restored from exact snapshots, or removed when they did not exist before the run.
-
-Keycloak uses ephemeral H2 storage and fixed local-only test credentials from [`tests/integration/keycloak.yaml`](../tests/integration/keycloak.yaml). It is not a production deployment.
 
 ## Continuous integration
 

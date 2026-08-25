@@ -26,7 +26,7 @@ public sealed class AuthenticationOptionsValidatorTests
     }
 
     [Fact]
-    public void NoneModeIsRejectedInProductionWithoutTheExplicitOptIn()
+    public void NoneModeIsRejectedInProduction()
     {
         var result = productionValidator.Validate(null, Options(new KubeMcpAuthenticationOptions
         {
@@ -35,19 +35,7 @@ public sealed class AuthenticationOptionsValidatorTests
 
         Assert.True(result.Failed);
         Assert.Contains("not permitted outside the Development environment", result.FailureMessage);
-        Assert.Contains("AllowUnauthenticated=true", result.FailureMessage);
-    }
-
-    [Fact]
-    public void NoneModeIsAllowedInProductionWithTheExplicitOptIn()
-    {
-        var result = productionValidator.Validate(null, Options(new KubeMcpAuthenticationOptions
-        {
-            Mode = AuthenticationMode.None,
-            AllowUnauthenticated = true
-        }));
-
-        Assert.True(result.Succeeded);
+        Assert.Contains("Set Mode to ApiKey", result.FailureMessage);
     }
 
     [Fact]
@@ -61,18 +49,6 @@ public sealed class AuthenticationOptionsValidatorTests
 
         Assert.True(result.Failed);
         Assert.Contains("at least 32 bytes", result.FailureMessage);
-    }
-
-    [Fact]
-    public void OAuthModeRequiresHttpsAudienceAndPermission()
-    {
-        var insecure = developmentValidator.Validate(null, OAuthOptions("http://identity.test", "k-mcp", ["k-mcp:read"]));
-        var missingAudience = developmentValidator.Validate(null, OAuthOptions("https://identity.test", "", ["k-mcp:read"]));
-        var missingPermission = developmentValidator.Validate(null, OAuthOptions("https://identity.test", "k-mcp", []));
-
-        Assert.Contains("must use HTTPS", insecure.FailureMessage);
-        Assert.Contains("Audience is required", missingAudience.FailureMessage);
-        Assert.Contains("at least one scope or role", missingPermission.FailureMessage);
     }
 
     [Fact]
@@ -106,19 +82,6 @@ public sealed class AuthenticationOptionsValidatorTests
 
         Assert.Contains("must not trust every address", result.FailureMessage);
     }
-
-    private static KubeMcpOptions OAuthOptions(string authority, string audience, string[] scopes) =>
-        Options(new KubeMcpAuthenticationOptions
-        {
-            Mode = AuthenticationMode.OAuthClientCredentials,
-            OAuth = new OAuthOptions
-            {
-                Authority = authority,
-                Audience = audience,
-                RequiredScopes = scopes,
-                RequiredRoles = []
-            }
-        });
 
     private static KubeMcpOptions OptionsWithForwardedHeaders(
         string[]? knownProxies = null,

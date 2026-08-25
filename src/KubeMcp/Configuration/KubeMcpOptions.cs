@@ -128,14 +128,7 @@ public sealed class KubeMcpAuthenticationOptions
     // this to None for local development only.
     public AuthenticationMode Mode { get; init; } = AuthenticationMode.ApiKey;
 
-    // Deliberate deployment-level opt-in that permits Mode=None in a
-    // non-Development environment. Intended only for an isolated development
-    // deployment; production must use ApiKey or OAuthClientCredentials.
-    public bool AllowUnauthenticated { get; init; }
-
     public string ApiKey { get; init; } = string.Empty;
-
-    public OAuthOptions OAuth { get; init; } = new();
 }
 
 public sealed class KubeMcpForwardedHeadersOptions
@@ -201,25 +194,8 @@ public sealed class KubeMcpTelemetryOptions
     public bool Enabled { get; init; }
 }
 
-public sealed class OAuthOptions
-{
-    public string Authority { get; init; } = string.Empty;
-
-    public string Audience { get; init; } = string.Empty;
-
-    public string[] RequiredScopes { get; init; } = ["k-mcp:read"];
-
-    public string[] RequiredRoles { get; init; } = [];
-
-    public bool RequireHttpsMetadata { get; init; } = true;
-
-    [Range(0, 300)]
-    public int ClockSkewSeconds { get; init; } = 60;
-}
-
 public enum AuthenticationMode
 {
     None,
-    ApiKey,
-    OAuthClientCredentials
+    ApiKey
 }

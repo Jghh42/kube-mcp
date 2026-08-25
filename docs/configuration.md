@@ -29,15 +29,8 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | `KubeMcp:McpConcurrency:PermitLimit` | `2` | Concurrent authenticated `/mcp` requests (1–16). |
 | `KubeMcp:McpConcurrency:QueueLimit` | `2` | Authenticated oldest-first queue bound (0–4). |
 | `KubeMcp:Telemetry:Enabled` | `false` | Enable OpenTelemetry metrics, traces, and OTLP export. |
-| `KubeMcp:Authentication:Mode` | `ApiKey` | `None`, `ApiKey`, or `OAuthClientCredentials`; Development settings select `None`. |
-| `KubeMcp:Authentication:AllowUnauthenticated` | `false` | Required opt-in for `None` outside the Development environment. |
-| `KubeMcp:Authentication:ApiKey` | none | Static bearer key of at least 32 bytes. |
-| `KubeMcp:Authentication:OAuth:Authority` | none | Exact OIDC issuer/authority URL. |
-| `KubeMcp:Authentication:OAuth:Audience` | none | Required JWT audience. |
-| `KubeMcp:Authentication:OAuth:RequiredScopes` | `k-mcp:read` | Scopes every token must contain. |
-| `KubeMcp:Authentication:OAuth:RequiredRoles` | empty | Roles every token must contain. |
-| `KubeMcp:Authentication:OAuth:RequireHttpsMetadata` | `true` | Require HTTPS for OIDC discovery. |
-| `KubeMcp:Authentication:OAuth:ClockSkewSeconds` | `60` | JWT lifetime tolerance (0–300 seconds). |
+| `KubeMcp:Authentication:Mode` | `ApiKey` | `ApiKey`, or `None` only when the host environment is `Development`. |
+| `KubeMcp:Authentication:ApiKey` | none | Static bearer key of at least 32 UTF-8 bytes. Required in API-key mode. |
 | `KubeMcp:ForwardedHeaders:KnownProxies` | loopback | Trusted reverse-proxy IP addresses. |
 | `KubeMcp:ForwardedHeaders:KnownNetworks` | loopback | Trusted reverse-proxy CIDRs. |
 | `KubeMcp:ForwardedHeaders:AllowedForwardedHeaders` | `XForwardedFor, XForwardedProto, XForwardedHost` | Headers accepted from trusted proxies and networks. |
@@ -92,30 +85,11 @@ KubeMcp__Authentication__Mode=ApiKey
 KubeMcp__Authentication__ApiKey=<high-entropy-key>
 ```
 
-Clients send `Authorization: Bearer <high-entropy-key>`. The key is not an OAuth token; the bearer header is used for client compatibility.
-
-### OAuth client credentials
-
-The server validates access tokens but never receives or stores the caller's OAuth client secret. The caller exchanges its credentials with the authorization server:
-
-```sh
-curl --request POST "$KEYCLOAK/realms/$REALM/protocol/openid-connect/token" \
-  --data-urlencode grant_type=client_credentials \
-  --data-urlencode client_id="$CLIENT_ID" \
-  --data-urlencode client_secret="$CLIENT_SECRET"
-```
-
-Configure `Mode=OAuthClientCredentials`, the exact realm authority, audience, and required scopes/roles. Arrays use numeric environment-variable suffixes:
-
-```text
-KubeMcp__Authentication__OAuth__RequiredScopes__0=k-mcp:read
-```
-
-JWT validation covers signature, issuer, audience, lifetime, all configured scopes, and all configured roles. Top-level, Keycloak realm, and configured-audience `resource_access` roles are supported. HTTPS metadata is required by default.
+Clients send `Authorization: Bearer <high-entropy-key>`. Comparison is constant-time and temporary credential buffers are zeroed after use. Supply the key through the deployment platform's secret-management system.
 
 ### Unauthenticated mode
 
-`None` is intended only for isolated local development. Outside the Development environment it is rejected unless `KubeMcp__Authentication__AllowUnauthenticated=true` is also set. Do not use this override in production.
+`None` is intended only for isolated local development and is rejected unless the host environment is `Development`. There is no non-development override.
 
 ## Concurrency and memory
 
@@ -143,4 +117,4 @@ Use the narrowest ingress address or network possible; never trust `0.0.0.0/0` o
 
 ## Secret management
 
-The HMAC key, static API key, OAuth client secrets, and telemetry exporter credentials must not be committed. Supply them through the deployment platform's secret-management system.
+The HMAC key, static API key, and telemetry exporter credentials must not be committed. Supply them through the deployment platform's secret-management system.

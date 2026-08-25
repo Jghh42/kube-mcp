@@ -22,13 +22,12 @@ public sealed class KindIntegrationTests
             $"{IntegrationTestAttribute.EndpointVariable} must be set when this test runs; " +
             "if you see this, the skip attribute was bypassed.");
 
-        var accessToken = Environment.GetEnvironmentVariable("KUBE_MCP_INTEGRATION_ACCESS_TOKEN");
+        var apiKey = Environment.GetEnvironmentVariable("KUBE_MCP_INTEGRATION_API_KEY");
+        Assert.False(string.IsNullOrWhiteSpace(apiKey));
+        await AssertApiKeyDenialsAsync(endpoint);
+
         using var httpClient = new HttpClient();
-        if (!string.IsNullOrWhiteSpace(accessToken))
-        {
-            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-            await AssertOAuthDenialsAsync(endpoint);
-        }
+        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
         await using var transport = new HttpClientTransport(
             new HttpClientTransportOptions
@@ -189,23 +188,20 @@ public sealed class KindIntegrationTests
         Assert.Contains("The Kubernetes request is invalid.", Text(invalidNamespace));
     }
 
-    private static async Task AssertOAuthDenialsAsync(string endpoint)
+    private static async Task AssertApiKeyDenialsAsync(string endpoint)
     {
-        var wrongAudienceToken = Environment.GetEnvironmentVariable("KUBE_MCP_INTEGRATION_WRONG_AUDIENCE_TOKEN");
-        var missingPermissionToken = Environment.GetEnvironmentVariable("KUBE_MCP_INTEGRATION_MISSING_PERMISSION_TOKEN");
-        Assert.False(string.IsNullOrWhiteSpace(wrongAudienceToken));
-        Assert.False(string.IsNullOrWhiteSpace(missingPermissionToken));
-
         using var unauthenticated = new HttpClient();
         Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(unauthenticated, endpoint));
 
-        using var wrongAudience = new HttpClient();
-        wrongAudience.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", wrongAudienceToken);
-        Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(wrongAudience, endpoint));
+        using var malformed = new HttpClient();
+        Assert.True(malformed.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", "Bearer"));
+        Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(malformed, endpoint));
 
-        using var missingPermission = new HttpClient();
-        missingPermission.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", missingPermissionToken);
-        Assert.Equal(HttpStatusCode.Forbidden, await PostMcpAsync(missingPermission, endpoint));
+        using var incorrect = new HttpClient();
+        incorrect.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            "incorrect-api-key-that-is-long-enough");
+        Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(incorrect, endpoint));
     }
 
     private static async Task<HttpStatusCode> PostMcpAsync(HttpClient client, string endpoint)

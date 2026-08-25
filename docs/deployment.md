@@ -4,7 +4,7 @@
 
 The reference [`deployment.yaml`](../deployment.yaml) is an authenticated production deployment. Before applying it:
 
-1. Replace the example OAuth authority, audience, scopes, and roles.
+1. Create the API-key and HMAC Kubernetes Secrets described below.
 2. Replace `k-mcp.example.internal` in `AllowedHosts` with the deployment hostname.
 3. Pin the image to an immutable `sha-<commit>` tag.
 4. Confirm the GHCR package is public or configure an image pull secret.
@@ -22,6 +22,10 @@ kubectl create namespace kube-mcp --dry-run=client -o yaml | kubectl apply -f -
 kubectl create secret generic kube-mcp-hmac \
   --namespace kube-mcp \
   --from-literal="key=$(openssl rand -base64 32)" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl create secret generic kube-mcp-api-key \
+  --namespace kube-mcp \
+  --from-literal="api-key=$(openssl rand -hex 32)" \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
@@ -51,7 +55,7 @@ kubectl apply --filename deployment.yaml
 kubectl apply --filename deployment-development.yaml
 ```
 
-The overlay selects `Authentication:Mode=None` and enables the required non-production opt-in. Never expose it on a shared or production network. Reapply `deployment.yaml` to restore authenticated mode.
+The overlay selects the `Development` environment and `Authentication:Mode=None`. The same mode is rejected in every other environment, with no override. Never expose it on a shared or production network. Reapply `deployment.yaml` to restore authenticated mode.
 
 ## Health and readiness
 

@@ -9,7 +9,6 @@ kind_context="kind-${cluster_name}"
 kube_namespace=kube-mcp
 fixture_namespace=kube-mcp-e2e
 local_port=${KUBE_MCP_TEST_PORT:-18082}
-keycloak_local_port=${KUBE_MCP_KEYCLOAK_TEST_PORT:-18083}
 secret_value=correct-horse-battery-staple
 secret_value_base64=$(printf '%s' "$secret_value" | base64 | tr -d '\n')
 test_image=kube-mcp:stage6-test
@@ -38,7 +37,6 @@ kubectl() {
 }
 
 port_forward_log=$(mktemp)
-keycloak_port_forward_log=$(mktemp)
 deployment_manifest=$(mktemp)
 kind_kubeconfig=$(mktemp)
 original_clusterrole=$(mktemp)
@@ -46,7 +44,6 @@ original_clusterrolebinding=$(mktemp)
 resource_capture=$(mktemp)
 resource_restore=$(mktemp)
 port_forward_pid=
-keycloak_port_forward_pid=
 cluster_state_snapshot_needed=false
 kube_namespace_owned=false
 fixture_namespace_owned=false
@@ -204,19 +201,18 @@ restore_original_cluster_state() {
 
 stop_port_forwards() {
   local pid
-  for pid in "$port_forward_pid" "$keycloak_port_forward_pid"; do
+  for pid in "$port_forward_pid"; do
     if [[ -n "$pid" ]]; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
     fi
   done
   port_forward_pid=
-  keycloak_port_forward_pid=
 }
 
 # Namespace deletion is the ownership boundary for all namespaced resources:
-# kube-mcp removes the ServiceAccount, kube-mcp/keycloak Services and
-# Deployments, HMAC Secret, and Keycloak realm ConfigMap; kube-mcp-e2e removes
+# kube-mcp removes the ServiceAccount, Service, Deployment, and credential
+# Secrets; kube-mcp-e2e removes
 # its ConfigMap and Secret. ClusterRole and ClusterRoleBinding are restored
 # separately from exact pre-run snapshots.
 remove_owned_namespaces() {
@@ -262,7 +258,7 @@ cleanup() {
       exit_code=1
     fi
   fi
-  rm -f "$port_forward_log" "$keycloak_port_forward_log" "$deployment_manifest" \
+  rm -f "$port_forward_log" "$deployment_manifest" \
     "$kind_kubeconfig" "$original_clusterrole" "$original_clusterrolebinding" \
     "$resource_capture" "$resource_restore"
   exit "$exit_code"
@@ -471,18 +467,20 @@ else
   kind load docker-image "$test_image" --name "$cluster_name"
 fi
 
-# Build the authenticated kind test fixture from the checked-in kustomize
-# overlay instead of the previous indentation-sensitive sed insertion.
-# See tests/integration/overlays/oauth/kustomization.yaml.
+# Build the authenticated kind test fixture from the active API-key overlay.
 echo "Rendering integration manifest from kustomize overlay..."
-kubectl kustomize --load-restrictor LoadRestrictionsNone tests/integration/overlays/oauth/ \
+kubectl kustomize --load-restrictor LoadRestrictionsNone tests/integration/overlays/api-key/ \
   >"$deployment_manifest"
 grep -Fq "image: $test_image" "$deployment_manifest" || {
   echo "kustomize overlay did not set the test image in the integration manifest" >&2
   exit 1
 }
-grep -Fq "value: OAuthClientCredentials" "$deployment_manifest" || {
-  echo "kustomize overlay did not enable OAuth authentication in the integration manifest" >&2
+grep -Fq "value: ApiKey" "$deployment_manifest" || {
+  echo "kustomize overlay did not retain API-key authentication" >&2
+  exit 1
+}
+grep -Fq "name: kube-mcp-api-key" "$deployment_manifest" || {
+  echo "integration manifest did not retain API-key Secret wiring" >&2
   exit 1
 }
 
@@ -490,50 +488,16 @@ grep -Fq "value: OAuthClientCredentials" "$deployment_manifest" || {
 # after the preflight, create fails and the cleanup trap will not delete it.
 kubectl create namespace "$kube_namespace" >/dev/null
 kube_namespace_owned=true
-kubectl apply --filename tests/integration/keycloak.yaml >/dev/null
-# The namespace is newly owned by this run, so apply already creates the only
-# required rollout. Restarting immediately would create a second ReplicaSet
-# while the first Keycloak JVM is still starting and can exhaust the kind node.
-wait_for_rollout keycloak app.kubernetes.io/name=kube-mcp-keycloak 420s
-
-kubectl port-forward --namespace kube-mcp service/keycloak "$keycloak_local_port:8080" \
-  >"$keycloak_port_forward_log" 2>&1 &
-keycloak_port_forward_pid=$!
-for _ in $(seq 1 60); do
-  if curl --fail --silent "http://127.0.0.1:$keycloak_local_port/realms/kube-mcp" >/dev/null; then
-    break
-  fi
-  if ! kill -0 "$keycloak_port_forward_pid" 2>/dev/null; then
-    cat "$keycloak_port_forward_log" >&2
-    exit 1
-  fi
-  sleep 1
-done
-curl --fail --silent "http://127.0.0.1:$keycloak_local_port/realms/kube-mcp" >/dev/null
-
-token_endpoint="http://127.0.0.1:$keycloak_local_port/realms/kube-mcp/protocol/openid-connect/token"
-request_token() {
-  curl --fail --silent --show-error --request POST "$token_endpoint" \
-    --data-urlencode grant_type=client_credentials \
-    --data-urlencode "client_id=$1" \
-    --data-urlencode "client_secret=$2" |
-    python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])'
-}
-
-invalid_secret_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-  --request POST "$token_endpoint" \
-  --data-urlencode grant_type=client_credentials \
-  --data-urlencode client_id=kube-mcp-e2e \
-  --data-urlencode client_secret=incorrect)
-[[ "$invalid_secret_status" == 401 ]] || {
-  echo "Keycloak accepted an invalid client secret (HTTP $invalid_secret_status)" >&2
-  exit 1
-}
 
 hmac_key=$(openssl rand -base64 32)
+api_key=$(openssl rand -hex 32)
 kubectl create secret generic kube-mcp-hmac \
   --namespace kube-mcp \
   --from-literal="key=$hmac_key" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+kubectl create secret generic kube-mcp-api-key \
+  --namespace kube-mcp \
+  --from-literal="api-key=$api_key" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 kubectl apply --filename "$deployment_manifest" >/dev/null
@@ -590,24 +554,16 @@ stringData:
   duplicate: correct-horse-battery-staple
 EOF
 
-# Run one integration test phase. OAuth tokens are re-acquired here (per phase)
-# because the Keycloak access tokens have a 300-second lifetime and the three
-# phases plus rollouts can exceed it on slow runners. Extra KUBE_MCP_* env vars
-# passed as arguments configure the per-phase policy mode under test.
+# Run one integration test phase with the harness-owned API key. Extra
+# KUBE_MCP_* variables configure the per-phase policy mode under test.
 run_integration_phase() {
   local description="$1"
   shift
-  local access_token wrong_audience_token missing_permission_token
-  access_token=$(request_token kube-mcp-e2e stage-five-e2e-client-secret)
-  wrong_audience_token=$(request_token kube-mcp-wrong-audience stage-five-wrong-audience-secret)
-  missing_permission_token=$(request_token kube-mcp-missing-permission stage-five-missing-permission-secret)
 
   echo "Running $description..."
   env \
     KUBE_MCP_INTEGRATION_ENDPOINT="http://127.0.0.1:$local_port/mcp" \
-    KUBE_MCP_INTEGRATION_ACCESS_TOKEN="$access_token" \
-    KUBE_MCP_INTEGRATION_WRONG_AUDIENCE_TOKEN="$wrong_audience_token" \
-    KUBE_MCP_INTEGRATION_MISSING_PERMISSION_TOKEN="$missing_permission_token" \
+    KUBE_MCP_INTEGRATION_API_KEY="$api_key" \
     "$@" \
     dotnet test KubeMcp.slnx \
       --configuration Release \
@@ -622,8 +578,12 @@ run_integration_phase "MCP-to-kind integration tests"
 
 audit_logs=$(kubectl logs deployment/kube-mcp --namespace kube-mcp)
 grep -Fq 'Kubernetes audit:' <<<"$audit_logs"
-grep -Fq 'client=kube-mcp-e2e authentication=OAuthClientCredentials' <<<"$audit_logs"
+grep -Fq 'client=static-api-key authentication=ApiKey' <<<"$audit_logs"
 grep -Fq 'operation=GET resource=secrets namespace=kube-mcp-e2e name=integration-secret result=success objectCount=1' <<<"$audit_logs"
+if grep -Fq "$api_key" <<<"$audit_logs"; then
+  echo "API key leaked into application logs" >&2
+  exit 1
+fi
 if grep -Fq "$secret_value" <<<"$audit_logs"; then
   echo "Secret value leaked into Kubernetes audit logs" >&2
   exit 1
@@ -674,4 +634,4 @@ remove_owned_namespaces
 restore_original_cluster_state
 cluster_state_snapshot_needed=false
 
-echo "Stage 6 integration tests passed for audit logging, authentication, allowlist, AllowAll, blacklist, and label-selector modes. Owned namespaces removed; original ClusterRole and ClusterRoleBinding state restored."
+echo "Integration tests passed for audit logging, API-key authentication, allowlist, AllowAll, blacklist, and label-selector modes. Owned namespaces removed; original ClusterRole and ClusterRoleBinding state restored."

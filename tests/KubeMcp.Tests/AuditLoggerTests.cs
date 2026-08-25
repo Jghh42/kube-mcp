@@ -11,7 +11,7 @@ namespace KubeMcp.Tests;
 public sealed class AuditLoggerTests
 {
     [Fact]
-    public void PublishesSanitizedOAuthKubernetesAuditRecord()
+    public void PublishesSanitizedApiKeyKubernetesAuditRecord()
     {
         var timestamp = new DateTimeOffset(2026, 3, 20, 12, 34, 56, TimeSpan.Zero);
         var context = new DefaultHttpContext
@@ -20,8 +20,8 @@ public sealed class AuditLoggerTests
         };
         context.Connection.RemoteIpAddress = IPAddress.Parse("192.0.2.10");
         context.User = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim("client_id", "agent-production")],
-            authenticationType: "Bearer"));
+            [new Claim("client_id", "static-api-key")],
+            authenticationType: "ApiKey"));
         var publisher = new CapturingPublisher();
         var logger = new AuditLogger(
             publisher,
@@ -30,7 +30,7 @@ public sealed class AuditLoggerTests
             {
                 Authentication = new KubeMcpAuthenticationOptions
                 {
-                    Mode = AuthenticationMode.OAuthClientCredentials
+                    Mode = AuthenticationMode.ApiKey
                 }
             }),
             new FixedTimeProvider(timestamp));
@@ -48,8 +48,8 @@ public sealed class AuditLoggerTests
         var record = Assert.Single(publisher.Records);
         Assert.Equal(AuditEventType.KubernetesAccess, record.EventType);
         Assert.Equal(timestamp, record.Timestamp);
-        Assert.Equal("agent-production", record.ClientIdentity);
-        Assert.Equal("OAuthClientCredentials", record.AuthenticationMethod);
+        Assert.Equal("static-api-key", record.ClientIdentity);
+        Assert.Equal("ApiKey", record.AuthenticationMethod);
         Assert.Equal("GET", record.Operation);
         Assert.Equal("secrets", record.Resource);
         Assert.Equal("database", record.Namespace);

@@ -25,7 +25,7 @@ A request must pass all applicable controls:
 5. Kubernetes RBAC for the service identity.
 6. Time, pagination, body, and response limits.
 
-The production reference deployment uses OAuth client credentials. Static API-key mode is available for compatibility. Unauthenticated mode requires an explicit non-production opt-in outside the Development environment. See [configuration](configuration.md#authentication).
+The production reference deployment uses a static bearer API key loaded from a Kubernetes Secret. Unauthenticated mode is accepted only when the host environment is `Development`. See [configuration](configuration.md#authentication).
 
 ## Secret handling
 

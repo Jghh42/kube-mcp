@@ -14,7 +14,7 @@ namespace KubeMcp.Tests;
 public sealed class ProductionDeploymentTests
 {
     private const string TestHmacKey = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
-    private const string ApiKey = "stage-five-test-api-key-32-bytes-minimum";
+    private const string ApiKey = "stage-one-test-api-key-32-bytes-minimum";
 
     [Fact]
     public void ReferenceDeploymentIsAuthenticatedAndNoneIsDevelopmentOnly()
@@ -24,7 +24,11 @@ public sealed class ProductionDeploymentTests
 
         Assert.Matches(
             new Regex(
-                @"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: OAuthClientCredentials$"),
+                @"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: ApiKey$"),
+            production);
+        Assert.Matches(
+            new Regex(
+                @"(?s)- name: KubeMcp__Authentication__ApiKey\s+valueFrom:\s+secretKeyRef:\s+name: kube-mcp-api-key\s+key: api-key"),
             production);
         Assert.DoesNotMatch(
             new Regex(
@@ -34,10 +38,7 @@ public sealed class ProductionDeploymentTests
             new Regex(
                 @"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: None$"),
             development);
-        Assert.Matches(
-            new Regex(
-                "(?m)- name: KubeMcp__Authentication__AllowUnauthenticated\\s*\\r?\\n\\s*value: \"true\"$"),
-            development);
+        Assert.DoesNotContain("AllowUnauthenticated", development, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -91,14 +92,12 @@ public sealed class ProductionDeploymentTests
             builder.UseEnvironment(Environments.Production);
             builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
             builder.UseSetting("KubeMcp:Authentication:Mode", "None");
-            // No AllowUnauthenticated opt-in.
         });
 
         var exception = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
         AssertExceptionMessageContains(
             exception,
             "not permitted outside the Development environment");
-        AssertExceptionMessageContains(exception, "AllowUnauthenticated=true");
     }
 
     [Fact]
@@ -126,22 +125,6 @@ public sealed class ProductionDeploymentTests
     }
 
     [Fact]
-    public async Task ProductionAllowsNoneModeWithExplicitOptIn()
-    {
-        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
-        {
-            builder.UseEnvironment(Environments.Production);
-            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
-            builder.UseSetting("KubeMcp:Authentication:Mode", "None");
-            builder.UseSetting("KubeMcp:Authentication:AllowUnauthenticated", "true");
-        });
-        using var client = factory.CreateClient();
-
-        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/healthz")).StatusCode);
-        await AssertSingleToolAsync(client);
-    }
-
-    [Fact]
     public async Task DevelopmentAllowsNoneModeWithoutOptIn()
     {
         await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
@@ -152,29 +135,6 @@ public sealed class ProductionDeploymentTests
         });
         using var client = factory.CreateClient();
 
-        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/healthz")).StatusCode);
-    }
-
-    [Fact]
-    public async Task ProductionOAuthManifestReturnsUnauthorizedWithoutCredentials()
-    {
-        // Mirrors the reference deployment.yaml OAuth configuration (placeholder
-        // Keycloak authority). The endpoint is fail-closed until valid OAuth
-        // settings are configured: /mcp returns 401 without a bearer token.
-        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
-        {
-            builder.UseEnvironment(Environments.Production);
-            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
-            builder.UseSetting("KubeMcp:Authentication:Mode", "OAuthClientCredentials");
-            builder.UseSetting("KubeMcp:Authentication:OAuth:Authority", "https://keycloak.example.internal/realms/kube-mcp");
-            builder.UseSetting("KubeMcp:Authentication:OAuth:Audience", "k-mcp");
-            builder.UseSetting("KubeMcp:Authentication:OAuth:RequiredScopes:0", "k-mcp:read");
-            builder.UseSetting("KubeMcp:Authentication:OAuth:RequiredRoles:0", "k-mcp:read");
-            builder.UseSetting("KubeMcp:Authentication:OAuth:RequireHttpsMetadata", "true");
-        });
-        using var client = factory.CreateClient();
-
-        Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(client));
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/healthz")).StatusCode);
     }
 

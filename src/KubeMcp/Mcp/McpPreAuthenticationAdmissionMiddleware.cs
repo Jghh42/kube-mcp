@@ -6,8 +6,8 @@ namespace KubeMcp.Mcp;
 
 /// <summary>
 /// Cheap process-wide admission bound placed before authentication and request
-/// observability. It prevents credential floods from creating unbounded JWT,
-/// API-key, or per-request audit work. The separate endpoint rate limiter remains
+/// observability. It prevents credential floods from creating unbounded API-key
+/// comparison or per-request audit work. The separate endpoint rate limiter remains
 /// the smaller, oldest-first bound for authenticated MCP/Kubernetes execution.
 /// </summary>
 internal sealed class McpPreAuthenticationAdmissionMiddleware(

@@ -189,76 +189,21 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
 
         if (authentication.Mode == AuthenticationMode.None)
         {
-            var isDevelopment = environment.IsDevelopment();
-            if (!isDevelopment && !authentication.AllowUnauthenticated)
-            {
-                return ValidateOptionsResult.Fail(
-                    $"{path}:Mode=None is not permitted outside the Development environment. " +
-                    "Set Mode to ApiKey or OAuthClientCredentials for any non-development deployment, " +
-                    "or explicitly set KubeMcp:Authentication:AllowUnauthenticated=true for a deliberate " +
-                    "development-only deployment.");
-            }
-
-            return ValidateOptionsResult.Success;
-        }
-
-        if (authentication.Mode == AuthenticationMode.ApiKey)
-        {
-            return Encoding.UTF8.GetByteCount(authentication.ApiKey) >= 32
+            return environment.IsDevelopment()
                 ? ValidateOptionsResult.Success
-                : ValidateOptionsResult.Fail($"{path}:ApiKey must contain at least 32 bytes in API key mode.");
+                : ValidateOptionsResult.Fail(
+                    $"{path}:Mode=None is not permitted outside the Development environment. " +
+                    "Set Mode to ApiKey for every non-development deployment.");
         }
 
-        if (authentication.Mode != AuthenticationMode.OAuthClientCredentials)
+        if (authentication.Mode != AuthenticationMode.ApiKey)
         {
             return ValidateOptionsResult.Fail($"{path}:Mode is not supported.");
         }
 
-        var oauth = authentication.OAuth;
-        if (oauth is null)
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth is required in OAuth client credentials mode.");
-        }
-
-        if (!Uri.TryCreate(oauth.Authority, UriKind.Absolute, out var authority) ||
-            (authority.Scheme != Uri.UriSchemeHttp && authority.Scheme != Uri.UriSchemeHttps) ||
-            authority.Query.Length != 0 ||
-            authority.Fragment.Length != 0)
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth:Authority must be an absolute HTTP(S) URL without a query or fragment.");
-        }
-
-        if (oauth.RequireHttpsMetadata && !string.Equals(authority.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth:Authority must use HTTPS when RequireHttpsMetadata is true.");
-        }
-
-        if (string.IsNullOrWhiteSpace(oauth.Audience))
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth:Audience is required in OAuth client credentials mode.");
-        }
-
-        if (oauth.ClockSkewSeconds is < 0 or > 300)
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth:ClockSkewSeconds must be between 0 and 300.");
-        }
-
-        if (oauth.RequiredScopes is null || oauth.RequiredRoles is null)
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth required scopes and roles must be arrays.");
-        }
-
-        if (oauth.RequiredScopes.Length == 0 && oauth.RequiredRoles.Length == 0)
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth must require at least one scope or role.");
-        }
-
-        if (oauth.RequiredScopes.Any(string.IsNullOrWhiteSpace) || oauth.RequiredRoles.Any(string.IsNullOrWhiteSpace))
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth required scopes and roles cannot contain empty values.");
-        }
-
-        return ValidateOptionsResult.Success;
+        return Encoding.UTF8.GetByteCount(authentication.ApiKey) >= 32
+            ? ValidateOptionsResult.Success
+            : ValidateOptionsResult.Fail($"{path}:ApiKey must contain at least 32 bytes in API key mode.");
     }
 
     private static ValidateOptionsResult? ValidateMcpAdmission(KubeMcpOptions options)

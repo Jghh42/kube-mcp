@@ -105,25 +105,15 @@ spec:
             - name: DOTNET_ENVIRONMENT
               value: Production
             # Reference production deployment: the MCP endpoint is fail-closed.
-            # AuthenticationMode.None is rejected outside the Development
-            # environment unless KubeMcp:Authentication:AllowUnauthenticated is
-            # explicitly enabled, so this manifest must authenticate. It uses
-            # OAuth client credentials (spec sections 8-10); replace the Keycloak
-            # realm URL below. Without valid OAuth settings every /mcp request
-            # returns 401. See README for the static API-key alternative and the
-            # development overlay (deployment-development.yaml) for Mode=None.
+            # AuthenticationMode.None is rejected outside Development, and the
+            # API key is loaded only from a Kubernetes Secret.
             - name: KubeMcp__Authentication__Mode
-              value: OAuthClientCredentials
-            - name: KubeMcp__Authentication__OAuth__Authority
-              value: https://keycloak.example.internal/realms/kube-mcp
-            - name: KubeMcp__Authentication__OAuth__Audience
-              value: k-mcp
-            - name: KubeMcp__Authentication__OAuth__RequiredScopes__0
-              value: k-mcp:read
-            - name: KubeMcp__Authentication__OAuth__RequiredRoles__0
-              value: k-mcp:read
-            - name: KubeMcp__Authentication__OAuth__RequireHttpsMetadata
-              value: "true"
+              value: ApiKey
+            - name: KubeMcp__Authentication__ApiKey
+              valueFrom:
+                secretKeyRef:
+                  name: kube-mcp-api-key
+                  key: api-key
             - name: KubeMcp__SecretHmacKey
               valueFrom:
                 secretKeyRef:

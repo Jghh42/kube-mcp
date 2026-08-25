@@ -78,7 +78,7 @@ if (kubeMcpOptions.ResourcePolicy.Mode == ResourcePolicyMode.AllowAll)
 if (authenticationMode == AuthenticationMode.None)
 {
     app.Logger.LogWarning(
-        "Authentication is disabled (Mode=None). The MCP endpoint is reachable WITHOUT credentials. This mode is intended ONLY for isolated local development and must never be exposed to a shared or untrusted network. Set KubeMcp:Authentication:Mode to ApiKey or OAuthClientCredentials for any non-development deployment.");
+        "Authentication is disabled (Mode=None). The MCP endpoint is reachable WITHOUT credentials. This mode is intended ONLY for isolated local development and must never be exposed to a shared or untrusted network. Set KubeMcp:Authentication:Mode to ApiKey for every non-development deployment.");
 }
 
 // Honor forwarded headers only from explicitly configured, known proxies/networks

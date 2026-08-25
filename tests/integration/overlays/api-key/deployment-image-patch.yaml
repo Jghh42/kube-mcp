@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-mcp
+  namespace: kube-mcp
+spec:
+  template:
+    spec:
+      containers:
+        - name: kube-mcp
+          # The harness loads this candidate into kind before deployment.
+          imagePullPolicy: Never

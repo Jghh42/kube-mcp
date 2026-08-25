@@ -50,6 +50,5 @@ Audit identity is derived without recording bearer credentials:
 
 - Unauthenticated development mode: `anonymous`
 - Static API key: `static-api-key`
-- OAuth: validated `client_id`, then `azp`, then `sub`
 
 When a request arrives through a configured trusted proxy, the audit event records the forwarded originating client IP. Forwarded values from untrusted peers are ignored.

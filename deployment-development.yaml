@@ -1,12 +1,12 @@
 # Development-only deployment overlay for kube-mcp.
 #
-# This manifest runs the service with AuthenticationMode=None behind the
-# deliberate KubeMcp:Authentication:AllowUnauthenticated opt-in. The MCP
-# endpoint is reachable WITHOUT credentials. Use this ONLY on a trusted local
+# This manifest runs the service with AuthenticationMode=None. The MCP
+# endpoint is reachable WITHOUT credentials because DOTNET_ENVIRONMENT is
+# Development. Use this ONLY on a trusted local
 # or development network. Never expose it to a shared or production network.
 #
 # For any non-development deployment, use deployment.yaml, which is fail-closed
-# and requires OAuth (or API-key) credentials. See README for details.
+# and requires API-key credentials. See README for details.
 #
 # Apply after deployment.yaml to override the production authentication settings,
 # for example:
@@ -44,11 +44,9 @@ spec:
             - name: DOTNET_ENVIRONMENT
               value: Development
             # DEVELOPMENT ONLY: unauthenticated mode is selected only in this
-            # explicitly named overlay and retains the deliberate opt-in.
+            # explicitly named overlay and is rejected in every other environment.
             - name: KubeMcp__Authentication__Mode
               value: None
-            - name: KubeMcp__Authentication__AllowUnauthenticated
-              value: "true"
             - name: KubeMcp__SecretHmacKey
               valueFrom:
                 secretKeyRef:
