@@ -1,8 +1,8 @@
 # Resource and RBAC overlays
 
-The default deployment grants access only to **core** built-in Kubernetes
-resources (pods, services, workloads, jobs, ingresses, and so on). Optional
-CloudNativePG and Traefik CRDs are **not** included in the default allowlist or
+The default deployment grants access only to explicitly mapped built-in
+Kubernetes resources (pods, services, workloads, jobs, ingresses, and so on).
+Optional CloudNativePG and Traefik CRDs are **not** included in the default allowlist or
 the default `ClusterRole`, following the spec principle that a resource is not
 exposed merely because it exists. This keeps the default surface small and
 prevents drift between the application allowlist and Kubernetes RBAC.
@@ -27,13 +27,10 @@ exists. Each overlay is purely additive and requires **two** coordinated changes
 
 ## Adding CRD mappings to the kube-mcp configuration
 
-Configuration uses standard ASP.NET Core configuration. The simplest options are
-environment variables or a mounted appsettings file.
-
-### Environment variables
+Use environment variables on the existing Deployment. For example, add the
+CloudNativePG `clusters` mapping:
 
 ```sh
-# CloudNativePG clusters CRD as an example
 kubectl set env deployment/kube-mcp --namespace kube-mcp \
   KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Group=postgresql.cnpg.io \
   KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Version=v1 \
@@ -41,41 +38,33 @@ kubectl set env deployment/kube-mcp --namespace kube-mcp \
   KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Kind=Cluster
 ```
 
-Repeat for each CRD in the chosen `resources.json`. The keys are the full
-`<resource>.<group>` names from the JSON.
-
-### Mounted appsettings overlay
-
-Merge the desired `resources.json` into a `ConfigMap`, mount it as
-`appsettings.Production.json` (the container runs in the Production environment
-by default, so this file merges on top of the core `appsettings.json`), and
-restart the deployment:
-
-```sh
-kubectl create configmap kube-mcp-overrides --namespace kube-mcp \
-  --from-file=appsettings.Production.json=overlays/cnpg/resources.json \
-  --dry-run=client -o yaml | kubectl apply -f -
-# Mount the ConfigMap at /app/appsettings.Production.json and reapply.
-```
-
-Then apply the corresponding RBAC:
+Configure all four variables for every mapping in the selected
+`resources.json`; its keys are the full `<resource>.<group>` names. Only after
+all bundled mappings are configured, apply the matching RBAC file:
 
 ```sh
 kubectl apply --filename overlays/cnpg/rbac.yaml
 ```
 
+The final configuration must contain both sides. Application mapping alone is
+still denied by RBAC, while RBAC alone does not expose an unmapped resource.
+
 ## Removing an overlay
 
-Delete the overlay RBAC and remove the corresponding application mappings
-(unset the environment variables or remove the appsettings overlay), then
-reapply `deployment.yaml`:
+First unset all four variables for every mapping enabled from that overlay. For
+example, remove the CloudNativePG `clusters` mapping:
 
 ```sh
-kubectl delete clusterrole kube-mcp-reader-cnpg
-kubectl delete clusterrolebinding kube-mcp-reader-cnpg
 kubectl set env deployment/kube-mcp --namespace kube-mcp \
   'KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Group-' \
   'KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Version-' \
   'KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Resource-' \
   'KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Kind-'
+```
+
+Repeat that command pattern for every other mapping from the overlay and wait
+for the Deployment rollout. Only then remove the matching RBAC objects:
+
+```sh
+kubectl delete --filename overlays/cnpg/rbac.yaml
 ```

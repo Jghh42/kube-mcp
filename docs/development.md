@@ -11,9 +11,9 @@
 ## Build and test
 
 ```sh
-dotnet restore --locked-mode
-dotnet build --configuration Release --no-restore
-dotnet test --configuration Release --no-build --no-restore
+dotnet restore KubeMcp.slnx --locked-mode
+dotnet build KubeMcp.slnx --configuration Release --no-restore
+dotnet test KubeMcp.slnx --configuration Release --no-build --no-restore
 ```
 
 The test suite covers access policy, authentication, Secret sanitization and fingerprinting, generic compact LIST summaries, upstream and safe-output boundaries, pagination, cancellation, timeouts, process health, structured audit logging, production deployment settings, and the single-tool MCP surface.
