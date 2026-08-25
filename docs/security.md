@@ -23,7 +23,7 @@ A request must pass all applicable controls:
 3. Namespace blacklist or label-selector policy.
 4. GET/LIST-only application behavior.
 5. Kubernetes RBAC for the service identity.
-6. Time, pagination, body, and response limits.
+6. Kubernetes deadlines, pagination bounds, upstream body limits, and safe-output limits.
 
 The production reference deployment uses a static bearer API key loaded from a Kubernetes Secret. Unauthenticated mode is accepted only when the host environment is `Development`. See [configuration](configuration.md#authentication).
 
@@ -36,14 +36,11 @@ Raw Kubernetes Secret values are never returned:
 
 The HMAC key remains on the server. Keep it stable only when fingerprints need to be comparable across restarts. Audit records and telemetry never contain Secret values or fingerprints.
 
-## Admission and request limits
+## Edge traffic controls
 
-Two process-wide admission layers apply only to `/mcp`:
+Production runs on a private network behind an ingress, load balancer, or service mesh. That edge must enforce HTTP request-body and header limits plus request rate and concurrency limits. It must also prevent untrusted direct access to the application Service where required. These controls are intentionally not implemented in the application.
 
-- The outer gate admits at most 16 requests and queues 16 before authentication. Overflow returns HTTP `429` before authentication, protocol parsing, per-request observability, or audit publication. This prevents credential floods from amplifying authentication and logging work.
-- After authentication and authorization, the inner gate executes two requests and queues two, oldest-first. Overflow returns HTTP `429` with safe audit and telemetry events.
-
-Defaults are configurable. `/mcp` request bodies are limited to 64 KiB; a declared oversized body receives HTTP `413` before parsing or audit logging. Root, liveness, and readiness remain outside both gates.
+The application retains the boundaries only it can enforce: Kubernetes response-body limits, safe tool-output limits, item and page counts, continuation-token bounds, and Kubernetes and overall MCP deadlines. Root, liveness, and readiness routing is independent of MCP authentication.
 
 ## Safe errors
 
@@ -59,11 +56,11 @@ Kubernetes failures are converted to fixed messages and low-cardinality categori
 - `upstream_timeout`
 - `internal_error`
 
-Overall server deadlines use `server_timeout`; caller disconnects use `client_cancelled`; authenticated inner-limit rejection uses `rate_limited`. Upstream response bodies and arbitrary exception messages do not cross the Kubernetes boundary.
+Overall server deadlines use `server_timeout`; caller disconnects use `client_cancelled`. Upstream response bodies and arbitrary exception messages do not cross the Kubernetes boundary.
 
 ## Audit guarantees
 
-Every dispatched `k8s_get` call publishes a sanitized Kubernetes audit record. Authentication, authorization, and inner concurrency denials publish an MCP access-denial record without invented resource coordinates. Middleware does not inspect arbitrary request bodies to infer audit fields.
+Every dispatched `k8s_get` call publishes a sanitized Kubernetes audit record. Authentication and authorization denials publish an MCP access-denial record without invented resource coordinates. Middleware does not inspect arbitrary request bodies to infer audit fields.
 
 Records can include:
 

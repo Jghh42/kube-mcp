@@ -26,10 +26,6 @@ public sealed class KubeMcpOptions
 
     public KubeMcpForwardedHeadersOptions ForwardedHeaders { get; init; } = new();
 
-    public McpAdmissionOptions McpAdmission { get; init; } = new();
-
-    public McpConcurrencyOptions McpConcurrency { get; init; } = new();
-
     [Range(1, 1000)]
     public int MaxListItems { get; init; } = 100;
 
@@ -127,42 +123,6 @@ public sealed class KubeMcpForwardedHeadersOptions
     // originating client and production hostname behind a reverse proxy.
     public ForwardedHeaders AllowedForwardedHeaders { get; init; } =
         ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
-}
-
-public sealed class McpAdmissionOptions
-{
-    /// <summary>
-    /// Maximum number of MCP requests admitted ahead of authentication. This
-    /// must cover the post-authentication permits and complete inner queue.
-    /// </summary>
-    [Range(1, 128)]
-    public int PermitLimit { get; init; } = 16;
-
-    /// <summary>
-    /// Bounded oldest-first admission queue. Overflow is rejected before
-    /// authentication, request parsing, observability, or per-request audit work.
-    /// </summary>
-    [Range(0, 128)]
-    public int QueueLimit { get; init; } = 16;
-}
-
-public sealed class McpConcurrencyOptions
-{
-    /// <summary>
-    /// Maximum number of authenticated MCP requests executing concurrently in
-    /// this process. All clients share this limit so Kubernetes response memory
-    /// is globally bounded.
-    /// </summary>
-    [Range(1, 16)]
-    public int PermitLimit { get; init; } = 2;
-
-    /// <summary>
-    /// Maximum number of MCP requests waiting for a permit. Zero fails fast;
-    /// the deliberately small upper bound prevents queued requests becoming a
-    /// second memory/backpressure problem.
-    /// </summary>
-    [Range(0, 4)]
-    public int QueueLimit { get; init; } = 2;
 }
 
 public sealed class KubeMcpTelemetryOptions

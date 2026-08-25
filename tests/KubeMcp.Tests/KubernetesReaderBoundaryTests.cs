@@ -341,34 +341,6 @@ public sealed class KubernetesBoundaryOptionsTests
     }
 
     [Fact]
-    public void OuterAdmissionMustCoverAuthenticatedPermitsAndQueue()
-    {
-        var baseline = ReaderTestOptions.Options();
-        var options = new KubeMcpOptions
-        {
-            SecretHmacKey = baseline.SecretHmacKey,
-            AllowedResources = baseline.AllowedResources,
-            NamespacePolicy = baseline.NamespacePolicy,
-            McpAdmission = new McpAdmissionOptions
-            {
-                PermitLimit = 2,
-                QueueLimit = 0
-            },
-            McpConcurrency = new McpConcurrencyOptions
-            {
-                PermitLimit = 2,
-                QueueLimit = 1
-            }
-        };
-
-        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
-            .Validate(null, options);
-
-        Assert.True(result.Failed);
-        Assert.Contains("plus QueueLimit (3)", result.FailureMessage);
-    }
-
-    [Fact]
     public void InvalidReadinessNamespaceIsRejected()
     {
         var baseline = ReaderTestOptions.Options();

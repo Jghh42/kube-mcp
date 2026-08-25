@@ -9,7 +9,8 @@ The reference [`deployment.yaml`](../deployment.yaml) is an authenticated produc
 3. Pin the image to an immutable `sha-<commit>` tag.
 4. Confirm the GHCR package is public or configure an image pull secret.
 5. Review the resource allowlist, namespace policy, RBAC, and trusted proxy settings.
-6. Provide secrets through your normal secret-management system; do not commit them.
+6. Configure the private-network ingress, load balancer, or service mesh to enforce HTTP request-body, header, rate, and concurrency limits and to block untrusted direct Service access where required.
+7. Provide secrets through your normal secret-management system; do not commit them.
 
 Missing or invalid production authentication configuration prevents startup rather than exposing `/mcp`.
 
@@ -45,6 +46,12 @@ curl http://127.0.0.1:8080/readyz
 ```
 
 The MCP endpoint is `http://127.0.0.1:8080/mcp` through this port-forward. Use TLS for non-local traffic, normally terminated by a trusted ingress, reverse proxy, or service mesh.
+
+## Private-network edge contract
+
+The application Service is intended to remain private. Its ingress, load balancer, or service mesh owns HTTP request-body and header limits, request rate and concurrency limits, and prevention of untrusted direct access where required. Choose limits for the expected MCP client workload and enforce them before requests reach the pod; the application has no admission, request-body, or concurrency limiter.
+
+The application still bounds Kubernetes upstream bodies, safe MCP output, list items/pages, continuation tokens, and operation deadlines. The deployment retains pod CPU and memory requests and limits because those controls cannot be delegated to HTTP infrastructure.
 
 ## Local unauthenticated deployment
 

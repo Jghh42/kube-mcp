@@ -173,58 +173,6 @@ public sealed class KubeMcpOptionsValidatorTests
         Assert.True(coreResult.Succeeded);
     }
 
-    [Fact]
-    public void RejectsConcurrencyThatExceedsAggregateUpstreamMemoryBudget()
-    {
-        var baseline = ValidOptions();
-        var options = new KubeMcpOptions
-        {
-            SecretHmacKey = baseline.SecretHmacKey,
-            AllowedResources = baseline.AllowedResources,
-            NamespacePolicy = baseline.NamespacePolicy,
-            Authentication = baseline.Authentication,
-            MaxUpstreamBodyBytes = 8 * 1024 * 1024,
-            McpConcurrency = new McpConcurrencyOptions
-            {
-                PermitLimit = 9,
-                QueueLimit = 1
-            }
-        };
-
-        var result = validator.Validate(null, options);
-
-        Assert.True(result.Failed);
-        Assert.Contains("worst-case concurrent Kubernetes body count", result.FailureMessage);
-    }
-
-    [Theory]
-    [InlineData(0, 0, "PermitLimit")]
-    [InlineData(1, 5, "QueueLimit")]
-    public void RejectsConcurrencyLimitsOutsideValidatedBounds(
-        int permitLimit,
-        int queueLimit,
-        string expectedSetting)
-    {
-        var baseline = ValidOptions();
-        var options = new KubeMcpOptions
-        {
-            SecretHmacKey = baseline.SecretHmacKey,
-            AllowedResources = baseline.AllowedResources,
-            NamespacePolicy = baseline.NamespacePolicy,
-            Authentication = baseline.Authentication,
-            McpConcurrency = new McpConcurrencyOptions
-            {
-                PermitLimit = permitLimit,
-                QueueLimit = queueLimit
-            }
-        };
-
-        var result = validator.Validate(null, options);
-
-        Assert.True(result.Failed);
-        Assert.Contains(expectedSetting, result.FailureMessage);
-    }
-
     [Theory]
     [InlineData("v1")]
     [InlineData("v1beta1")]

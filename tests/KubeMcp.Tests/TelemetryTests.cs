@@ -33,8 +33,8 @@ public sealed class TelemetryTests
         using var telemetry = new KubeMcpTelemetry(new HttpContextAccessor());
         telemetry.RecordMcpRequest(
             TimeSpan.FromMilliseconds(10),
-            StatusCodes.Status429TooManyRequests,
-            AuditCategories.RateLimited);
+            StatusCodes.Status401Unauthorized,
+            AuditCategories.AuthenticationDenied);
         telemetry.RecordKubernetesRequest(
             "GET",
             TimeSpan.FromMilliseconds(20),
@@ -61,7 +61,7 @@ public sealed class TelemetryTests
         Assert.Contains(measurements, measurement => measurement.Name == "kube_mcp.mcp.request.duration");
         Assert.Contains(measurements, measurement =>
             measurement.Name == "kube_mcp.mcp.denials" &&
-            Equals(measurement.Tags["mcp.error.category"], AuditCategories.RateLimited));
+            Equals(measurement.Tags["mcp.error.category"], AuditCategories.AuthenticationDenied));
         Assert.Contains(measurements, measurement => measurement.Name == "kube_mcp.kubernetes.request.duration");
         Assert.Contains(measurements, measurement =>
             measurement.Name == "kube_mcp.kubernetes.errors" &&

@@ -60,6 +60,16 @@ public sealed class ProductionDeploymentTests
     }
 
     [Fact]
+    public void ReferenceDeploymentDelegatesTrafficLimitsButRetainsPodResources()
+    {
+        var production = File.ReadAllText(RepositoryFile("deployment.yaml"));
+
+        Assert.DoesNotContain("KubeMcp__McpAdmission", production, StringComparison.Ordinal);
+        Assert.DoesNotContain("KubeMcp__McpConcurrency", production, StringComparison.Ordinal);
+        Assert.Matches(@"(?s)resources:\s+requests:\s+cpu:\s*25m\s+memory:\s*64Mi\s+limits:\s+cpu:\s*250m\s+memory:\s*256Mi", production);
+    }
+
+    [Fact]
     public void DefaultDeploymentExcludesOptionalCrdRbac()
     {
         var production = File.ReadAllText(RepositoryFile("deployment.yaml"));

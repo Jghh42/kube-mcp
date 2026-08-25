@@ -104,7 +104,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
-    public void TimeoutAndConcurrencyPoliciesAreAttachedOnlyToMcpEndpoints()
+    public void HealthAndMcpRoutesHaveExpectedTimeoutAndNoRateLimiterMetadata()
     {
         _ = client; // Ensure the application and endpoint data source are initialized.
         var timeoutOptions = factory.Services.GetRequiredService<IOptions<RequestTimeoutOptions>>().Value;
@@ -114,17 +114,19 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
 
         var endpoints = factory.Services.GetRequiredService<EndpointDataSource>().Endpoints;
 
-        // Inspect the concrete endpoint route and its timeout metadata without
-        // relying on display names.
+        // Inspect concrete routes without relying on display names. MCP retains
+        // its overall deadline, while health routes remain independent.
         var routed = endpoints.OfType<RouteEndpoint>().ToArray();
         Assert.Contains(routed, endpoint =>
             endpoint.RoutePattern.RawText?.StartsWith("/mcp", StringComparison.Ordinal) == true &&
-            endpoint.Metadata.GetMetadata<RequestTimeoutAttribute>()?.PolicyName == McpRequestTimeoutOptionsSetup.PolicyName &&
-            endpoint.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName == McpConcurrencyRateLimiterOptionsSetup.PolicyName);
+            endpoint.Metadata.GetMetadata<RequestTimeoutAttribute>()?.PolicyName == McpRequestTimeoutOptionsSetup.PolicyName);
+        Assert.Contains(routed, endpoint => endpoint.RoutePattern.RawText == "/healthz");
+        Assert.Contains(routed, endpoint => endpoint.RoutePattern.RawText == "/readyz");
         Assert.DoesNotContain(routed, endpoint =>
             endpoint.RoutePattern.RawText is "/" or "/healthz" or "/readyz" &&
-            (endpoint.Metadata.GetMetadata<RequestTimeoutAttribute>() is not null ||
-             endpoint.Metadata.GetMetadata<EnableRateLimitingAttribute>() is not null));
+            endpoint.Metadata.GetMetadata<RequestTimeoutAttribute>() is not null);
+        Assert.All(routed, endpoint =>
+            Assert.Null(endpoint.Metadata.GetMetadata<EnableRateLimitingAttribute>()));
     }
 
     [Fact]

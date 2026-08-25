@@ -21,10 +21,6 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | `KubeMcp:MaxListPages` | `20` | Maximum continuation pages per LIST. |
 | `KubeMcp:KubernetesRequestTimeoutSeconds` | `15` | Kubernetes operation timeout. |
 | `KubeMcp:OverallMcpRequestTimeoutSeconds` | `30` | End-to-end MCP deadline; must exceed the Kubernetes timeout. |
-| `KubeMcp:McpAdmission:PermitLimit` | `16` | Pre-authentication `/mcp` permits (1–128). |
-| `KubeMcp:McpAdmission:QueueLimit` | `16` | Pre-authentication queue bound (0–128). |
-| `KubeMcp:McpConcurrency:PermitLimit` | `2` | Concurrent authenticated `/mcp` requests (1–16). |
-| `KubeMcp:McpConcurrency:QueueLimit` | `2` | Authenticated oldest-first queue bound (0–4). |
 | `KubeMcp:Telemetry:Enabled` | `false` | Enable OpenTelemetry metrics, traces, and OTLP export. |
 | `KubeMcp:Authentication:Mode` | `ApiKey` | `ApiKey`, or `None` only when the host environment is `Development`. |
 | `KubeMcp:Authentication:ApiKey` | none | Static bearer key of at least 32 UTF-8 bytes. Required in API-key mode. |
@@ -80,17 +76,11 @@ Clients send `Authorization: Bearer <high-entropy-key>`. Comparison is constant-
 
 `None` is intended only for isolated local development and is rejected unless the host environment is `Development`. There is no non-development override.
 
-## Concurrency and memory
+## Edge traffic limits
 
-The outer admission gate bounds work before authentication. The inner gate bounds authenticated MCP/Kubernetes work. Both are process-wide, oldest-first limits rather than per-IP or per-token quotas.
+The application does not configure HTTP request-body, header, rate, or concurrency limits. Production must run on a private network behind an ingress, load balancer, or service mesh that enforces limits appropriate to the expected MCP workload and blocks untrusted direct Service access where required.
 
-Validation requires the outer permit count to cover authenticated permits plus all inner queue slots. It also requires:
-
-```text
-McpConcurrency:PermitLimit × MaxUpstreamBodyBytes <= 64 MiB
-```
-
-This reserves most of the reference pod's 256 MiB limit for object expansion, protocol envelopes, and runtime overhead. Queued requests remain subject to the overall MCP deadline.
+`MaxUpstreamBodyBytes`, `MaxResponseBytes`, list item/page sizes and counts, continuation-token bounds, and Kubernetes and overall MCP deadlines remain application settings because they bound Kubernetes input and agent-facing output rather than edge traffic. The reference pod retains explicit CPU and memory requests and limits.
 
 ## Reverse proxies and hosts
 

@@ -119,20 +119,6 @@ spec:
                 secretKeyRef:
                   name: kube-mcp-hmac
                   key: key
-            # Cheap outer admission bounds authentication work before the smaller
-            # authenticated MCP/Kubernetes limiter. Both queues are oldest-first;
-            # overflow receives 429. The request body cap remains fixed at 64KiB.
-            - name: KubeMcp__McpAdmission__PermitLimit
-              value: "16"
-            - name: KubeMcp__McpAdmission__QueueLimit
-              value: "16"
-            # At most two authenticated requests execute MCP/Kubernetes work and
-            # two wait. Keep PermitLimit * MaxUpstreamBodyBytes at or below the
-            # validated 64Mi aggregate upstream-body budget for this 256Mi pod.
-            - name: KubeMcp__McpConcurrency__PermitLimit
-              value: "2"
-            - name: KubeMcp__McpConcurrency__QueueLimit
-              value: "2"
             # AllowedHosts: production hostname(s) plus in-cluster and localhost
             # names. Replace k-mcp.example.internal with your real hostname(s);
             # multiple values are semicolon-separated. Required behind an ingress.

@@ -11,7 +11,6 @@ public sealed class McpRequestObservabilityTests
     [Theory]
     [InlineData(StatusCodes.Status401Unauthorized, AuditCategories.AuthenticationDenied)]
     [InlineData(StatusCodes.Status403Forbidden, AuditCategories.AuthorizationDenied)]
-    [InlineData(StatusCodes.Status429TooManyRequests, AuditCategories.RateLimited)]
     public async Task AuditsPreToolDenialWithoutReadingBodyOrInventingCoordinates(
         int statusCode,
         string expectedCategory)

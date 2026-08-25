@@ -11,9 +11,6 @@ namespace KubeMcp.Configuration;
 public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOptions>
 {
     private const int MinimumHmacKeyBytes = 32;
-    // The reference pod is limited to 256 MiB. Reserve at least three quarters
-    // for the runtime, request/response envelopes, and deserialized object graphs.
-    private const long MaximumAggregateUpstreamBodyBytes = 64L * 1024 * 1024;
     private readonly IHostEnvironment environment;
 
     public KubeMcpOptionsValidator(IHostEnvironment environment)
@@ -109,18 +106,6 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
                 $"{KubeMcpOptions.SectionName}:OverallMcpRequestTimeoutSeconds must be greater than KubernetesRequestTimeoutSeconds so the end-to-end deadline leaves time for MCP error serialization and audit publication.");
         }
 
-        var concurrencyValidation = ValidateMcpConcurrency(options);
-        if (concurrencyValidation is not null)
-        {
-            return concurrencyValidation;
-        }
-
-        var admissionValidation = ValidateMcpAdmission(options);
-        if (admissionValidation is not null)
-        {
-            return admissionValidation;
-        }
-
         var forwardedHeadersValidation = ValidateForwardedHeaders(options.ForwardedHeaders);
         if (forwardedHeadersValidation is not null)
         {
@@ -185,66 +170,6 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         return Encoding.UTF8.GetByteCount(authentication.ApiKey) >= 32
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail($"{path}:ApiKey must contain at least 32 bytes in API key mode.");
-    }
-
-    private static ValidateOptionsResult? ValidateMcpAdmission(KubeMcpOptions options)
-    {
-        const string path = $"{KubeMcpOptions.SectionName}:McpAdmission";
-        var admission = options.McpAdmission;
-        if (admission is null)
-        {
-            return ValidateOptionsResult.Fail($"{path} is required.");
-        }
-
-        if (admission.PermitLimit is < 1 or > 128)
-        {
-            return ValidateOptionsResult.Fail($"{path}:PermitLimit must be between 1 and 128.");
-        }
-
-        if (admission.QueueLimit is < 0 or > 128)
-        {
-            return ValidateOptionsResult.Fail($"{path}:QueueLimit must be between 0 and 128.");
-        }
-
-        var authenticatedCapacity =
-            options.McpConcurrency.PermitLimit + options.McpConcurrency.QueueLimit;
-        if (admission.PermitLimit < authenticatedCapacity)
-        {
-            return ValidateOptionsResult.Fail(
-                $"{path}:PermitLimit must be at least {KubeMcpOptions.SectionName}:McpConcurrency:PermitLimit plus QueueLimit ({authenticatedCapacity}) so authenticated requests can reach the complete inner oldest-first queue.");
-        }
-
-        return null;
-    }
-
-    private static ValidateOptionsResult? ValidateMcpConcurrency(KubeMcpOptions options)
-    {
-        const string path = $"{KubeMcpOptions.SectionName}:McpConcurrency";
-        var concurrency = options.McpConcurrency;
-        if (concurrency is null)
-        {
-            return ValidateOptionsResult.Fail($"{path} is required.");
-        }
-
-        if (concurrency.PermitLimit is < 1 or > 16)
-        {
-            return ValidateOptionsResult.Fail($"{path}:PermitLimit must be between 1 and 16.");
-        }
-
-        if (concurrency.QueueLimit is < 0 or > 4)
-        {
-            return ValidateOptionsResult.Fail($"{path}:QueueLimit must be between 0 and 4.");
-        }
-
-        var aggregateUpstreamBytes =
-            (long)concurrency.PermitLimit * options.MaxUpstreamBodyBytes;
-        if (aggregateUpstreamBytes > MaximumAggregateUpstreamBodyBytes)
-        {
-            return ValidateOptionsResult.Fail(
-                $"{path}:the worst-case concurrent Kubernetes body count multiplied by {KubeMcpOptions.SectionName}:MaxUpstreamBodyBytes must not exceed {MaximumAggregateUpstreamBodyBytes} bytes while preserving memory headroom within the 256 MiB pod limit.");
-        }
-
-        return null;
     }
 
     private static ValidateOptionsResult? ValidateForwardedHeaders(KubeMcpForwardedHeadersOptions forwardedHeaders)

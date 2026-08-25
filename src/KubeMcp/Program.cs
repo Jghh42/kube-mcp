@@ -7,7 +7,6 @@ using KubeMcp.Observability;
 using KubeMcp.Security;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Timeouts;
-using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.AspNetCore;
@@ -39,9 +38,6 @@ builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
 builder.Services.AddKubeMcpTelemetry(builder.Configuration);
 builder.Services.AddRequestTimeouts();
 builder.Services.AddSingleton<IConfigureOptions<RequestTimeoutOptions>, McpRequestTimeoutOptionsSetup>();
-builder.Services.AddRateLimiter();
-builder.Services.AddSingleton<IConfigureOptions<RateLimiterOptions>, McpConcurrencyRateLimiterOptionsSetup>();
-builder.Services.AddSingleton<McpPreAuthenticationAdmissionGate>();
 builder.Services.AddSingleton<SecretFingerprinter>();
 builder.Services.AddSingleton<SecretSanitizer>();
 builder.Services.AddSingleton<KubernetesListSummarizer>();
@@ -87,27 +83,18 @@ ForwardedHeadersConfiguration.Apply(
 app.UseForwardedHeaders(forwardedHeadersOptions);
 
 app.UseRouting();
-// The MCP-only body cap and outer admission gate run before authentication and
-// observability. Oversized or admission-overflow requests therefore receive a
-// cheap 413/429 without body parsing or per-request audit amplification. Admitted
-// requests remain subject to the end-to-end timeout, authentication audit, and
-// the smaller post-authentication MCP/Kubernetes limiter below.
+// The application retains its end-to-end MCP deadline. HTTP body, header, rate,
+// and concurrency limits belong at the private-network ingress or service mesh.
 app.UseWhen(
     context => context.Request.Path.StartsWithSegments("/mcp"),
     branch =>
     {
-        branch.UseMiddleware<McpRequestBodyLimitMiddleware>();
         branch.UseRequestTimeouts();
-        branch.UseMiddleware<McpPreAuthenticationAdmissionMiddleware>();
         branch.UseMiddleware<McpRequestObservabilityMiddleware>();
     });
 
 app.UseAuthentication();
 app.UseAuthorization();
-// Limit only endpoint-selected MCP requests, after authentication and
-// authorization. Invalid credentials cannot occupy the process-wide queue or
-// permits; health/readiness/root endpoints do not carry limiter metadata.
-app.UseRateLimiter();
 
 app.MapGet("/", () => Results.Ok(new
 {
@@ -127,8 +114,7 @@ app.MapHealthChecks("/readyz", new HealthCheckOptions
     ResponseWriter = WriteHealthStatusAsync
 });
 var mcpEndpoint = app.MapMcp("/mcp")
-    .WithRequestTimeout(McpRequestTimeoutOptionsSetup.PolicyName)
-    .RequireRateLimiting(McpConcurrencyRateLimiterOptionsSetup.PolicyName);
+    .WithRequestTimeout(McpRequestTimeoutOptionsSetup.PolicyName);
 if (authenticationMode != AuthenticationMode.None)
 {
     mcpEndpoint.RequireAuthorization(AuthenticationConfiguration.McpAccessPolicy);
