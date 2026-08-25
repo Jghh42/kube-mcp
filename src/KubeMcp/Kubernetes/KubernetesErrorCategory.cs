@@ -2,7 +2,7 @@ namespace KubeMcp.Kubernetes;
 
 /// <summary>
 /// Safe, low-cardinality Kubernetes failure categories used across the boundary,
-/// audit, and telemetry surfaces. Upstream HTTP bodies are never carried by this
+/// error and audit surfaces. Upstream HTTP bodies are never carried by this
 /// category; only the coarse reason is retained.
 /// </summary>
 public enum KubernetesErrorCategory
@@ -16,10 +16,10 @@ public enum KubernetesErrorCategory
     /// <summary>The requested namespace is not permitted by the namespace policy.</summary>
     NamespaceNotAllowed,
 
-    /// <summary>The caller-supplied request shape is invalid (bad name, ambiguous resource, ...).</summary>
+    /// <summary>The caller-supplied request shape is invalid.</summary>
     InvalidRequest,
 
-    /// <summary>The Kubernetes resource or discovery entry was not found (HTTP 404 or discovery miss).</summary>
+    /// <summary>The Kubernetes resource was not found (HTTP 404).</summary>
     NotFound,
 
     /// <summary>Kubernetes RBAC denied access (HTTP 403).</summary>

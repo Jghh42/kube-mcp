@@ -1,8 +1,6 @@
-using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
-using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
@@ -11,9 +9,6 @@ namespace KubeMcp.Configuration;
 public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOptions>
 {
     private const int MinimumHmacKeyBytes = 32;
-    // The reference pod is limited to 256 MiB. Reserve at least three quarters
-    // for the runtime, request/response envelopes, and deserialized object graphs.
-    private const long MaximumAggregateUpstreamBodyBytes = 64L * 1024 * 1024;
     private readonly IHostEnvironment environment;
 
     public KubeMcpOptionsValidator(IHostEnvironment environment)
@@ -29,23 +24,10 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
             return ValidateOptionsResult.Fail(hmacValidation);
         }
 
-        if (options.ResourcePolicy is null)
+        if (options.AllowedResources is null || options.AllowedResources.Count == 0)
         {
             return ValidateOptionsResult.Fail(
-                $"{KubeMcpOptions.SectionName}:ResourcePolicy is required.");
-        }
-
-        if (!Enum.IsDefined(options.ResourcePolicy.Mode))
-        {
-            return ValidateOptionsResult.Fail(
-                $"{KubeMcpOptions.SectionName}:ResourcePolicy:Mode must be Allowlist or AllowAll.");
-        }
-
-        if (options.ResourcePolicy.Mode == ResourcePolicyMode.Allowlist &&
-            (options.AllowedResources is null || options.AllowedResources.Count == 0))
-        {
-            return ValidateOptionsResult.Fail(
-                $"{KubeMcpOptions.SectionName}:AllowedResources must contain at least one resource when ResourcePolicy:Mode is Allowlist.");
+                $"{KubeMcpOptions.SectionName}:AllowedResources must contain at least one resource.");
         }
 
         foreach (var (configuredName, resource) in options.AllowedResources ?? [])
@@ -91,13 +73,6 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
                 $"{KubeMcpOptions.SectionName}:NamespacePolicy:LabelSelector must not exceed 1024 characters.");
         }
 
-        if (options.ReadinessNamespace is not null &&
-            !IsDnsLabel(options.ReadinessNamespace))
-        {
-            return ValidateOptionsResult.Fail(
-                $"{KubeMcpOptions.SectionName}:ReadinessNamespace must be a valid Kubernetes namespace name.");
-        }
-
         if (options.MaxUpstreamBodyBytes < options.MaxResponseBytes)
         {
             return ValidateOptionsResult.Fail(
@@ -110,12 +85,6 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
                 $"{KubeMcpOptions.SectionName}:SecretListPageSize must not exceed ListPageSize.");
         }
 
-        if (options.DiscoveryParallelism is < 1 or > 16)
-        {
-            return ValidateOptionsResult.Fail(
-                $"{KubeMcpOptions.SectionName}:DiscoveryParallelism must be between 1 and 16.");
-        }
-
         if (options.OverallMcpRequestTimeoutSeconds is < 1 or > 3600)
         {
             return ValidateOptionsResult.Fail(
@@ -126,24 +95,6 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         {
             return ValidateOptionsResult.Fail(
                 $"{KubeMcpOptions.SectionName}:OverallMcpRequestTimeoutSeconds must be greater than KubernetesRequestTimeoutSeconds so the end-to-end deadline leaves time for MCP error serialization and audit publication.");
-        }
-
-        var concurrencyValidation = ValidateMcpConcurrency(options);
-        if (concurrencyValidation is not null)
-        {
-            return concurrencyValidation;
-        }
-
-        var admissionValidation = ValidateMcpAdmission(options);
-        if (admissionValidation is not null)
-        {
-            return admissionValidation;
-        }
-
-        var forwardedHeadersValidation = ValidateForwardedHeaders(options.ForwardedHeaders);
-        if (forwardedHeadersValidation is not null)
-        {
-            return forwardedHeadersValidation;
         }
 
         return ValidateAuthentication(options.Authentication);
@@ -189,191 +140,21 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
 
         if (authentication.Mode == AuthenticationMode.None)
         {
-            var isDevelopment = environment.IsDevelopment();
-            if (!isDevelopment && !authentication.AllowUnauthenticated)
-            {
-                return ValidateOptionsResult.Fail(
-                    $"{path}:Mode=None is not permitted outside the Development environment. " +
-                    "Set Mode to ApiKey or OAuthClientCredentials for any non-development deployment, " +
-                    "or explicitly set KubeMcp:Authentication:AllowUnauthenticated=true for a deliberate " +
-                    "development-only deployment.");
-            }
-
-            return ValidateOptionsResult.Success;
-        }
-
-        if (authentication.Mode == AuthenticationMode.ApiKey)
-        {
-            return Encoding.UTF8.GetByteCount(authentication.ApiKey) >= 32
+            return environment.IsDevelopment()
                 ? ValidateOptionsResult.Success
-                : ValidateOptionsResult.Fail($"{path}:ApiKey must contain at least 32 bytes in API key mode.");
+                : ValidateOptionsResult.Fail(
+                    $"{path}:Mode=None is not permitted outside the Development environment. " +
+                    "Set Mode to ApiKey for every non-development deployment.");
         }
 
-        if (authentication.Mode != AuthenticationMode.OAuthClientCredentials)
+        if (authentication.Mode != AuthenticationMode.ApiKey)
         {
             return ValidateOptionsResult.Fail($"{path}:Mode is not supported.");
         }
 
-        var oauth = authentication.OAuth;
-        if (oauth is null)
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth is required in OAuth client credentials mode.");
-        }
-
-        if (!Uri.TryCreate(oauth.Authority, UriKind.Absolute, out var authority) ||
-            (authority.Scheme != Uri.UriSchemeHttp && authority.Scheme != Uri.UriSchemeHttps) ||
-            authority.Query.Length != 0 ||
-            authority.Fragment.Length != 0)
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth:Authority must be an absolute HTTP(S) URL without a query or fragment.");
-        }
-
-        if (oauth.RequireHttpsMetadata && !string.Equals(authority.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth:Authority must use HTTPS when RequireHttpsMetadata is true.");
-        }
-
-        if (string.IsNullOrWhiteSpace(oauth.Audience))
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth:Audience is required in OAuth client credentials mode.");
-        }
-
-        if (oauth.ClockSkewSeconds is < 0 or > 300)
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth:ClockSkewSeconds must be between 0 and 300.");
-        }
-
-        if (oauth.RequiredScopes is null || oauth.RequiredRoles is null)
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth required scopes and roles must be arrays.");
-        }
-
-        if (oauth.RequiredScopes.Length == 0 && oauth.RequiredRoles.Length == 0)
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth must require at least one scope or role.");
-        }
-
-        if (oauth.RequiredScopes.Any(string.IsNullOrWhiteSpace) || oauth.RequiredRoles.Any(string.IsNullOrWhiteSpace))
-        {
-            return ValidateOptionsResult.Fail($"{path}:OAuth required scopes and roles cannot contain empty values.");
-        }
-
-        return ValidateOptionsResult.Success;
-    }
-
-    private static ValidateOptionsResult? ValidateMcpAdmission(KubeMcpOptions options)
-    {
-        const string path = $"{KubeMcpOptions.SectionName}:McpAdmission";
-        var admission = options.McpAdmission;
-        if (admission is null)
-        {
-            return ValidateOptionsResult.Fail($"{path} is required.");
-        }
-
-        if (admission.PermitLimit is < 1 or > 128)
-        {
-            return ValidateOptionsResult.Fail($"{path}:PermitLimit must be between 1 and 128.");
-        }
-
-        if (admission.QueueLimit is < 0 or > 128)
-        {
-            return ValidateOptionsResult.Fail($"{path}:QueueLimit must be between 0 and 128.");
-        }
-
-        var authenticatedCapacity =
-            options.McpConcurrency.PermitLimit + options.McpConcurrency.QueueLimit;
-        if (admission.PermitLimit < authenticatedCapacity)
-        {
-            return ValidateOptionsResult.Fail(
-                $"{path}:PermitLimit must be at least {KubeMcpOptions.SectionName}:McpConcurrency:PermitLimit plus QueueLimit ({authenticatedCapacity}) so authenticated requests can reach the complete inner oldest-first queue.");
-        }
-
-        return null;
-    }
-
-    private static ValidateOptionsResult? ValidateMcpConcurrency(KubeMcpOptions options)
-    {
-        const string path = $"{KubeMcpOptions.SectionName}:McpConcurrency";
-        var concurrency = options.McpConcurrency;
-        if (concurrency is null)
-        {
-            return ValidateOptionsResult.Fail($"{path} is required.");
-        }
-
-        if (concurrency.PermitLimit is < 1 or > 16)
-        {
-            return ValidateOptionsResult.Fail($"{path}:PermitLimit must be between 1 and 16.");
-        }
-
-        if (concurrency.QueueLimit is < 0 or > 4)
-        {
-            return ValidateOptionsResult.Fail($"{path}:QueueLimit must be between 0 and 4.");
-        }
-
-        // A refresh occupies one MCP permit but can have DiscoveryParallelism
-        // group bodies in flight at once. Every other active MCP permit can also
-        // retain one capped upstream body, so validate the actual worst case.
-        var allowAll = options.ResourcePolicy.Mode == ResourcePolicyMode.AllowAll;
-        var maximumConcurrentBodies = allowAll
-            ? (long)concurrency.PermitLimit - 1 + options.DiscoveryParallelism
-            : concurrency.PermitLimit;
-        var aggregateUpstreamBytes = maximumConcurrentBodies * options.MaxUpstreamBodyBytes;
-        if (aggregateUpstreamBytes > MaximumAggregateUpstreamBodyBytes)
-        {
-            var discoveryDetail = allowAll
-                ? ", including AllowAll discovery parallelism,"
-                : string.Empty;
-            return ValidateOptionsResult.Fail(
-                $"{path}:the worst-case concurrent Kubernetes body count multiplied by {KubeMcpOptions.SectionName}:MaxUpstreamBodyBytes must not exceed {MaximumAggregateUpstreamBodyBytes} bytes{discoveryDetail} while preserving memory headroom within the 256 MiB pod limit.");
-        }
-
-        return null;
-    }
-
-    private static ValidateOptionsResult? ValidateForwardedHeaders(KubeMcpForwardedHeadersOptions forwardedHeaders)
-    {
-        const string path = $"{KubeMcpOptions.SectionName}:ForwardedHeaders";
-
-        if (forwardedHeaders is null)
-        {
-            return ValidateOptionsResult.Fail($"{path} is required.");
-        }
-
-        foreach (var proxy in forwardedHeaders.KnownProxies ?? [])
-        {
-            if (!IPAddress.TryParse(proxy, out _))
-            {
-                return ValidateOptionsResult.Fail(
-                    $"{path}:KnownProxies contains invalid IP address \"{proxy}\".");
-            }
-        }
-
-        foreach (var network in forwardedHeaders.KnownNetworks ?? [])
-        {
-            if (!System.Net.IPNetwork.TryParse(network, out var parsed))
-            {
-                return ValidateOptionsResult.Fail(
-                    $"{path}:KnownNetworks contains invalid CIDR network \"{network}\".");
-            }
-
-            if (parsed.PrefixLength == 0)
-            {
-                return ValidateOptionsResult.Fail(
-                    $"{path}:KnownNetworks must not trust every address with \"{network}\".");
-            }
-        }
-
-        const ForwardedHeaders supportedHeaders =
-            ForwardedHeaders.XForwardedFor |
-            ForwardedHeaders.XForwardedProto |
-            ForwardedHeaders.XForwardedHost;
-        if ((forwardedHeaders.AllowedForwardedHeaders & ~supportedHeaders) != 0)
-        {
-            return ValidateOptionsResult.Fail(
-                $"{path}:AllowedForwardedHeaders may contain only XForwardedFor, XForwardedProto, and XForwardedHost.");
-        }
-
-        return null;
+        return Encoding.UTF8.GetByteCount(authentication.ApiKey) >= 32
+            ? ValidateOptionsResult.Success
+            : ValidateOptionsResult.Fail($"{path}:ApiKey must contain at least 32 bytes in API key mode.");
     }
 
     private static string? ValidateResource(

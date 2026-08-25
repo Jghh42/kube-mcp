@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
 
@@ -39,7 +40,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
-    public async Task LivenessEndpointReportsHealthy()
+    public async Task LivenessEndpointReportsHealthyWithoutForwardedHeaderConfiguration()
     {
         var response = await client.GetAsync("/healthz");
 
@@ -48,11 +49,31 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
-    public void DefaultAllowlistIncludesCoreResourcesOnly()
+    public async Task AllowedHostsUsesDirectHostAndIgnoresForwardedHost()
+    {
+        await using var hostFactory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
+            builder.UseSetting("AllowedHosts", "k-mcp.example.internal");
+        });
+        using var hostClient = hostFactory.CreateClient();
+
+        using var allowed = new HttpRequestMessage(HttpMethod.Get, "/healthz");
+        allowed.Headers.Host = "k-mcp.example.internal";
+        allowed.Headers.TryAddWithoutValidation("X-Forwarded-Host", "evil.example.com");
+        Assert.Equal(HttpStatusCode.OK, (await hostClient.SendAsync(allowed)).StatusCode);
+
+        using var rejected = new HttpRequestMessage(HttpMethod.Get, "/healthz");
+        rejected.Headers.Host = "evil.example.com";
+        rejected.Headers.TryAddWithoutValidation("X-Forwarded-Host", "k-mcp.example.internal");
+        Assert.Equal(HttpStatusCode.BadRequest, (await hostClient.SendAsync(rejected)).StatusCode);
+    }
+
+    [Fact]
+    public void DefaultMappingsIncludeBuiltInResourcesOnly()
     {
         var allowlist = factory.Services.GetRequiredService<ResourceAllowlist>();
 
-        Assert.False(allowlist.AllowsAll);
         Assert.Equal("pods", allowlist.Resolve("pods").QualifiedName);
         Assert.Equal(
             "deployments.apps",
@@ -61,7 +82,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
             "endpointslices.discovery.k8s.io",
             allowlist.Resolve("endpointslices").QualifiedName);
         // Optional CloudNativePG and Traefik CRDs are deliberately excluded from
-        // the default allowlist and shipped as overlays so the default surface
+        // the default mappings and shipped as overlays so the default surface
         // stays small and cannot drift from the default RBAC.
         Assert.Throws<KubernetesReadException>(() => allowlist.Resolve("clusters.postgresql.cnpg.io"));
         Assert.Throws<KubernetesReadException>(() => allowlist.Resolve("ingressroutes.traefik.io"));
@@ -69,7 +90,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
-    public async Task McpEndpointExposesExactlyOneTool()
+    public async Task McpEndpointExposesExactlyOneToolWithoutForwardedHeaderConfiguration()
     {
         await using var transport = new HttpClientTransport(
             new HttpClientTransportOptions
@@ -105,7 +126,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
-    public void TimeoutAndConcurrencyPoliciesAreAttachedOnlyToMcpEndpoints()
+    public void HealthAndMcpRoutesHaveExpectedTimeoutAndNoRateLimiterMetadata()
     {
         _ = client; // Ensure the application and endpoint data source are initialized.
         var timeoutOptions = factory.Services.GetRequiredService<IOptions<RequestTimeoutOptions>>().Value;
@@ -115,24 +136,26 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
 
         var endpoints = factory.Services.GetRequiredService<EndpointDataSource>().Endpoints;
 
-        // Inspect the concrete endpoint route and its timeout metadata without
-        // relying on display names.
+        // Inspect concrete routes without relying on display names. MCP retains
+        // its overall deadline, while health routes remain independent.
         var routed = endpoints.OfType<RouteEndpoint>().ToArray();
         Assert.Contains(routed, endpoint =>
             endpoint.RoutePattern.RawText?.StartsWith("/mcp", StringComparison.Ordinal) == true &&
-            endpoint.Metadata.GetMetadata<RequestTimeoutAttribute>()?.PolicyName == McpRequestTimeoutOptionsSetup.PolicyName &&
-            endpoint.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName == McpConcurrencyRateLimiterOptionsSetup.PolicyName);
+            endpoint.Metadata.GetMetadata<RequestTimeoutAttribute>()?.PolicyName == McpRequestTimeoutOptionsSetup.PolicyName);
+        Assert.Contains(routed, endpoint => endpoint.RoutePattern.RawText == "/healthz");
+        Assert.Contains(routed, endpoint => endpoint.RoutePattern.RawText == "/readyz");
         Assert.DoesNotContain(routed, endpoint =>
             endpoint.RoutePattern.RawText is "/" or "/healthz" or "/readyz" &&
-            (endpoint.Metadata.GetMetadata<RequestTimeoutAttribute>() is not null ||
-             endpoint.Metadata.GetMetadata<EnableRateLimitingAttribute>() is not null));
+            endpoint.Metadata.GetMetadata<RequestTimeoutAttribute>() is not null);
+        Assert.All(routed, endpoint =>
+            Assert.Null(endpoint.Metadata.GetMetadata<EnableRateLimitingAttribute>()));
     }
 
     [Fact]
     public async Task OverallDeadlineCancelsTheReaderAndIsAuditedAsServerTimeout()
     {
         var reader = new CancellationObservingReader();
-        var sink = new CapturingAuditSink();
+        var auditLogs = new CapturingAuditLogProvider();
         await using var timeoutFactory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
@@ -143,7 +166,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
             {
                 services.RemoveAll<IKubernetesReader>();
                 services.AddSingleton<IKubernetesReader>(reader);
-                services.AddSingleton<IAuditSink>(sink);
+                services.AddSingleton<ILoggerProvider>(auditLogs);
             });
         });
         using var timeoutClient = timeoutFactory.CreateClient();
@@ -168,15 +191,15 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
             cancellationToken: CancellationToken.None).AsTask());
 
         await reader.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var audit = await sink.WaitForKubernetesCategoryAsync(AuditCategories.ServerTimeout);
-        Assert.Equal("timeout", audit.Result);
+        var audit = await auditLogs.WaitForCategoryAsync(AuditCategories.ServerTimeout);
+        Assert.Equal("timeout", audit.Properties["Result"]);
     }
 
     [Fact]
     public async Task CallerCancellationPropagatesWithoutBecomingServerTimeout()
     {
         var reader = new CancellationObservingReader();
-        var sink = new CapturingAuditSink();
+        var auditLogs = new CapturingAuditLogProvider();
         await using var cancellationFactory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
@@ -187,7 +210,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
             {
                 services.RemoveAll<IKubernetesReader>();
                 services.AddSingleton<IKubernetesReader>(reader);
-                services.AddSingleton<IAuditSink>(sink);
+                services.AddSingleton<ILoggerProvider>(auditLogs);
             });
         });
         using var cancellationClient = cancellationFactory.CreateClient();
@@ -221,9 +244,10 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
         // the server-side audit category below is the cancellation source of truth.
         await Assert.ThrowsAnyAsync<Exception>(() => call);
         await reader.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var audit = await sink.WaitForKubernetesCategoryAsync(AuditCategories.ClientCancelled);
-        Assert.Equal("cancelled", audit.Result);
-        Assert.DoesNotContain(sink.Snapshot(), record => record.Category == AuditCategories.ServerTimeout);
+        var audit = await auditLogs.WaitForCategoryAsync(AuditCategories.ClientCancelled);
+        Assert.Equal("cancelled", audit.Properties["Result"]);
+        Assert.DoesNotContain(auditLogs.Snapshot(), entry =>
+            Equals(entry.Properties.GetValueOrDefault("Category"), AuditCategories.ServerTimeout));
     }
 
     private sealed record ServiceStatus(string Service, string Status);
@@ -249,49 +273,4 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
         }
     }
 
-    private sealed class CapturingAuditSink : IAuditSink
-    {
-        private readonly object sync = new();
-        private readonly List<AuditRecord> records = [];
-
-        public ValueTask WriteAsync(AuditRecord record, CancellationToken cancellationToken)
-        {
-            lock (sync)
-            {
-                records.Add(record);
-            }
-
-            return ValueTask.CompletedTask;
-        }
-
-        public IReadOnlyList<AuditRecord> Snapshot()
-        {
-            lock (sync)
-            {
-                return records.ToArray();
-            }
-        }
-
-        public async Task<AuditRecord> WaitForKubernetesCategoryAsync(string category)
-        {
-            var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (DateTime.UtcNow < deadline)
-            {
-                lock (sync)
-                {
-                    var found = records.FirstOrDefault(record =>
-                        record.EventType == AuditEventType.KubernetesAccess &&
-                        record.Category == category);
-                    if (found is not null)
-                    {
-                        return found;
-                    }
-                }
-
-                await Task.Delay(10);
-            }
-
-            throw new TimeoutException($"Audit category {category} was not delivered.");
-        }
-    }
 }

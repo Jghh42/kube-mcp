@@ -1,7 +1,5 @@
 using KubeMcp.Configuration;
 using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.IdentityModel.Tokens;
 
 namespace KubeMcp.Authentication;
 
@@ -31,32 +29,6 @@ internal static class AuthenticationConfiguration
                         _ => { });
                 break;
 
-            case AuthenticationMode.OAuthClientCredentials:
-                var oauth = authentication.OAuth;
-                services
-                    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-                    .AddJwtBearer(options =>
-                    {
-                        options.Authority = oauth.Authority.TrimEnd('/');
-                        options.Audience = oauth.Audience;
-                        options.RequireHttpsMetadata = oauth.RequireHttpsMetadata;
-                        options.MapInboundClaims = false;
-                        options.SaveToken = false;
-                        options.TokenValidationParameters = new TokenValidationParameters
-                        {
-                            ValidateIssuer = true,
-                            ValidateAudience = true,
-                            ValidateLifetime = true,
-                            RequireExpirationTime = true,
-                            RequireSignedTokens = true,
-                            ValidateIssuerSigningKey = true,
-                            ClockSkew = TimeSpan.FromSeconds(oauth.ClockSkewSeconds),
-                            NameClaimType = "client_id",
-                            RoleClaimType = "roles"
-                        };
-                    });
-                break;
-
             default:
                 services.AddAuthentication();
                 break;
@@ -64,19 +36,7 @@ internal static class AuthenticationConfiguration
 
         services.AddAuthorization(options =>
         {
-            options.AddPolicy(McpAccessPolicy, policy =>
-            {
-                policy.RequireAuthenticatedUser();
-                if (authentication.Mode == AuthenticationMode.OAuthClientCredentials)
-                {
-                    policy.RequireAssertion(context =>
-                        OAuthClaimEvaluator.HasAllScopes(context.User, authentication.OAuth.RequiredScopes) &&
-                        OAuthClaimEvaluator.HasAllRoles(
-                            context.User,
-                            authentication.OAuth.RequiredRoles,
-                            authentication.OAuth.Audience));
-                }
-            });
+            options.AddPolicy(McpAccessPolicy, policy => policy.RequireAuthenticatedUser());
         });
 
         return authentication.Mode;

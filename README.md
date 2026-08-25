@@ -12,7 +12,7 @@ k8s_get(resource, namespace, name?)
 - Supply `name` to get one resource.
 - Kubernetes Secrets are sanitized; raw values are never returned.
 - Resource policy, namespace policy, and Kubernetes RBAC independently restrict access.
-- Production supports OAuth client credentials or a static bearer API key.
+- Production uses a static bearer API key loaded from a Kubernetes Secret.
 
 ## Quick start
 
@@ -33,13 +33,17 @@ dotnet test --configuration Release --no-build --no-restore
 
 ### Deploy
 
-The reference manifest is production-oriented and requires its example OAuth and host settings to be replaced before use.
+The reference manifest is production-oriented and requires API-key/HMAC Secrets and deployment-specific host settings.
 
 ```sh
 kubectl create namespace kube-mcp --dry-run=client -o yaml | kubectl apply -f -
 kubectl create secret generic kube-mcp-hmac \
   --namespace kube-mcp \
   --from-literal="key=$(openssl rand -base64 32)" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl create secret generic kube-mcp-api-key \
+  --namespace kube-mcp \
+  --from-literal="api-key=$(openssl rand -hex 32)" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl apply --filename deployment.yaml
@@ -53,14 +57,13 @@ Endpoints:
 - Liveness: `http://127.0.0.1:8080/healthz`
 - Readiness: `http://127.0.0.1:8080/readyz`
 
-Use an immutable `ghcr.io/jghh42/kube-mcp:sha-<commit>` image tag for repeatable deployments. The unauthenticated [`deployment-development.yaml`](deployment-development.yaml) overlay is for isolated local clusters only.
+Use an immutable `ghcr.io/jghh42/kube-mcp:sha-<commit>` image tag for repeatable deployments. The unauthenticated [`overlays/development`](overlays/development/) Kustomize overlay is for isolated local clusters only.
 
 ## Documentation
 
 - [Deployment guide](docs/deployment.md)
 - [Configuration reference](docs/configuration.md)
 - [Security model](docs/security.md)
-- [Observability and audit logging](docs/observability.md)
 - [Development, testing, and releases](docs/development.md)
 - [Optional resource and RBAC overlays](overlays/README.md)
 

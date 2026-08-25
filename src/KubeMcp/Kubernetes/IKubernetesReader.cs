@@ -11,5 +11,4 @@ public interface IKubernetesReader
 
 public sealed record KubernetesReadResult(
     string Json,
-    int ObjectCount,
-    bool IsSecret = false);
+    int ObjectCount);

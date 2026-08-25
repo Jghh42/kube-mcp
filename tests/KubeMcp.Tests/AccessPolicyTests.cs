@@ -23,20 +23,7 @@ public sealed class ResourceAllowlistTests
     }
 
     [Fact]
-    public void AllowAllModeIsExplicitAndDoesNotRequireConfiguredMappings()
-    {
-        var allowlist = new ResourceAllowlist(Options.Create(OptionsWithResources(
-            [],
-            resourcePolicy: new ResourcePolicyOptions
-            {
-                Mode = ResourcePolicyMode.AllowAll
-            })));
-
-        Assert.True(allowlist.AllowsAll);
-    }
-
-    [Fact]
-    public void ResolvesConfiguredCrdWithoutApiDiscovery()
+    public void ResolvesExplicitCrdMapping()
     {
         var allowlist = new ResourceAllowlist(Options.Create(OptionsWithResources(
             new Dictionary<string, KubernetesResourceOptions>
@@ -55,17 +42,15 @@ public sealed class ResourceAllowlistTests
 
     internal static KubeMcpOptions OptionsWithResources(
         Dictionary<string, KubernetesResourceOptions> resources,
-        NamespacePolicyOptions? namespacePolicy = null,
-        ResourcePolicyOptions? resourcePolicy = null) => new()
+        NamespacePolicyOptions? namespacePolicy = null) => new()
         {
             SecretHmacKey = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
-            ResourcePolicy = resourcePolicy ?? new ResourcePolicyOptions(),
             AllowedResources = resources,
             NamespacePolicy = namespacePolicy ?? new NamespacePolicyOptions(),
             Authentication = new KubeMcpAuthenticationOptions
             {
-                Mode = AuthenticationMode.None,
-                AllowUnauthenticated = true
+                Mode = AuthenticationMode.ApiKey,
+                ApiKey = "stage-one-test-api-key-32-bytes-minimum"
             }
         };
 
@@ -154,21 +139,6 @@ public sealed class KubeMcpOptionsValidatorTests
     }
 
     [Fact]
-    public void AllowAllModeAcceptsAnEmptyConfiguredAllowlist()
-    {
-        var options = ResourceAllowlistTests.OptionsWithResources(
-            [],
-            resourcePolicy: new ResourcePolicyOptions
-            {
-                Mode = ResourcePolicyMode.AllowAll
-            });
-
-        var result = validator.Validate(null, options);
-
-        Assert.True(result.Succeeded);
-    }
-
-    [Fact]
     public void RejectsInvalidResourceMapping()
     {
         var options = ValidOptions().WithResources(new Dictionary<string, KubernetesResourceOptions>
@@ -201,60 +171,6 @@ public sealed class KubeMcpOptionsValidatorTests
         Assert.True(nullResult.Failed);
         Assert.Contains("Group must not be null", nullResult.FailureMessage);
         Assert.True(coreResult.Succeeded);
-    }
-
-    [Fact]
-    public void RejectsConcurrencyThatExceedsAggregateUpstreamMemoryBudget()
-    {
-        var baseline = ValidOptions();
-        var options = new KubeMcpOptions
-        {
-            SecretHmacKey = baseline.SecretHmacKey,
-            ResourcePolicy = baseline.ResourcePolicy,
-            AllowedResources = baseline.AllowedResources,
-            NamespacePolicy = baseline.NamespacePolicy,
-            Authentication = baseline.Authentication,
-            MaxUpstreamBodyBytes = 8 * 1024 * 1024,
-            McpConcurrency = new McpConcurrencyOptions
-            {
-                PermitLimit = 9,
-                QueueLimit = 1
-            }
-        };
-
-        var result = validator.Validate(null, options);
-
-        Assert.True(result.Failed);
-        Assert.Contains("worst-case concurrent Kubernetes body count", result.FailureMessage);
-    }
-
-    [Theory]
-    [InlineData(0, 0, "PermitLimit")]
-    [InlineData(1, 5, "QueueLimit")]
-    public void RejectsConcurrencyLimitsOutsideValidatedBounds(
-        int permitLimit,
-        int queueLimit,
-        string expectedSetting)
-    {
-        var baseline = ValidOptions();
-        var options = new KubeMcpOptions
-        {
-            SecretHmacKey = baseline.SecretHmacKey,
-            ResourcePolicy = baseline.ResourcePolicy,
-            AllowedResources = baseline.AllowedResources,
-            NamespacePolicy = baseline.NamespacePolicy,
-            Authentication = baseline.Authentication,
-            McpConcurrency = new McpConcurrencyOptions
-            {
-                PermitLimit = permitLimit,
-                QueueLimit = queueLimit
-            }
-        };
-
-        var result = validator.Validate(null, options);
-
-        Assert.True(result.Failed);
-        Assert.Contains(expectedSetting, result.FailureMessage);
     }
 
     [Theory]
@@ -400,14 +316,11 @@ file static class OptionsTestExtensions
         Dictionary<string, KubernetesResourceOptions> resources) => new()
         {
             SecretHmacKey = options.SecretHmacKey,
-            ResourcePolicy = options.ResourcePolicy,
             AllowedResources = resources,
             NamespacePolicy = options.NamespacePolicy,
             Authentication = options.Authentication,
-            ForwardedHeaders = options.ForwardedHeaders,
             MaxListItems = options.MaxListItems,
             MaxResponseBytes = options.MaxResponseBytes,
             KubernetesRequestTimeoutSeconds = options.KubernetesRequestTimeoutSeconds,
-            DiscoveryCacheSeconds = options.DiscoveryCacheSeconds
         };
 }

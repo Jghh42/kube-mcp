@@ -26,7 +26,7 @@ public sealed class AuthenticationOptionsValidatorTests
     }
 
     [Fact]
-    public void NoneModeIsRejectedInProductionWithoutTheExplicitOptIn()
+    public void NoneModeIsRejectedInProduction()
     {
         var result = productionValidator.Validate(null, Options(new KubeMcpAuthenticationOptions
         {
@@ -35,19 +35,7 @@ public sealed class AuthenticationOptionsValidatorTests
 
         Assert.True(result.Failed);
         Assert.Contains("not permitted outside the Development environment", result.FailureMessage);
-        Assert.Contains("AllowUnauthenticated=true", result.FailureMessage);
-    }
-
-    [Fact]
-    public void NoneModeIsAllowedInProductionWithTheExplicitOptIn()
-    {
-        var result = productionValidator.Validate(null, Options(new KubeMcpAuthenticationOptions
-        {
-            Mode = AuthenticationMode.None,
-            AllowUnauthenticated = true
-        }));
-
-        Assert.True(result.Succeeded);
+        Assert.Contains("Set Mode to ApiKey", result.FailureMessage);
     }
 
     [Fact]
@@ -63,86 +51,13 @@ public sealed class AuthenticationOptionsValidatorTests
         Assert.Contains("at least 32 bytes", result.FailureMessage);
     }
 
-    [Fact]
-    public void OAuthModeRequiresHttpsAudienceAndPermission()
-    {
-        var insecure = developmentValidator.Validate(null, OAuthOptions("http://identity.test", "k-mcp", ["k-mcp:read"]));
-        var missingAudience = developmentValidator.Validate(null, OAuthOptions("https://identity.test", "", ["k-mcp:read"]));
-        var missingPermission = developmentValidator.Validate(null, OAuthOptions("https://identity.test", "k-mcp", []));
-
-        Assert.Contains("must use HTTPS", insecure.FailureMessage);
-        Assert.Contains("Audience is required", missingAudience.FailureMessage);
-        Assert.Contains("at least one scope or role", missingPermission.FailureMessage);
-    }
-
-    [Fact]
-    public void ForwardedHeadersRejectInvalidProxiesAndNetworks()
-    {
-        var badProxy = productionValidator.Validate(null, OptionsWithForwardedHeaders(knownProxies: ["not-an-ip"]));
-        var badNetwork = productionValidator.Validate(null, OptionsWithForwardedHeaders(knownNetworks: ["10.0.0.0/not-a-cidr"]));
-
-        Assert.Contains("KnownProxies contains invalid IP address", badProxy.FailureMessage);
-        Assert.Contains("KnownNetworks contains invalid CIDR network", badNetwork.FailureMessage);
-    }
-
-    [Fact]
-    public void ForwardedHeadersAcceptValidProxiesAndNetworks()
-    {
-        var result = productionValidator.Validate(null, OptionsWithForwardedHeaders(
-            knownProxies: ["10.0.0.5", "192.168.1.1"],
-            knownNetworks: ["10.0.0.0/8", "2001:db8::/32"]));
-
-        Assert.True(result.Succeeded);
-    }
-
-    [Theory]
-    [InlineData("0.0.0.0/0")]
-    [InlineData("::/0")]
-    public void ForwardedHeadersRejectTrustAllNetworks(string network)
-    {
-        var result = productionValidator.Validate(
-            null,
-            OptionsWithForwardedHeaders(knownNetworks: [network]));
-
-        Assert.Contains("must not trust every address", result.FailureMessage);
-    }
-
-    private static KubeMcpOptions OAuthOptions(string authority, string audience, string[] scopes) =>
-        Options(new KubeMcpAuthenticationOptions
-        {
-            Mode = AuthenticationMode.OAuthClientCredentials,
-            OAuth = new OAuthOptions
-            {
-                Authority = authority,
-                Audience = audience,
-                RequiredScopes = scopes,
-                RequiredRoles = []
-            }
-        });
-
-    private static KubeMcpOptions OptionsWithForwardedHeaders(
-        string[]? knownProxies = null,
-        string[]? knownNetworks = null) =>
-        new()
-        {
-            SecretHmacKey = TestHmacKey,
-            ResourcePolicy = new ResourcePolicyOptions { Mode = ResourcePolicyMode.AllowAll },
-            Authentication = new KubeMcpAuthenticationOptions
-            {
-                Mode = AuthenticationMode.ApiKey,
-                ApiKey = "stage-five-test-api-key-32-bytes-minimum"
-            },
-            ForwardedHeaders = new KubeMcpForwardedHeadersOptions
-            {
-                KnownProxies = knownProxies ?? [],
-                KnownNetworks = knownNetworks ?? []
-            }
-        };
-
     private static KubeMcpOptions Options(KubeMcpAuthenticationOptions authentication) => new()
     {
         SecretHmacKey = TestHmacKey,
-        ResourcePolicy = new ResourcePolicyOptions { Mode = ResourcePolicyMode.AllowAll },
+        AllowedResources = new Dictionary<string, KubernetesResourceOptions>
+        {
+            ["pods"] = new() { Group = "", Version = "v1", Resource = "pods", Kind = "Pod" }
+        },
         Authentication = authentication
     };
 }

@@ -105,57 +105,25 @@ spec:
             - name: DOTNET_ENVIRONMENT
               value: Production
             # Reference production deployment: the MCP endpoint is fail-closed.
-            # AuthenticationMode.None is rejected outside the Development
-            # environment unless KubeMcp:Authentication:AllowUnauthenticated is
-            # explicitly enabled, so this manifest must authenticate. It uses
-            # OAuth client credentials (spec sections 8-10); replace the Keycloak
-            # realm URL below. Without valid OAuth settings every /mcp request
-            # returns 401. See README for the static API-key alternative and the
-            # development overlay (deployment-development.yaml) for Mode=None.
+            # AuthenticationMode.None is rejected outside Development, and the
+            # API key is loaded only from a Kubernetes Secret.
             - name: KubeMcp__Authentication__Mode
-              value: OAuthClientCredentials
-            - name: KubeMcp__Authentication__OAuth__Authority
-              value: https://keycloak.example.internal/realms/kube-mcp
-            - name: KubeMcp__Authentication__OAuth__Audience
-              value: k-mcp
-            - name: KubeMcp__Authentication__OAuth__RequiredScopes__0
-              value: k-mcp:read
-            - name: KubeMcp__Authentication__OAuth__RequiredRoles__0
-              value: k-mcp:read
-            - name: KubeMcp__Authentication__OAuth__RequireHttpsMetadata
-              value: "true"
+              value: ApiKey
+            - name: KubeMcp__Authentication__ApiKey
+              valueFrom:
+                secretKeyRef:
+                  name: kube-mcp-api-key
+                  key: api-key
             - name: KubeMcp__SecretHmacKey
               valueFrom:
                 secretKeyRef:
                   name: kube-mcp-hmac
                   key: key
-            # Cheap outer admission bounds authentication work before the smaller
-            # authenticated MCP/Kubernetes limiter. Both queues are oldest-first;
-            # overflow receives 429. The request body cap remains fixed at 64KiB.
-            - name: KubeMcp__McpAdmission__PermitLimit
-              value: "16"
-            - name: KubeMcp__McpAdmission__QueueLimit
-              value: "16"
-            # At most two authenticated requests execute MCP/Kubernetes work and
-            # two wait. Keep PermitLimit * MaxUpstreamBodyBytes at or below the
-            # validated 64Mi aggregate upstream-body budget for this 256Mi pod.
-            - name: KubeMcp__McpConcurrency__PermitLimit
-              value: "2"
-            - name: KubeMcp__McpConcurrency__QueueLimit
-              value: "2"
-            # AllowedHosts: production hostname(s) plus in-cluster and localhost
-            # names. Replace k-mcp.example.internal with your real hostname(s);
-            # multiple values are semicolon-separated. Required behind an ingress.
+            # Standard ASP.NET Core host filtering remains enabled. Replace
+            # k-mcp.example.internal with the internal hostname presented to the
+            # application; multiple values are semicolon-separated.
             - name: AllowedHosts
               value: "k-mcp.example.internal;kube-mcp;kube-mcp.kube-mcp;kube-mcp.kube-mcp.svc;kube-mcp.kube-mcp.svc.cluster.local;localhost;127.0.0.1;[::1]"
-            # Forwarded headers are honored only from explicit, known proxies and
-            # loopback (never every proxy). To run behind a reverse proxy, set its
-            # IP/CIDR so audit records see the originating client and the app
-            # validates the forwarded production host.
-            #   - name: KubeMcp__ForwardedHeaders__KnownProxies__0
-            #     value: 10.0.0.5
-            #   - name: KubeMcp__ForwardedHeaders__KnownNetworks__0
-            #     value: 10.0.0.0/8
           ports:
             - name: http
               containerPort: 8080
@@ -169,8 +137,8 @@ spec:
                   value: kube-mcp
             initialDelaySeconds: 2
             periodSeconds: 5
-            # Must exceed the application's internal 2s Kubernetes readiness deadline.
-            timeoutSeconds: 3
+            # Process-only probe; Kubernetes access is checked safely per MCP request.
+            timeoutSeconds: 1
           livenessProbe:
             httpGet:
               path: /healthz

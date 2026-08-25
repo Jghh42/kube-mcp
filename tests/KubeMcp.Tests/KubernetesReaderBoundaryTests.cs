@@ -25,16 +25,9 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
     public string? LastListContinueToken { get; private set; }
     public byte[]? LastGetBodyBytes { get; private set; }
     public byte[]? LastListBodyBytes { get; private set; }
-    public bool CoreResourcesComplete { get; set; } = true;
-    public bool ApiGroupsComplete { get; set; } = true;
-    public bool GroupResourcesComplete { get; set; } = true;
 
     public Func<KubernetesResourceDescriptor, string, string, int, CancellationToken, Task<string>>? GetHandler { get; set; }
     public Func<KubernetesResourceDescriptor, string, int, string?, int, CancellationToken, Task<string>>? ListHandler { get; set; }
-    public Func<CancellationToken, Task<IReadOnlyList<ApiResourceInfo>>>? CoreResourcesHandler { get; set; }
-    public Func<CancellationToken, Task<IReadOnlyList<ApiGroupInfo>>>? ApiGroupsHandler { get; set; }
-    public Func<string, string, CancellationToken, Task<IReadOnlyList<ApiResourceInfo>>>? GroupResourcesHandler { get; set; }
-    public Func<KubernetesResourceDescriptor, string, string?, CancellationToken, Task<bool>>? ResourceAccessHandler { get; set; }
     public Func<string, string, CancellationToken, Task<bool>>? NamespaceLabelHandler { get; set; }
 
     public async Task<ReadOnlyMemory<byte>> GetNamespacedAsync(
@@ -64,54 +57,6 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
             : await ListHandler(descriptor, @namespace, pageSize, continueToken, maxBodyBytes, cancellationToken).ConfigureAwait(false);
         LastListBodyBytes = Encoding.UTF8.GetBytes(body);
         return LastListBodyBytes;
-    }
-
-    public async Task<ApiDiscoveryResult<ApiResourceInfo>> GetCoreResourcesAsync(
-        int maxBodyBytes,
-        CancellationToken cancellationToken)
-    {
-        Record("DISCOVERY core");
-        var items = CoreResourcesHandler is null
-            ? []
-            : await CoreResourcesHandler(cancellationToken).ConfigureAwait(false);
-        return new ApiDiscoveryResult<ApiResourceInfo>(items, CoreResourcesComplete);
-    }
-
-    public async Task<ApiDiscoveryResult<ApiGroupInfo>> GetApiGroupsAsync(
-        int maxBodyBytes,
-        CancellationToken cancellationToken)
-    {
-        Record("DISCOVERY groups");
-        var items = ApiGroupsHandler is null
-            ? []
-            : await ApiGroupsHandler(cancellationToken).ConfigureAwait(false);
-        return new ApiDiscoveryResult<ApiGroupInfo>(items, ApiGroupsComplete);
-    }
-
-    public async Task<ApiDiscoveryResult<ApiResourceInfo>> GetGroupResourcesAsync(
-        string group,
-        string version,
-        int maxBodyBytes,
-        CancellationToken cancellationToken)
-    {
-        Record($"DISCOVERY group {group}/{version}");
-        var items = GroupResourcesHandler is null
-            ? []
-            : await GroupResourcesHandler(group, version, cancellationToken).ConfigureAwait(false);
-        return new ApiDiscoveryResult<ApiResourceInfo>(items, GroupResourcesComplete);
-    }
-
-    public async Task<bool> IsResourceAccessAllowedAsync(
-        KubernetesResourceDescriptor descriptor,
-        string verb,
-        string? @namespace,
-        int maxBodyBytes,
-        CancellationToken cancellationToken)
-    {
-        Record($"AUTH {verb} {descriptor.QualifiedName} namespace={@namespace ?? "<cluster>"} maxBody={maxBodyBytes}");
-        return ResourceAccessHandler is null
-            ? true
-            : await ResourceAccessHandler(descriptor, verb, @namespace, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<bool> NamespaceMatchesLabelSelectorAsync(
@@ -185,7 +130,6 @@ internal sealed class ReaderHost : IDisposable
             namespacePolicy,
             Microsoft.Extensions.Options.Options.Create(options),
             new SimpleFactory(Api),
-            Time,
             NullLogger<KubernetesReader>.Instance);
     }
 
@@ -211,19 +155,15 @@ internal static class ReaderTestOptions
 
     public static KubeMcpOptions Options(
         Dictionary<string, KubernetesResourceOptions>? resources = null,
-        ResourcePolicyMode mode = ResourcePolicyMode.Allowlist,
         NamespacePolicyOptions? namespacePolicy = null,
         int maxListItems = 100,
         int maxResponseBytes = 1024 * 1024,
         int listPageSize = 50,
         int maxListPages = 20,
         int secretListPageSize = 10,
-        int discoveryCacheSeconds = 300,
-        int discoveryParallelism = 4,
         int kubernetesRequestTimeoutSeconds = 15) => new()
         {
             SecretHmacKey = HmacKey,
-            ResourcePolicy = new ResourcePolicyOptions { Mode = mode },
             AllowedResources = resources ?? new() { ["pods"] = R("", "v1", "pods", "Pod") },
             NamespacePolicy = namespacePolicy ?? new NamespacePolicyOptions(),
             MaxListItems = maxListItems,
@@ -232,8 +172,6 @@ internal static class ReaderTestOptions
             ListPageSize = listPageSize,
             MaxListPages = maxListPages,
             SecretListPageSize = secretListPageSize,
-            DiscoveryCacheSeconds = discoveryCacheSeconds,
-            DiscoveryParallelism = discoveryParallelism,
             KubernetesRequestTimeoutSeconds = kubernetesRequestTimeoutSeconds
         };
 }
@@ -325,9 +263,7 @@ internal static class KubernetesJson
         return root.ToJsonString();
     }
 
-    public static ApiResourceInfo Resource(
-        string name, string singular, string kind, params string[] verbs) =>
-        new(name, singular, kind, Namespaced: true, ShortNames: null, Verbs: verbs);
+
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +291,6 @@ public sealed class KubernetesBoundaryOptionsTests
         var options = new KubeMcpOptions
         {
             SecretHmacKey = baseline.SecretHmacKey,
-            ResourcePolicy = baseline.ResourcePolicy,
             AllowedResources = baseline.AllowedResources,
             NamespacePolicy = baseline.NamespacePolicy,
             KubernetesRequestTimeoutSeconds = 15,
@@ -378,7 +313,6 @@ public sealed class KubernetesBoundaryOptionsTests
         var options = new KubeMcpOptions
         {
             SecretHmacKey = baseline.SecretHmacKey,
-            ResourcePolicy = baseline.ResourcePolicy,
             AllowedResources = baseline.AllowedResources,
             NamespacePolicy = baseline.NamespacePolicy,
             KubernetesRequestTimeoutSeconds = 15,
@@ -393,85 +327,12 @@ public sealed class KubernetesBoundaryOptionsTests
     }
 
     [Fact]
-    public void AllowAllDiscoveryBodiesAreIncludedInAggregateMemoryBudget()
-    {
-        var baseline = ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll);
-        var options = new KubeMcpOptions
-        {
-            SecretHmacKey = baseline.SecretHmacKey,
-            ResourcePolicy = baseline.ResourcePolicy,
-            AllowedResources = baseline.AllowedResources,
-            NamespacePolicy = baseline.NamespacePolicy,
-            Authentication = new KubeMcpAuthenticationOptions { Mode = AuthenticationMode.None },
-            MaxUpstreamBodyBytes = 8 * 1024 * 1024,
-            DiscoveryParallelism = 8,
-            McpConcurrency = new McpConcurrencyOptions { PermitLimit = 2 }
-        };
-
-        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
-            .Validate(null, options);
-
-        Assert.True(result.Failed);
-        Assert.Contains("AllowAll discovery parallelism", result.FailureMessage);
-    }
-
-    [Fact]
-    public void OuterAdmissionMustCoverAuthenticatedPermitsAndQueue()
-    {
-        var baseline = ReaderTestOptions.Options();
-        var options = new KubeMcpOptions
-        {
-            SecretHmacKey = baseline.SecretHmacKey,
-            ResourcePolicy = baseline.ResourcePolicy,
-            AllowedResources = baseline.AllowedResources,
-            NamespacePolicy = baseline.NamespacePolicy,
-            McpAdmission = new McpAdmissionOptions
-            {
-                PermitLimit = 2,
-                QueueLimit = 0
-            },
-            McpConcurrency = new McpConcurrencyOptions
-            {
-                PermitLimit = 2,
-                QueueLimit = 1
-            }
-        };
-
-        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
-            .Validate(null, options);
-
-        Assert.True(result.Failed);
-        Assert.Contains("plus QueueLimit (3)", result.FailureMessage);
-    }
-
-    [Fact]
-    public void InvalidReadinessNamespaceIsRejected()
-    {
-        var baseline = ReaderTestOptions.Options();
-        var options = new KubeMcpOptions
-        {
-            SecretHmacKey = baseline.SecretHmacKey,
-            ReadinessNamespace = "Not A Namespace",
-            ResourcePolicy = baseline.ResourcePolicy,
-            AllowedResources = baseline.AllowedResources,
-            NamespacePolicy = baseline.NamespacePolicy
-        };
-
-        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
-            .Validate(null, options);
-
-        Assert.True(result.Failed);
-        Assert.Contains("ReadinessNamespace", result.FailureMessage);
-    }
-
-    [Fact]
     public void UpstreamBodyBudgetCannotBeSmallerThanSafeOutputBudget()
     {
         var valid = ReaderTestOptions.Options(maxResponseBytes: 128 * 1024);
         var options = new KubeMcpOptions
         {
             SecretHmacKey = valid.SecretHmacKey,
-            ResourcePolicy = valid.ResourcePolicy,
             AllowedResources = valid.AllowedResources,
             NamespacePolicy = valid.NamespacePolicy,
             MaxResponseBytes = valid.MaxResponseBytes,
@@ -495,7 +356,7 @@ public sealed class KubernetesReaderPolicyAndOrderTests
     [Fact]
     public async Task OversizedResourceIsRejectedBeforePolicyOrKubernetesCalls()
     {
-        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
+        using var host = new ReaderHost(ReaderTestOptions.Options());
         var oversized = new string('r', KubernetesNameValidator.MaximumQualifiedNameLength + 1);
 
         var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
@@ -507,9 +368,14 @@ public sealed class KubernetesReaderPolicyAndOrderTests
     }
 
     [Fact]
-    public async Task AllowlistDenialMakesNoKubernetesCall()
+    public async Task UnknownResourceIsDeniedBeforeAnyKubernetesCall()
     {
-        using var host = new ReaderHost(ReaderTestOptions.Options());
+        var options = ReaderTestOptions.Options(namespacePolicy: new NamespacePolicyOptions
+        {
+            Mode = NamespacePolicyMode.LabelSelector,
+            LabelSelector = "env=prod"
+        });
+        using var host = new ReaderHost(options);
         var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
             host.Reader.ReadAsync("jobs", "production", null, CancellationToken.None));
 
@@ -572,33 +438,9 @@ public sealed class KubernetesReaderPolicyAndOrderTests
 
         Assert.StartsWith("NSCHECK", host.Api.Calls[0]);
         Assert.StartsWith("LIST", host.Api.Calls[1]);
-        Assert.DoesNotContain(host.Api.Calls, c => c.StartsWith("DISCOVERY"));
     }
 
-    [Fact]
-    public async Task LabelCheckRunsBeforeDiscoveryInAllowAllMode()
-    {
-        var options = ReaderTestOptions.Options(
-            mode: ResourcePolicyMode.AllowAll,
-            namespacePolicy: new NamespacePolicyOptions
-            {
-                Mode = NamespacePolicyMode.LabelSelector,
-                LabelSelector = "env=prod"
-            });
 
-        using var host = new ReaderHost(options);
-        host.Api.NamespaceLabelHandler = (_, _, _) => Task.FromResult(true);
-        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
-            [KubernetesJson.Resource("pods", "pod", "Pod", "get", "list")]);
-        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(KubernetesJson.ListBody([KubernetesJson.PodItem("p1")], null));
-
-        await host.Reader.ReadAsync("pods", "production", null, CancellationToken.None);
-
-        var namespaceCheckIndex = host.Api.Calls.FindIndex(c => c.StartsWith("NSCHECK"));
-        var discoveryIndex = host.Api.Calls.FindIndex(c => c.StartsWith("DISCOVERY"));
-        Assert.True(namespaceCheckIndex >= 0 && discoveryIndex >= 0);
-        Assert.True(namespaceCheckIndex < discoveryIndex);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -631,33 +473,7 @@ public sealed class KubernetesReaderGetListTests
         Assert.DoesNotContain(host.Api.Calls, c => c.StartsWith("GET"));
     }
 
-    [Fact]
-    public async Task AllowAllRequiresGetVerbForNamedRequest()
-    {
-        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
-        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
-            [KubernetesJson.Resource("pods", "pod", "Pod", "list")]); // no "get" verb
 
-        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
-            host.Reader.ReadAsync("pods", "production", "web-1", CancellationToken.None));
-
-        Assert.Equal(KubernetesErrorCategory.NotFound, exception.Category);
-        Assert.DoesNotContain(host.Api.Calls, c => c.StartsWith("GET"));
-    }
-
-    [Fact]
-    public async Task AllowAllRequiresListVerbForUnnamedRequest()
-    {
-        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
-        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
-            [KubernetesJson.Resource("pods", "pod", "Pod", "get")]); // no "list" verb
-
-        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
-            host.Reader.ReadAsync("pods", "production", null, CancellationToken.None));
-
-        Assert.Equal(KubernetesErrorCategory.NotFound, exception.Category);
-        Assert.DoesNotContain(host.Api.Calls, c => c.StartsWith("LIST"));
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1358,7 +1174,7 @@ public sealed class KubernetesReaderPaginationTests
     }
 
     [Fact]
-    public async Task ListPreservesCallerAliasAndExposesCanonicalResource()
+    public async Task ListPreservesConfiguredNameAndExposesCanonicalResource()
     {
         var options = ReaderTestOptions.Options(resources: new()
         {
@@ -1373,332 +1189,5 @@ public sealed class KubernetesReaderPaginationTests
         using var document = JsonDocument.Parse(result.Json);
         Assert.Equal("cnpg-clusters", document.RootElement.GetProperty("resource").GetString());
         Assert.Equal("clusters.postgresql.cnpg.io", document.RootElement.GetProperty("canonicalResource").GetString());
-    }
-}
-
-// ---------------------------------------------------------------------------
-// AllowAll discovery hardening (P2-05)
-// ---------------------------------------------------------------------------
-
-public sealed class KubernetesReaderDiscoveryTests
-{
-    [Fact]
-    public async Task DiscoveryServesAllGroupsAndResolvesGroupedResource()
-    {
-        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
-        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
-            [KubernetesJson.Resource("pods", "pod", "Pod", "get", "list")]);
-        host.Api.ApiGroupsHandler = _ => Task.FromResult<IReadOnlyList<ApiGroupInfo>>(
-            [new("apps", "v1"), new("batch", "v1")]);
-        host.Api.GroupResourcesHandler = (group, _, _) => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(group switch
-        {
-            "apps" => [KubernetesJson.Resource("deployments", "deployment", "Deployment", "get", "list")],
-            "batch" => [KubernetesJson.Resource("jobs", "job", "Job", "get", "list")],
-            _ => []
-        });
-        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
-            KubernetesJson.ListBody([], null, "apps/v1", "DeploymentList"));
-
-        await host.Reader.ReadAsync("deployments", "production", null, CancellationToken.None);
-
-        Assert.Contains(host.Api.Calls, c => c == "DISCOVERY core");
-        Assert.Contains(host.Api.Calls, c => c == "DISCOVERY groups");
-        Assert.Contains(host.Api.Calls, c => c == "DISCOVERY group apps/v1");
-        Assert.Contains(host.Api.Calls, c => c == "DISCOVERY group batch/v1");
-        Assert.Contains(host.Api.Calls, c => c.StartsWith("LIST deployments.apps"));
-    }
-
-    [Fact]
-    public async Task DiscoveryToleratesPartialGroupFailureWithoutAborting()
-    {
-        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
-        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
-            [KubernetesJson.Resource("pods", "pod", "Pod", "get", "list")]);
-        host.Api.ApiGroupsHandler = _ => Task.FromResult<IReadOnlyList<ApiGroupInfo>>(
-            [new("apps", "v1"), new("broken.example", "v1"), new("batch", "v1")]);
-        host.Api.GroupResourcesHandler = (group, _, _) => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(group switch
-        {
-            "apps" => [KubernetesJson.Resource("deployments", "deployment", "Deployment", "get", "list")],
-            "batch" => [KubernetesJson.Resource("jobs", "job", "Job", "get", "list")],
-            "broken.example" => throw new KubernetesApiException(
-                KubernetesErrorCategory.ServerError,
-                KubernetesApi.SafeMessage(KubernetesErrorCategory.ServerError),
-                503),
-            _ => []
-        });
-        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
-            KubernetesJson.ListBody([], null, "batch/v1", "JobList"));
-
-        var jobsResult = await host.Reader.ReadAsync("jobs.batch", "production", null, CancellationToken.None);
-        Assert.NotNull(jobsResult);
-
-        // A short alias is unavailable while discovery is incomplete because the
-        // failed group could contain a colliding alias. Canonical healthy-group
-        // resources remain available.
-        var shortAlias = await Assert.ThrowsAsync<KubernetesReadException>(() =>
-            host.Reader.ReadAsync("jobs", "production", null, CancellationToken.None));
-        Assert.Equal(KubernetesErrorCategory.NotFound, shortAlias.Category);
-
-        // The failed group's resource is not discoverable (access reduced, not expanded).
-        var broken = await Assert.ThrowsAsync<KubernetesReadException>(() =>
-            host.Reader.ReadAsync("widgets", "production", null, CancellationToken.None));
-        Assert.Equal(KubernetesErrorCategory.NotFound, broken.Category);
-    }
-
-    [Fact]
-    public async Task IncompleteGroupIndexNeverExpandsAliases()
-    {
-        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
-        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>([]);
-        host.Api.ApiGroupsComplete = false;
-        host.Api.ApiGroupsHandler = _ => Task.FromResult<IReadOnlyList<ApiGroupInfo>>([new("apps", "v1")]);
-        host.Api.GroupResourcesHandler = (_, _, _) => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
-            [new ApiResourceInfo(
-                "deployments",
-                "deployment",
-                "Deployment",
-                Namespaced: true,
-                ShortNames: ["deploy"],
-                Verbs: ["list"])]);
-
-        await host.Reader.ReadAsync("deployments.apps", "production", null, CancellationToken.None);
-        var alias = await Assert.ThrowsAsync<KubernetesReadException>(() =>
-            host.Reader.ReadAsync("deploy", "production", null, CancellationToken.None));
-
-        Assert.Equal(KubernetesErrorCategory.NotFound, alias.Category);
-    }
-
-    [Fact]
-    public async Task PerDocumentResourceCapMarksDiscoveryIncomplete()
-    {
-        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
-        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>([]);
-        host.Api.ApiGroupsHandler = _ => Task.FromResult<IReadOnlyList<ApiGroupInfo>>([new("example.io", "v1")]);
-        host.Api.GroupResourcesHandler = (_, _, _) => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
-            Enumerable.Range(0, KubernetesApi.MaximumResourcesPerDiscoveryDocument + 1)
-                .Select(index => new ApiResourceInfo(
-                    $"widgets-{index}",
-                    $"widget-{index}",
-                    "Widget",
-                    Namespaced: true,
-                    ShortNames: index == 0 ? ["target"] : null,
-                    Verbs: ["list"]))
-                .ToArray());
-
-        await host.Reader.ReadAsync("widgets-0.example.io", "production", null, CancellationToken.None);
-        var alias = await Assert.ThrowsAsync<KubernetesReadException>(() =>
-            host.Reader.ReadAsync("target", "production", null, CancellationToken.None));
-
-        Assert.Equal(KubernetesErrorCategory.NotFound, alias.Category);
-    }
-
-    [Fact]
-    public async Task AggregateDiscoveryCacheCapStopsGrowthAndDisablesAliases()
-    {
-        var options = ReaderTestOptions.Options(
-            mode: ResourcePolicyMode.AllowAll,
-            discoveryParallelism: 1);
-        using var host = new ReaderHost(options);
-        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
-            Enumerable.Range(0, KubernetesApi.MaximumResourcesPerDiscoveryDocument)
-                .Select(index => KubernetesJson.Resource(
-                    $"core-{index}",
-                    $"core-{index}",
-                    "CoreThing",
-                    "list"))
-                .ToArray());
-        host.Api.ApiGroupsHandler = _ => Task.FromResult<IReadOnlyList<ApiGroupInfo>>(
-            [new("g1.example", "v1"), new("g2.example", "v1")]);
-        host.Api.GroupResourcesHandler = (group, _, _) => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
-            Enumerable.Range(0, KubernetesApi.MaximumResourcesPerDiscoveryDocument)
-                .Select(index => new ApiResourceInfo(
-                    $"items-{index}",
-                    $"item-{index}",
-                    "Item",
-                    Namespaced: true,
-                    ShortNames: group == "g1.example" && index == 0 ? ["target"] : null,
-                    Verbs: ["list"]))
-                .ToArray());
-
-        await host.Reader.ReadAsync("items-0.g1.example", "production", null, CancellationToken.None);
-        var alias = await Assert.ThrowsAsync<KubernetesReadException>(() =>
-            host.Reader.ReadAsync("target", "production", null, CancellationToken.None));
-
-        Assert.Equal(KubernetesErrorCategory.NotFound, alias.Category);
-        Assert.DoesNotContain(host.Api.Calls, call => call == "DISCOVERY group g2.example/v1");
-    }
-
-    [Fact]
-    public async Task DiscoveryServesStaleCacheOnTotalRefreshFailure()
-    {
-        var options = ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll, discoveryCacheSeconds: 60);
-        using var host = new ReaderHost(options);
-
-        var coreCallCount = 0;
-        host.Api.CoreResourcesHandler = _ =>
-        {
-            coreCallCount++;
-            return coreCallCount == 1
-                ? Task.FromResult<IReadOnlyList<ApiResourceInfo>>([KubernetesJson.Resource("pods", "pod", "Pod", "get", "list")])
-                : throw new KubernetesApiException(
-                    KubernetesErrorCategory.ServerError,
-                    KubernetesApi.SafeMessage(KubernetesErrorCategory.ServerError),
-                    503);
-        };
-        host.Api.ApiGroupsHandler = _ => Task.FromResult<IReadOnlyList<ApiGroupInfo>>([]);
-        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(KubernetesJson.ListBody([], null));
-
-        // First request populates the cache.
-        await host.Reader.ReadAsync("pods", "production", null, CancellationToken.None);
-
-        // Advance past the TTL so a refresh is required.
-        host.Time.Advance(TimeSpan.FromSeconds(61));
-
-        // The refresh fails (core discovery throws), but the stale cache is served.
-        var result = await host.Reader.ReadAsync("pods", "production", null, CancellationToken.None);
-
-        Assert.NotNull(result);
-        Assert.Contains(host.Api.Calls, c => c.StartsWith("LIST pods"));
-
-        // The stale fallback gets a short retry window, preventing every caller
-        // from immediately repeating the failed refresh.
-        await host.Reader.ReadAsync("pods", "production", null, CancellationToken.None);
-        Assert.Equal(2, coreCallCount);
-    }
-
-    [Theory]
-    [InlineData(KubernetesErrorCategory.AccessDenied)]
-    [InlineData(KubernetesErrorCategory.MalformedResponse)]
-    [InlineData(KubernetesErrorCategory.NetworkError)]
-    [InlineData(KubernetesErrorCategory.ResponseTooLarge)]
-    public async Task InitialCoreDiscoveryFailurePreservesSafeCategory(
-        KubernetesErrorCategory category)
-    {
-        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
-        host.Api.CoreResourcesHandler = _ => throw new KubernetesApiException(
-            category,
-            "unsafe-adapter-message");
-
-        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
-            host.Reader.ReadAsync("pods", "production", null, CancellationToken.None));
-
-        Assert.Equal(category, exception.Category);
-        Assert.Equal(KubernetesApi.SafeMessage(category), exception.Message);
-        Assert.DoesNotContain("unsafe-adapter-message", exception.ToString());
-    }
-
-    [Fact]
-    public async Task DiscoveryFailsClosedWhenNoCacheAndCoreUnavailable()
-    {
-        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
-        host.Api.CoreResourcesHandler = _ => throw new KubernetesApiException(
-            KubernetesErrorCategory.ServerError,
-            KubernetesApi.SafeMessage(KubernetesErrorCategory.ServerError),
-            503);
-
-        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
-            host.Reader.ReadAsync("pods", "production", null, CancellationToken.None));
-
-        Assert.Equal(KubernetesErrorCategory.ServerError, exception.Category);
-        Assert.DoesNotContain(host.Api.Calls, c => c.StartsWith("LIST"));
-    }
-
-    [Fact]
-    public async Task DiscoveryIsCachedWithinTtl()
-    {
-        var options = ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll, discoveryCacheSeconds: 60);
-        using var host = new ReaderHost(options);
-        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
-            [KubernetesJson.Resource("pods", "pod", "Pod", "get", "list")]);
-        host.Api.ApiGroupsHandler = _ => Task.FromResult<IReadOnlyList<ApiGroupInfo>>([]);
-        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(KubernetesJson.ListBody([], null));
-
-        await host.Reader.ReadAsync("pods", "production", null, CancellationToken.None);
-        host.Api.Calls.Clear();
-
-        await host.Reader.ReadAsync("pods", "production", null, CancellationToken.None);
-
-        Assert.DoesNotContain(host.Api.Calls, c => c.StartsWith("DISCOVERY"));
-        Assert.Contains(host.Api.Calls, c => c.StartsWith("LIST pods"));
-    }
-
-    [Fact]
-    public async Task DiscoveryReportsAmbiguousResourceAsInvalidRequest()
-    {
-        using var host = new ReaderHost(ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll));
-        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>([]);
-        host.Api.ApiGroupsHandler = _ => Task.FromResult<IReadOnlyList<ApiGroupInfo>>(
-            [new("g1", "v1"), new("g2", "v1")]);
-        host.Api.GroupResourcesHandler = (group, _, _) => Task.FromResult<IReadOnlyList<ApiResourceInfo>>(
-            [KubernetesJson.Resource("widgets", "widget", "Widget", "get", "list")]);
-
-        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
-            host.Reader.ReadAsync("widgets", "production", null, CancellationToken.None));
-
-        Assert.Equal(KubernetesErrorCategory.InvalidRequest, exception.Category);
-        Assert.Contains("ambiguous", exception.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task DiscoveryParallelismIsBounded()
-    {
-        var options = ReaderTestOptions.Options(mode: ResourcePolicyMode.AllowAll, discoveryParallelism: 2);
-        using var host = new ReaderHost(options);
-        host.Api.CoreResourcesHandler = _ => Task.FromResult<IReadOnlyList<ApiResourceInfo>>([]);
-        host.Api.ApiGroupsHandler = _ => Task.FromResult<IReadOnlyList<ApiGroupInfo>>(
-            new[] { "g1", "g2", "g3", "g4", "g5" }.Select(g => new ApiGroupInfo(g, "v1")).ToArray());
-
-        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var twoSlotsEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var concurrent = 0;
-        var maxConcurrent = 0;
-        host.Api.GroupResourcesHandler = async (group, _, _) =>
-        {
-            var current = Interlocked.Increment(ref concurrent);
-            int observed;
-            do
-            {
-                observed = maxConcurrent;
-                if (current <= observed)
-                {
-                    break;
-                }
-            }
-            while (Interlocked.CompareExchange(ref maxConcurrent, current, observed) != observed);
-
-            if (current == 2)
-            {
-                twoSlotsEntered.TrySetResult();
-            }
-
-            await gate.Task;
-
-            Interlocked.Decrement(ref concurrent);
-            return (IReadOnlyList<ApiResourceInfo>)(group == "g1"
-                ? new[] { KubernetesJson.Resource("x", "x", "X", "list") }
-                : new[] { KubernetesJson.Resource("res-" + group, "r", "R", "list") });
-        };
-
-        var readTask = host.Reader.ReadAsync("x", "production", null, CancellationToken.None);
-
-        var reachedConfiguredParallelism = true;
-        try
-        {
-            await twoSlotsEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        }
-        catch (TimeoutException)
-        {
-            reachedConfiguredParallelism = false;
-        }
-        finally
-        {
-            gate.TrySetResult();
-        }
-
-        await readTask;
-
-        Assert.True(reachedConfiguredParallelism, "discovery did not occupy both configured slots");
-        Assert.True(maxConcurrent <= 2, $"discovery exceeded bounded parallelism: {maxConcurrent}");
-        Assert.True(maxConcurrent == 2, $"discovery never reached the configured parallelism: {maxConcurrent}");
     }
 }

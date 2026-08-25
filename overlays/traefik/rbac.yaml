@@ -3,8 +3,8 @@
 # The default ClusterRole in deployment.yaml grants only core Kubernetes
 # resources. Apply this overlay to additionally grant read-only (get/list) access
 # to the Traefik CRDs listed in overlays/traefik/resources.json. Application
-# resource mode and Kubernetes RBAC are independent: enabling only one does not
-# allow access to the other, so you must also add the CRD mappings to the
+# resource mapping policy and Kubernetes RBAC are independent: enabling only
+# one does not allow access to the other, so you must also add the CRD mappings to the
 # kube-mcp configuration (see overlays/README.md).
 #
 #   kubectl apply --filename overlays/traefik/rbac.yaml

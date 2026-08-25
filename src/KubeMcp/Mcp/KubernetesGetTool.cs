@@ -1,9 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Text;
 using KubeMcp.Audit;
 using KubeMcp.Kubernetes;
-using KubeMcp.Observability;
 using Microsoft.AspNetCore.Http.Timeouts;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -16,20 +14,17 @@ public sealed class KubernetesGetTool
     private readonly IAuditLogger auditLogger;
     private readonly ILogger<KubernetesGetTool> logger;
     private readonly IHttpContextAccessor? httpContextAccessor;
-    private readonly KubeMcpTelemetry? telemetry;
 
     public KubernetesGetTool(
         IKubernetesReader reader,
         IAuditLogger auditLogger,
         ILogger<KubernetesGetTool> logger,
-        IHttpContextAccessor? httpContextAccessor = null,
-        KubeMcpTelemetry? telemetry = null)
+        IHttpContextAccessor? httpContextAccessor = null)
     {
         this.reader = reader;
         this.auditLogger = auditLogger;
         this.logger = logger;
         this.httpContextAccessor = httpContextAccessor;
-        this.telemetry = telemetry;
     }
 
     [McpServerTool(
@@ -50,16 +45,13 @@ public sealed class KubernetesGetTool
     {
         // Never copy an oversized caller-controlled resource into policy errors,
         // logs, or audit records. The validator below rejects it before the
-        // reader can perform allowlist or discovery work.
+        // reader can resolve the explicit resource mapping.
         var diagnosticResource = KubernetesNameValidator.BoundedResourceForDiagnostics(resource);
         var operation = name is null ? "LIST" : "GET";
         var stopwatch = Stopwatch.StartNew();
-        using var activity = telemetry?.StartKubernetesRequest(operation);
         var result = "failed";
         var category = AuditCategories.InternalError;
         int? objectCount = null;
-        int? responseBytes = null;
-        var secretGet = false;
 
         try
         {
@@ -68,8 +60,6 @@ public sealed class KubernetesGetTool
             result = "success";
             category = AuditCategories.Success;
             objectCount = response.ObjectCount;
-            responseBytes = Encoding.UTF8.GetByteCount(response.Json);
-            secretGet = name is not null && response.IsSecret;
             return response.Json;
         }
         catch (KubernetesReadException exception)
@@ -112,15 +102,6 @@ public sealed class KubernetesGetTool
         finally
         {
             stopwatch.Stop();
-            telemetry?.SetCurrentRequestCategory(category);
-            telemetry?.RecordKubernetesRequest(
-                operation,
-                stopwatch.Elapsed,
-                category,
-                responseBytes,
-                objectCount,
-                secretGet);
-            KubeMcpTelemetry.CompleteActivity(activity, category);
 
             try
             {

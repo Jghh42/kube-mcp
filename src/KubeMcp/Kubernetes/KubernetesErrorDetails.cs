@@ -1,8 +1,8 @@
 namespace KubeMcp.Kubernetes;
 
 /// <summary>
-/// Stable, low-cardinality error details safe for MCP responses, audit records,
-/// metrics, and traces. Messages are fixed and never include an upstream body,
+/// Stable, low-cardinality error details safe for MCP responses and audit records.
+/// Messages are fixed and never include an upstream body,
 /// resource coordinate, token, or arbitrary exception text.
 /// </summary>
 public static class KubernetesErrorDetails
