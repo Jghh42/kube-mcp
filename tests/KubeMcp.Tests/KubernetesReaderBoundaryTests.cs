@@ -247,8 +247,12 @@ internal static class KubernetesJson
         {
             apiVersion,
             kind,
-            metadata = new { name, creationTimestamp },
-            labels = new { sensitive = "must-not-leak" },
+            metadata = new
+            {
+                name,
+                creationTimestamp,
+                labels = new { sensitive = "must-not-leak" }
+            },
             status = new { phase = "Active" }
         });
 

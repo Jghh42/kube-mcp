@@ -47,6 +47,25 @@ public sealed class KindIntegrationTests
             ["k8s_get", "k8s_list_namespaces"],
             tools.Select(tool => tool.Name).Order().ToArray());
 
+        var namespaceList = await client.CallToolAsync(
+            "k8s_list_namespaces",
+            new Dictionary<string, object?>(),
+            cancellationToken: CancellationToken.None);
+        Assert.NotEqual(true, namespaceList.IsError);
+        using (var json = ParseText(namespaceList))
+        {
+            var root = json.RootElement;
+            Assert.Equal("LIST", root.GetProperty("operation").GetString());
+            Assert.Equal("namespaces", root.GetProperty("resource").GetString());
+            Assert.Equal(root.GetProperty("items").GetArrayLength(), root.GetProperty("count").GetInt32());
+            Assert.Contains(
+                root.GetProperty("items").EnumerateArray(),
+                item => item.GetProperty("name").GetString() == Namespace);
+            Assert.DoesNotContain(
+                root.GetProperty("items").EnumerateArray(),
+                item => item.GetProperty("name").GetString() == "kube-system");
+        }
+
         var configMapList = await CallAsync(client, "configmaps");
         var configMapListText = Text(configMapList);
         Assert.False(configMapList.IsError == true, configMapListText);

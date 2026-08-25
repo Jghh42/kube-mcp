@@ -151,6 +151,26 @@ public sealed class NamespaceDiscoveryReaderTests
     }
 
     [Fact]
+    public async Task MissingCreationTimestampOmitsOptionalAge()
+    {
+        using var host = new ReaderHost(ReaderTestOptions.Options());
+        host.Api.NamespaceListHandler = (_, _, _, _, _) => Task.FromResult(
+            KubernetesJson.ListBody(
+                [KubernetesJson.NamespaceItem("production", creationTimestamp: null)],
+                null,
+                "v1",
+                "NamespaceList"));
+
+        using var json = JsonDocument.Parse(
+            (await host.Reader.ListNamespacesAsync(CancellationToken.None)).Json);
+        var item = Assert.Single(json.RootElement.GetProperty("items").EnumerateArray());
+        Assert.Equal(
+            ["name"],
+            item.EnumerateObject().Select(property => property.Name).ToArray());
+        Assert.Equal("production", item.GetProperty("name").GetString());
+    }
+
+    [Fact]
     public async Task ExistingItemPageAndSafeOutputBoundsApply()
     {
         using (var itemHost = new ReaderHost(ReaderTestOptions.Options(maxListItems: 1)))
