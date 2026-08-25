@@ -26,9 +26,9 @@ k8s_get(resource, namespace, name?)
 ### Build and test
 
 ```sh
-dotnet restore --locked-mode
-dotnet build --configuration Release --no-restore
-dotnet test --configuration Release --no-build --no-restore
+dotnet restore KubeMcp.slnx --locked-mode
+dotnet build KubeMcp.slnx --configuration Release --no-restore
+dotnet test KubeMcp.slnx --configuration Release --no-build --no-restore
 ```
 
 ### Deploy
@@ -37,15 +37,23 @@ The reference manifest is production-oriented and requires API-key/HMAC Secrets 
 
 ```sh
 kubectl create namespace kube-mcp --dry-run=client -o yaml | kubectl apply -f -
+hmac_key=$(openssl rand -base64 32)
+# Store $hmac_key if Secret fingerprints must remain stable across recreation.
 kubectl create secret generic kube-mcp-hmac \
   --namespace kube-mcp \
-  --from-literal="key=$(openssl rand -base64 32)" \
-  --dry-run=client -o yaml | kubectl apply -f -
-kubectl create secret generic kube-mcp-api-key \
-  --namespace kube-mcp \
-  --from-literal="api-key=$(openssl rand -hex 32)" \
+  --from-literal="key=$hmac_key" \
   --dry-run=client -o yaml | kubectl apply -f -
 
+api_key=$(openssl rand -hex 32)
+# Store $api_key in your secret manager now; clients must use this same value.
+kubectl create secret generic kube-mcp-api-key \
+  --namespace kube-mcp \
+  --from-literal="api-key=$api_key" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Before applying, replace the image in deployment.yaml with the published
+# ghcr.io/jghh42/kube-mcp@sha256:<digest> reference and replace
+# k-mcp.example.internal in AllowedHosts with your internal application host.
 kubectl apply --filename deployment.yaml
 kubectl rollout status deployment/kube-mcp --namespace kube-mcp
 kubectl port-forward --namespace kube-mcp service/kube-mcp 8080:80
@@ -57,7 +65,7 @@ Endpoints:
 - Liveness: `http://127.0.0.1:8080/healthz`
 - Readiness: `http://127.0.0.1:8080/readyz`
 
-Use an immutable `ghcr.io/jghh42/kube-mcp:sha-<commit>` image tag for repeatable deployments. The unauthenticated [`overlays/development`](overlays/development/) Kustomize overlay is for isolated local clusters only.
+Full-revision `sha-<commit>` image tags are useful for traceability but, like all tags, can be moved. The unauthenticated [`overlays/development`](overlays/development/) Kustomize overlay is for isolated local clusters only.
 
 ## Documentation
 

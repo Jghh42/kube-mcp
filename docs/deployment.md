@@ -6,7 +6,7 @@ The reference [`deployment.yaml`](../deployment.yaml) is an authenticated produc
 
 1. Create the API-key and HMAC Kubernetes Secrets described below.
 2. Replace `k-mcp.example.internal` in `AllowedHosts` with the internal hostname presented to the application.
-3. Pin the image to an immutable `sha-<commit>` tag.
+3. Pin the image to its published immutable `ghcr.io/jghh42/kube-mcp@sha256:<digest>` reference; use the full-revision `sha-<commit>` tag only to locate that digest.
 4. Confirm the GHCR package is public or configure an image pull secret.
 5. Review the resource allowlist, namespace policy, RBAC, and standard ASP.NET Core host filtering.
 6. Configure the private-network ingress, load balancer, or service mesh to enforce HTTP request-body, header, rate, and concurrency limits, own originating-client IP/external scheme/external host logging, and block untrusted direct Service access where required.
@@ -20,15 +20,22 @@ Create the namespace and a stable server-held HMAC key. Keep the key stable when
 
 ```sh
 kubectl create namespace kube-mcp --dry-run=client -o yaml | kubectl apply -f -
+hmac_key=$(openssl rand -base64 32)
+# Store $hmac_key if Secret fingerprints must remain stable across recreation.
 kubectl create secret generic kube-mcp-hmac \
   --namespace kube-mcp \
-  --from-literal="key=$(openssl rand -base64 32)" \
+  --from-literal="key=$hmac_key" \
   --dry-run=client -o yaml | kubectl apply -f -
+
+api_key=$(openssl rand -hex 32)
+# Store $api_key in your secret manager now; clients must use this same value.
 kubectl create secret generic kube-mcp-api-key \
   --namespace kube-mcp \
-  --from-literal="api-key=$(openssl rand -hex 32)" \
+  --from-literal="api-key=$api_key" \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
+
+The shell variables are only a convenient handoff during setup. Retain the API key in your secret manager and configure MCP clients with that same bearer value. Retain the HMAC key too when fingerprints must survive Secret recreation. Do not print either value into logs or commit it.
 
 Deploy and wait for readiness:
 
@@ -55,20 +62,20 @@ The application still bounds Kubernetes upstream bodies, safe MCP output, list i
 
 ## Local unauthenticated deployment
 
-For an isolated local cluster only, render and apply the development Kustomize overlay:
+For an isolated local cluster only, first create the namespace and HMAC Secret from the install steps above; the API-key Secret is not needed. Then render and apply the development Kustomize overlay:
 
 ```sh
 kubectl kustomize --load-restrictor LoadRestrictionsNone overlays/development \
   | kubectl apply --filename -
 ```
 
-The load-restrictor option is needed because the overlay reuses the repository-root production manifest. It changes only the environment, authentication mode, and local image pull behavior: `Development`, `Authentication:Mode=None`, and `IfNotPresent`. The production API-key environment entry is deleted; the HMAC Secret reference and all RBAC, probes, hardening, resources, and `ClusterIP` exposure are inherited unchanged. `None` is rejected in every other environment. Never expose this overlay on a shared or production network; reapply `deployment.yaml` to restore authenticated mode.
+The load-restrictor option is needed because the overlay reuses the repository-root production manifest. It changes only the environment, authentication mode, and local image pull behavior: `Development`, `Authentication:Mode=None`, and `IfNotPresent`. The production API-key environment entry is deleted; the HMAC Secret reference and all RBAC, probes, hardening, resources, and `ClusterIP` exposure are inherited unchanged. `None` is rejected in every other environment. Never expose this overlay on a shared or production network. To restore production mode, create the API-key Secret, configure the image digest and `AllowedHosts` as required by the production checklist, and then reapply `deployment.yaml`.
 
 ## Health and readiness
 
 The root, `/healthz`, and `/readyz` endpoints are public in every authentication mode. Both probe endpoints return small fixed responses and report only that the process started successfully; they do not contact Kubernetes or expose configuration and exception details.
 
-Startup option validation remains fail-closed, including production authentication validation. Kubernetes authorization and connectivity failures are handled through fixed safe errors when an authenticated MCP request performs a read. The deployment retains separate liveness and readiness probes for platform compatibility, but both have process-only semantics.
+Startup option validation remains fail-closed, including production authentication validation. Kubernetes authorization and connectivity failures are handled through fixed safe errors when an MCP request performs a read. The deployment retains separate liveness and readiness probes for platform compatibility, but both have process-only semantics.
 
 ## Resource access and RBAC
 

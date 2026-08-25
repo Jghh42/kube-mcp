@@ -16,7 +16,7 @@ dotnet test tests/KubeMcp.Tests/KubeMcp.Tests.csproj \
   --filter 'FullyQualifiedName~<TestClassName>'
 ```
 
-Match the test area to the change (for example authentication, access policy, Kubernetes boundaries, audit, concurrency, readiness, reverse proxies, telemetry, or deployment).
+Match the test area to the change (for example authentication, access policy, Kubernetes boundaries, Secret handling, audit, process readiness, endpoints, or deployment).
 
 ## Standard gate
 
@@ -37,7 +37,7 @@ A package edit must update the applicable lock files. Run a normal restore to re
 
 ## End-to-end gate
 
-Run this for changes affecting Docker, deployment manifests, OAuth/Keycloak behavior, Kubernetes integration, resource/RBAC modes, CI image handoff, or the harness itself:
+Run this for changes affecting Docker, deployment manifests, authentication, Kubernetes integration, resource mappings/RBAC, Secret handling, CI container delivery, or the harness itself:
 
 ```sh
 ./tests/integration/run-kind.sh

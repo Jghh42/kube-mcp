@@ -14,9 +14,9 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | `KubeMcp:NamespacePolicy:LabelSelector` | none | Required selector in label-selector mode. |
 | `KubeMcp:MaxListItems` | `100` | Maximum objects returned by LIST. |
 | `KubeMcp:MaxResponseBytes` | `1048576` | Maximum inner tool-content JSON size, excluding the MCP/HTTP envelope. |
-| `KubeMcp:MaxUpstreamBodyBytes` | `4194304` | Per-page or single-object Kubernetes response limit before deserialization. |
+| `KubeMcp:MaxUpstreamBodyBytes` | `4194304` | Per-page or single-object Kubernetes response limit before deserialization; must be at least `MaxResponseBytes`. |
 | `KubeMcp:ListPageSize` | `50` | Page size for non-Secret LISTs. |
-| `KubeMcp:SecretListPageSize` | `10` | Page size for Secret LISTs. |
+| `KubeMcp:SecretListPageSize` | `10` | Page size for Secret LISTs; must not exceed `ListPageSize`. |
 | `KubeMcp:MaxListPages` | `20` | Maximum continuation pages per LIST. |
 | `KubeMcp:KubernetesRequestTimeoutSeconds` | `15` | Kubernetes operation timeout. |
 | `KubeMcp:OverallMcpRequestTimeoutSeconds` | `30` | End-to-end MCP deadline; must exceed the Kubernetes timeout. |

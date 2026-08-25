@@ -1,6 +1,6 @@
 # Security model
 
-An authenticated client can perform one operation: read explicitly permitted namespaced Kubernetes resources. Application policy and Kubernetes RBAC enforce access independently. The client never receives Kubernetes credentials.
+A client that passes the configured authentication boundary can perform one operation: read explicitly permitted namespaced Kubernetes resources. Production requires API-key authentication; isolated Development mode may explicitly allow anonymous access. Application policy and Kubernetes RBAC enforce access independently. The client never receives Kubernetes credentials.
 
 ## Tool boundary
 
@@ -65,7 +65,7 @@ Every dispatched `k8s_get` call writes a sanitized structured Kubernetes audit e
 Records can include:
 
 - UTC timestamp
-- authenticated client identity
+- client identity (`static-api-key` or Development-only `anonymous`)
 - authentication mode
 - operation and resource coordinates for dispatched tool calls
 - result and fixed error category

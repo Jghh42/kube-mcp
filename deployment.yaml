@@ -13,9 +13,9 @@ metadata:
   labels:
     app.kubernetes.io/name: kube-mcp
 ---
-# RBAC mirrors the core default resource allowlist in appsettings.json. Only
-# built-in Kubernetes resources are granted by default. Optional CloudNativePG
-# and Traefik CRDs are deliberately shipped as overlays in overlays/ so that
+# RBAC mirrors the default built-in resource allowlist in appsettings.json.
+# Only explicitly mapped Kubernetes resources are granted by default. Optional
+# CloudNativePG and Traefik CRDs are deliberately shipped as overlays in overlays/ so that
 # unneeded CRDs do not expand the default surface or drift from RBAC. Namespace
 # LIST is granted only for label-selector namespace policy mode.
 apiVersion: rbac.authorization.k8s.io/v1
