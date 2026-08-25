@@ -53,9 +53,11 @@ Each implementation stage is an independent review checkpoint. For every stage:
 5. review the diff against `AGENTS.md` and `docs/security.md`;
 6. create a dedicated commit with the suggested commit subject below;
 7. push the branch immediately after the commit;
-8. update the draft pull request description/checklist before starting the next stage.
+8. monitor all GitHub Actions checks on the draft pull request until they complete;
+9. if any check fails, retrieve its failure logs, diagnose and fix the problem, rerun the appropriate local validation, commit and push the correction, and monitor the new checks; repeat until every required check succeeds;
+10. update the draft pull request description/checklist only after the pushed stage is green, then start the next stage.
 
-Do not combine stages into one commit. If a stage needs a corrective follow-up after review, commit and push that correction before proceeding.
+Do not combine stages into one commit. Never move to the next stage while a required pull-request check is pending, cancelled, or failing. If a stage needs a corrective follow-up after local review or CI, commit and push that correction as part of the current stage and wait for its checks to succeed before proceeding.
 
 The standard code validation gate is:
 
