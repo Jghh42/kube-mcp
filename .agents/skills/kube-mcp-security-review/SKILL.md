@@ -11,7 +11,8 @@ Read [AGENTS.md](../../../AGENTS.md) and the [security model](../../../docs/secu
 
 Confirm that the change preserves:
 
-- exactly one namespaced GET/LIST MCP tool;
+- exactly two fixed tools: namespaced GET/LIST and argument-free policy-filtered core-v1 Namespace LIST;
+- namespace discovery as the sole cluster-scoped operation, with no Namespace GET, arbitrary selector, or caller continuation token;
 - no mutation, watch, exec, proxy, shell, tunnelling, or credential exposure;
 - resource policy, namespace policy, and Kubernetes RBAC as independent gates;
 - sanitization of Secret LIST and keyed HMAC fingerprinting of Secret GET;

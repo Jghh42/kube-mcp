@@ -1,18 +1,19 @@
 # Security model
 
-A client that passes the configured authentication boundary can perform one operation: read explicitly permitted namespaced Kubernetes resources. Production requires API-key authentication; isolated Development mode may explicitly allow anonymous access. Application policy and Kubernetes RBAC enforce access independently. The client never receives Kubernetes credentials.
+A client that passes the configured authentication boundary can read explicitly permitted namespaced Kubernetes resources and discover namespaces admitted by server policy. Production requires API-key authentication; isolated Development mode may explicitly allow anonymous access. Application policy and Kubernetes RBAC enforce access independently. The client never receives Kubernetes credentials.
 
 ## Tool boundary
 
-The service exposes exactly one Streamable HTTP MCP tool:
+The service exposes exactly two Streamable HTTP MCP tools:
 
 ```text
 k8s_get(resource, namespace, name?)
+k8s_list_namespaces()
 ```
 
-Omitting `name` performs a namespaced LIST; supplying it performs a namespaced GET. There are no mutation, watch, exec, proxy, shell, tunnelling, or arbitrary API tools.
+Omitting `name` from `k8s_get` performs a namespaced LIST; supplying it performs a namespaced GET. Argument-free `k8s_list_namespaces` is the sole cluster-scoped operation and performs only core-v1 Namespace LIST. Namespace GET, watch, mutation, caller-provided selectors or continuation tokens, generic cluster-scoped reads, exec, proxy, shell, and tunnelling are unavailable.
 
-Non-Secret LIST responses use one generic compact summary containing only name, namespace, kind, and age when creation metadata is available. This applies equally to built-in resources and configured CRDs. GET responses remain detailed. Response size, page count, item count, and upstream body size are bounded.
+Non-Secret namespaced LIST responses use one generic compact summary containing only name, namespace, kind, and age when creation metadata is available. Namespace discovery returns exactly operation/resource/items/count/limited, with only name and optional age per item. It is a bounded snapshot: blacklist-denied namespaces are silently filtered, while label-selector mode sends the configured selector server-side on every page. Filtered entries alone do not make the snapshot limited. Every fetched namespace is identity-validated, including filtered and output-omitted objects. GET responses remain detailed. Response size, page count, item count, continuation-token, upstream-body, and timeout bounds apply to both LIST paths.
 
 ## Defence in depth
 
@@ -60,7 +61,7 @@ Overall server deadlines use `server_timeout`; caller disconnects use `client_ca
 
 ## Audit guarantees
 
-Every dispatched `k8s_get` call writes a sanitized structured Kubernetes audit event through the standard `ILogger` pipeline. Application-owned authorization denials write a coordinate-free MCP access-denial event. Authentication failures are handled by ASP.NET Core and infrastructure access logging. Middleware does not inspect arbitrary request bodies to infer audit fields.
+Every dispatched `k8s_get` or `k8s_list_namespaces` call writes a sanitized structured Kubernetes audit event through the standard `ILogger` pipeline. Application-owned authorization denials write a coordinate-free MCP access-denial event. Authentication failures are handled by ASP.NET Core and infrastructure access logging. Middleware does not inspect arbitrary request bodies to infer audit fields.
 
 Records can include:
 
@@ -78,4 +79,4 @@ Already-sanitized events are written directly through the dedicated `ILogger<Aud
 
 ## RBAC
 
-The default ClusterRole grants narrow GET/LIST access for the default built-in resource set and namespace LIST for namespace-policy evaluation. Optional CRDs require explicit, coordinated application mappings and narrow RBAC changes; wildcard reads are not supported. See the [deployment guide](deployment.md#resource-access-and-rbac) and [resource overlays](../overlays/README.md).
+The default ClusterRole grants narrow GET/LIST access for the default built-in resource set and namespace LIST for policy evaluation and namespace discovery. Optional CRDs require explicit, coordinated application mappings and narrow RBAC changes; wildcard reads are not supported. See the [deployment guide](deployment.md#resource-access-and-rbac) and [resource overlays](../overlays/README.md).

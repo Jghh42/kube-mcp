@@ -177,6 +177,41 @@ public sealed class KubernetesApiTests
     }
 
     [Fact]
+    public void BuildNamespaceDiscoveryUriUsesOnlyCoreListAndStableServerSelector()
+    {
+        var first = KubernetesApi.BuildNamespaceDiscoveryUri(
+            BaseUri,
+            pageSize: 25,
+            continueToken: null,
+            labelSelector: "environment=production");
+        var next = KubernetesApi.BuildNamespaceDiscoveryUri(
+            BaseUri,
+            pageSize: 25,
+            continueToken: "next page/+",
+            labelSelector: "environment=production");
+
+        Assert.Equal("/api/v1/namespaces", first.AbsolutePath);
+        Assert.Equal("?limit=25&labelSelector=environment%3Dproduction", first.Query);
+        Assert.Equal("/api/v1/namespaces", next.AbsolutePath);
+        Assert.Equal(
+            "?limit=25&labelSelector=environment%3Dproduction&continue=next%20page%2F%2B",
+            next.Query);
+    }
+
+    [Fact]
+    public void BuildNamespaceDiscoveryUriRejectsOversizedContinuationToken()
+    {
+        var exception = Assert.Throws<KubernetesApiException>(() =>
+            KubernetesApi.BuildNamespaceDiscoveryUri(
+                BaseUri,
+                25,
+                new string('x', KubernetesApi.MaximumContinueTokenBytes + 1),
+                null));
+
+        Assert.Equal(KubernetesErrorCategory.MalformedResponse, exception.Category);
+    }
+
+    [Fact]
     public async Task GetNamespacedReturnsCappedBodyAndDoesNotReadUpstreamErrorBody()
     {
         var secretLeak = "UPSTREAM-SECRET-BODY-MUST-NOT-LEAK";
@@ -221,6 +256,48 @@ public sealed class KubernetesApiTests
             Descriptor("", "v1", "pods", "Pod"), "ns", pageSize: 10, continueToken: null, maxBodyBytes: 4096, CancellationToken.None);
 
         Assert.Contains("token-2", Encoding.UTF8.GetString(result.Span));
+    }
+
+    [Fact]
+    public async Task NamespaceDiscoveryUsesBoundedCoreListRequest()
+    {
+        var setup = CreateClientAndHandler(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"apiVersion\":\"v1\",\"kind\":\"NamespaceList\",\"metadata\":{},\"items\":[]}")
+        });
+        using var k = setup.Client;
+        using var api = new KubernetesApi(k, ownsClient: true);
+
+        var body = await api.ListNamespacesAsync(
+            10,
+            "next",
+            "environment=production",
+            4096,
+            CancellationToken.None);
+
+        Assert.True(body.Length > 0);
+        var uri = Assert.Single(setup.Handler.Requests);
+        Assert.Equal("/api/v1/namespaces", uri.AbsolutePath);
+        Assert.Equal(
+            "?limit=10&labelSelector=environment%3Dproduction&continue=next",
+            uri.Query);
+        Assert.Equal(HttpMethod.Get, Assert.Single(setup.Handler.Methods));
+        Assert.Equal(string.Empty, Assert.Single(setup.Handler.Bodies));
+    }
+
+    [Fact]
+    public async Task NamespaceDiscoveryEnforcesUpstreamBodyCap()
+    {
+        using var k = CreateClient(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new RepeatingByteStream(1024))
+        });
+        using var api = new KubernetesApi(k, ownsClient: true);
+
+        var exception = await Assert.ThrowsAsync<KubernetesApiException>(() =>
+            api.ListNamespacesAsync(10, null, null, 128, CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.ResponseTooLarge, exception.Category);
     }
 
     [Fact]

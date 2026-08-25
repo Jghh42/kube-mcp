@@ -30,6 +30,16 @@ public sealed class KubernetesListSummarizer(
         return result;
     }
 
+    internal JsonObject SummarizeNamespace(JsonElement item)
+    {
+        var result = new JsonObject
+        {
+            ["name"] = MetadataString(item, "name")
+        };
+        AddAgeWhenAvailable(result, MetadataString(item, "creationTimestamp"));
+        return result;
+    }
+
     private void AddAgeWhenAvailable(JsonObject result, string? creationTimestamp)
     {
         if (TryFormatAge(creationTimestamp, out var age))

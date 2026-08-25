@@ -14,7 +14,12 @@ namespace KubeMcp.Kubernetes;
 
 public sealed class KubernetesReader : IKubernetesReader, IDisposable
 {
+    private static readonly KubernetesResourceDescriptor NamespaceDescriptor =
+        new("", "v1", "namespaces", "Namespace");
+
     private const string ListPrefix = "{\"operation\":\"LIST\",\"resource\":";
+    private const string NamespaceListPrefix =
+        "{\"operation\":\"LIST\",\"resource\":\"namespaces\",\"items\":[";
     private const string ListCanonicalResource = ",\"canonicalResource\":";
     private const string ListNamespace = ",\"namespace\":";
     private const string ListItems = ",\"items\":[";
@@ -31,6 +36,11 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         ListCanonicalResource +
         ListNamespace +
         ListItems +
+        ListCount +
+        ListLimited +
+        ListSuffix);
+    private static readonly int NamespaceListFixedFramingBytes = Encoding.UTF8.GetByteCount(
+        NamespaceListPrefix +
         ListCount +
         ListLimited +
         ListSuffix);
@@ -139,6 +149,61 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         {
             // Unexpected boundary failure: map to a safe internal category without
             // surfacing the exception body (which could carry upstream details).
+            logger.LogWarning(
+                "Unexpected Kubernetes boundary failure: {ExceptionType}",
+                ex.GetType().Name);
+            throw new KubernetesReadException(
+                "The Kubernetes API request failed.",
+                KubernetesErrorCategory.Internal);
+        }
+    }
+
+    public async Task<KubernetesReadResult> ListNamespacesAsync(
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(options.KubernetesRequestTimeoutSeconds));
+
+        try
+        {
+            var safeResult = await ListNamespacesCoreAsync(timeout.Token).ConfigureAwait(false);
+            var json = safeResult.ToJsonString(SerializerOptions);
+            if (Encoding.UTF8.GetByteCount(json) > options.MaxResponseBytes)
+            {
+                throw new KubernetesReadException(
+                    $"The Kubernetes response exceeded the configured {options.MaxResponseBytes}-byte limit.",
+                    KubernetesErrorCategory.ResponseTooLarge);
+            }
+
+            return new KubernetesReadResult(
+                json,
+                safeResult["count"]?.GetValue<int>() ?? 0);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            throw new KubernetesReadException(
+                "The Kubernetes request timed out.",
+                KubernetesErrorCategory.Timeout);
+        }
+        catch (OperationCanceledException ex)
+        {
+            logger.LogWarning(
+                "Unexpected Kubernetes cancellation: {ExceptionType}",
+                ex.GetType().Name);
+            throw new KubernetesReadException(
+                "The Kubernetes API request failed.",
+                KubernetesErrorCategory.Internal);
+        }
+        catch (KubernetesApiException ex)
+        {
+            throw Translate(ex);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException and not KubernetesReadException)
+        {
             logger.LogWarning(
                 "Unexpected Kubernetes boundary failure: {ExceptionType}",
                 ex.GetType().Name);
@@ -400,6 +465,167 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         // ReadAsync performs one final serialization guard for both GET and LIST,
         // verifying this incremental accounting without a trimming loop.
         return response;
+    }
+
+    private async Task<JsonNode> ListNamespacesCoreAsync(CancellationToken cancellationToken)
+    {
+        var pageSize = Math.Min(options.ListPageSize, options.MaxListItems);
+        var items = new JsonArray();
+        var itemCapHit = false;
+        var budgetHit = false;
+        var pageCapHit = false;
+        var pagesFetched = 0;
+        var itemsContentBytes = 0L;
+        var seenContinueTokens = new HashSet<string>(
+            Math.Min(options.MaxListPages, 100),
+            StringComparer.Ordinal);
+        string? continueToken = null;
+
+        do
+        {
+            if (items.Count >= options.MaxListItems)
+            {
+                itemCapHit = true;
+                break;
+            }
+
+            var body = await api.ListNamespacesAsync(
+                pageSize,
+                continueToken,
+                namespacePolicy.LabelSelector,
+                options.MaxUpstreamBodyBytes,
+                cancellationToken).ConfigureAwait(false);
+            pagesFetched++;
+
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsureContinueTokenBounded(body.Span);
+            using var document = ParseBody(body);
+            cancellationToken.ThrowIfCancellationRequested();
+            var itemsElement = ValidateListIdentity(document.RootElement, NamespaceDescriptor);
+            var nextContinue = ReadContinueToken(document.RootElement);
+            if (!string.IsNullOrEmpty(nextContinue) && !seenContinueTokens.Add(nextContinue))
+            {
+                throw MalformedResponseException();
+            }
+
+            // Validate the entire fetched page before filtering or output packing.
+            // This also lets exact-fit accounting distinguish later eligible
+            // entries from denied entries that must not affect `limited`.
+            var eligibleItems = new List<JsonElement>(itemsElement.GetArrayLength());
+            foreach (var itemElement in itemsElement.EnumerateArray())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var namespaceName = ValidateNamespaceListObjectIdentity(itemElement);
+                if (namespacePolicy.IsDiscoveredNamespaceAllowed(namespaceName))
+                {
+                    eligibleItems.Add(itemElement);
+                }
+            }
+
+            var eligibleItemIndex = 0;
+            foreach (var itemElement in eligibleItems)
+            {
+                eligibleItemIndex++;
+                cancellationToken.ThrowIfCancellationRequested();
+                if (items.Count >= options.MaxListItems)
+                {
+                    itemCapHit = true;
+                    continue;
+                }
+
+                if (budgetHit)
+                {
+                    continue;
+                }
+
+                var summary = listSummarizer.SummarizeNamespace(itemElement);
+                var summaryBytes = JsonSerializer.SerializeToUtf8Bytes(
+                    summary,
+                    SerializerOptions).LongLength;
+                var prospectiveItemsBytes = itemsContentBytes +
+                    (items.Count == 0 ? 0 : 1) +
+                    summaryBytes;
+                var prospectiveCount = items.Count + 1;
+                var completeResponseBytes = NamespaceListResponseByteCount(
+                    prospectiveItemsBytes,
+                    prospectiveCount,
+                    limited: false);
+
+                if (completeResponseBytes > options.MaxResponseBytes)
+                {
+                    var moreDataExists = eligibleItemIndex < eligibleItems.Count;
+                    var limitedResponseBytes = completeResponseBytes - 1;
+                    if (moreDataExists && limitedResponseBytes <= options.MaxResponseBytes)
+                    {
+                        items.Add(summary);
+                        itemsContentBytes = prospectiveItemsBytes;
+                    }
+
+                    budgetHit = true;
+                    continue;
+                }
+
+                items.Add(summary);
+                itemsContentBytes = prospectiveItemsBytes;
+            }
+
+            continueToken = nextContinue;
+            if (itemCapHit || budgetHit || string.IsNullOrEmpty(continueToken))
+            {
+                break;
+            }
+
+            if (pagesFetched >= options.MaxListPages)
+            {
+                pageCapHit = true;
+                break;
+            }
+        }
+        while (true);
+
+        var limited = itemCapHit || budgetHit || pageCapHit || !string.IsNullOrEmpty(continueToken);
+        return NamespaceListResponse(items, limited);
+    }
+
+    private static long NamespaceListResponseByteCount(
+        long itemsContentBytes,
+        int itemCount,
+        bool limited) =>
+        NamespaceListFixedFramingBytes +
+        itemsContentBytes +
+        itemCount.ToString(CultureInfo.InvariantCulture).Length +
+        (limited ? 4 : 5);
+
+    private static JsonObject NamespaceListResponse(JsonArray items, bool limited) => new()
+    {
+        ["operation"] = "LIST",
+        ["resource"] = "namespaces",
+        ["items"] = items,
+        ["count"] = items.Count,
+        ["limited"] = limited
+    };
+
+    private static string ValidateNamespaceListObjectIdentity(JsonElement item)
+    {
+        if (item.ValueKind != JsonValueKind.Object)
+        {
+            throw MalformedResponseException();
+        }
+
+        ValidateOptionalIdentityString(item, "apiVersion", NamespaceDescriptor.ApiVersion);
+        ValidateOptionalIdentityString(item, "kind", NamespaceDescriptor.Kind);
+        var metadata = RequiredIdentityObject(item, "metadata");
+        var name = RequiredIdentityString(metadata, "name");
+        try
+        {
+            KubernetesNameValidator.ValidateNamespace(name);
+        }
+        catch (KubernetesReadException)
+        {
+            throw MalformedResponseException();
+        }
+
+        return name;
     }
 
     private void ValidateSecretListItem(JsonElement item)

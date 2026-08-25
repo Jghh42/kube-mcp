@@ -43,7 +43,9 @@ public sealed class KindIntegrationTests
         await using var client = await McpClient.CreateAsync(transport);
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal("k8s_get", Assert.Single(tools).Name);
+        Assert.Equal(
+            ["k8s_get", "k8s_list_namespaces"],
+            tools.Select(tool => tool.Name).Order().ToArray());
 
         var configMapList = await CallAsync(client, "configmaps");
         var configMapListText = Text(configMapList);

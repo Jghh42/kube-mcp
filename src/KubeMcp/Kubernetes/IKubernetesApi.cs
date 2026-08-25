@@ -32,4 +32,11 @@ public interface IKubernetesApi : IDisposable
         string labelSelector,
         int maxBodyBytes,
         CancellationToken cancellationToken);
+
+    Task<ReadOnlyMemory<byte>> ListNamespacesAsync(
+        int pageSize,
+        string? continueToken,
+        string? labelSelector,
+        int maxBodyBytes,
+        CancellationToken cancellationToken);
 }

@@ -90,7 +90,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
-    public async Task McpEndpointExposesExactlyOneToolWithoutForwardedHeaderConfiguration()
+    public async Task McpEndpointExposesExactlyTwoToolsWithoutForwardedHeaderConfiguration()
     {
         await using var transport = new HttpClientTransport(
             new HttpClientTransportOptions
@@ -105,24 +105,33 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
 
         var tools = await mcpClient.ListToolsAsync();
 
-        var tool = Assert.Single(tools);
-        Assert.Equal("k8s_get", tool.Name);
+        Assert.Equal(2, tools.Count);
+        var getTool = Assert.Single(tools, tool => tool.Name == "k8s_get");
         Assert.Equal(
             ["name", "namespace", "resource"],
-            tool.JsonSchema.GetProperty("properties")
+            getTool.JsonSchema.GetProperty("properties")
                 .EnumerateObject()
                 .Select(property => property.Name)
                 .Order()
                 .ToArray());
         Assert.Equal(
             ["namespace", "resource"],
-            tool.JsonSchema.GetProperty("required")
+            getTool.JsonSchema.GetProperty("required")
                 .EnumerateArray()
                 .Select(value => value.GetString()!)
                 .Order()
                 .ToArray());
-        Assert.True(tool.ProtocolTool.Annotations?.ReadOnlyHint);
-        Assert.False(tool.ProtocolTool.Annotations?.DestructiveHint);
+        Assert.True(getTool.ProtocolTool.Annotations?.ReadOnlyHint);
+        Assert.False(getTool.ProtocolTool.Annotations?.DestructiveHint);
+
+        var namespaceTool = Assert.Single(tools, tool => tool.Name == "k8s_list_namespaces");
+        Assert.Empty(namespaceTool.JsonSchema.GetProperty("properties").EnumerateObject());
+        if (namespaceTool.JsonSchema.TryGetProperty("required", out var required))
+        {
+            Assert.Empty(required.EnumerateArray());
+        }
+        Assert.True(namespaceTool.ProtocolTool.Annotations?.ReadOnlyHint);
+        Assert.False(namespaceTool.ProtocolTool.Annotations?.DestructiveHint);
     }
 
     [Fact]
@@ -260,11 +269,16 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
         public TaskCompletionSource CancellationObserved { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public async Task<KubernetesReadResult> ReadAsync(
+        public Task<KubernetesReadResult> ReadAsync(
             string resource,
             string @namespace,
             string? name,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken) => ObserveCancellationAsync(cancellationToken);
+
+        public Task<KubernetesReadResult> ListNamespacesAsync(CancellationToken cancellationToken) =>
+            ObserveCancellationAsync(cancellationToken);
+
+        private async Task<KubernetesReadResult> ObserveCancellationAsync(CancellationToken cancellationToken)
         {
             Started.TrySetResult();
             using var registration = cancellationToken.Register(() => CancellationObserved.TrySetResult());

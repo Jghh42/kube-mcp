@@ -8,7 +8,7 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | --- | --- | --- |
 | `KubeMcp:SecretHmacKey` | required | Base64-encoded HMAC key of at least 32 bytes. |
 | `KubeMcp:KubeConfigPath` | automatic | Optional kubeconfig path; in-cluster configuration is detected automatically. |
-| `KubeMcp:AllowedResources` | see `appsettings.json` | MCP names mapped to Kubernetes group/version/resource/kind. |
+| `KubeMcp:AllowedResources` | see `appsettings.json` | `k8s_get` names mapped to Kubernetes group/version/resource/kind; namespace discovery is independent. |
 | `KubeMcp:NamespacePolicy:Mode` | `Blacklist` | `Blacklist` or `LabelSelector`. |
 | `KubeMcp:NamespacePolicy:DeniedNamespaces` | system namespaces | Names denied in blacklist mode. |
 | `KubeMcp:NamespacePolicy:LabelSelector` | none | Required selector in label-selector mode. |
@@ -43,13 +43,13 @@ A resource resolves only when its MCP name has an explicit local mapping. Every 
 }
 ```
 
-Custom mappings also need matching read-only Kubernetes RBAC. See [optional overlays](../overlays/README.md) for examples. There is no wildcard application resource mode; resources that are not explicitly mapped are denied before any Kubernetes request.
+Custom mappings also need matching read-only Kubernetes RBAC. See [optional overlays](../overlays/README.md) for examples. There is no wildcard application resource mode; resources that are not explicitly mapped are denied before any Kubernetes request. Do not add `namespaces`: argument-free `k8s_list_namespaces` is a fixed core-v1 LIST independent of this mapping, and `k8s_get` remains namespaced-only.
 
 ## Namespace policy
 
-Blacklist mode allows new namespaces automatically while denying configured names. Defaults deny `kube-system`, `kube-public`, and `kube-node-lease`.
+Blacklist mode allows new namespaces automatically while denying configured names. Defaults deny `kube-system`, `kube-public`, and `kube-node-lease`. Namespace discovery silently omits denied names, including on filtered-only pages.
 
-Label-selector mode allows only matching namespaces:
+Label-selector mode allows only matching namespaces. Namespace discovery sends this server-controlled selector to Kubernetes on every page; clients cannot provide or override it:
 
 ```text
 KubeMcp__NamespacePolicy__Mode=LabelSelector

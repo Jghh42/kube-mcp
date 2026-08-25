@@ -161,6 +161,11 @@ public sealed class KubernetesGetToolAuditTests
             exception is null
                 ? Task.FromResult(result!)
                 : Task.FromException<KubernetesReadResult>(exception);
+
+        public Task<KubernetesReadResult> ListNamespacesAsync(CancellationToken cancellationToken) =>
+            exception is null
+                ? Task.FromResult(result!)
+                : Task.FromException<KubernetesReadResult>(exception);
     }
 
     private sealed class CapturingAuditLogger : IAuditLogger
