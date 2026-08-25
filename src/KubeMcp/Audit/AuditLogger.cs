@@ -31,7 +31,6 @@ public sealed class AuditLogger(
             auditEvent.ObjectCount,
             auditEvent.Duration,
             common.RequestId,
-            common.ClientIp,
             StatusCode: null));
     }
 
@@ -52,7 +51,6 @@ public sealed class AuditLogger(
             ObjectCount: null,
             auditEvent.Duration,
             common.RequestId,
-            common.ClientIp,
             auditEvent.StatusCode));
     }
 
@@ -76,8 +74,7 @@ public sealed class AuditLogger(
             timeProvider.GetUtcNow(),
             Safe(ResolveIdentity(context?.User)),
             Safe(options.Value.Authentication.Mode.ToString()),
-            Safe(context?.TraceIdentifier ?? "unknown"),
-            Safe(context?.Connection.RemoteIpAddress?.ToString() ?? "unknown"));
+            Safe(context?.TraceIdentifier ?? "unknown"));
     }
 
     private static string ResolveIdentity(ClaimsPrincipal? principal)
@@ -114,6 +111,5 @@ public sealed class AuditLogger(
         DateTimeOffset Timestamp,
         string Identity,
         string AuthenticationMethod,
-        string RequestId,
-        string ClientIp);
+        string RequestId);
 }

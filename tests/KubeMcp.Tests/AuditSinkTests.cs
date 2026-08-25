@@ -196,7 +196,6 @@ public sealed class AuditSinkTests
         null,
         TimeSpan.Zero,
         "request-1",
-        "127.0.0.1",
         null);
 
     private sealed class CapturingSink : IAuditSink

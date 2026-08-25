@@ -51,60 +51,6 @@ public sealed class AuthenticationOptionsValidatorTests
         Assert.Contains("at least 32 bytes", result.FailureMessage);
     }
 
-    [Fact]
-    public void ForwardedHeadersRejectInvalidProxiesAndNetworks()
-    {
-        var badProxy = productionValidator.Validate(null, OptionsWithForwardedHeaders(knownProxies: ["not-an-ip"]));
-        var badNetwork = productionValidator.Validate(null, OptionsWithForwardedHeaders(knownNetworks: ["10.0.0.0/not-a-cidr"]));
-
-        Assert.Contains("KnownProxies contains invalid IP address", badProxy.FailureMessage);
-        Assert.Contains("KnownNetworks contains invalid CIDR network", badNetwork.FailureMessage);
-    }
-
-    [Fact]
-    public void ForwardedHeadersAcceptValidProxiesAndNetworks()
-    {
-        var result = productionValidator.Validate(null, OptionsWithForwardedHeaders(
-            knownProxies: ["10.0.0.5", "192.168.1.1"],
-            knownNetworks: ["10.0.0.0/8", "2001:db8::/32"]));
-
-        Assert.True(result.Succeeded);
-    }
-
-    [Theory]
-    [InlineData("0.0.0.0/0")]
-    [InlineData("::/0")]
-    public void ForwardedHeadersRejectTrustAllNetworks(string network)
-    {
-        var result = productionValidator.Validate(
-            null,
-            OptionsWithForwardedHeaders(knownNetworks: [network]));
-
-        Assert.Contains("must not trust every address", result.FailureMessage);
-    }
-
-    private static KubeMcpOptions OptionsWithForwardedHeaders(
-        string[]? knownProxies = null,
-        string[]? knownNetworks = null) =>
-        new()
-        {
-            SecretHmacKey = TestHmacKey,
-            AllowedResources = new Dictionary<string, KubernetesResourceOptions>
-            {
-                ["pods"] = new() { Group = "", Version = "v1", Resource = "pods", Kind = "Pod" }
-            },
-            Authentication = new KubeMcpAuthenticationOptions
-            {
-                Mode = AuthenticationMode.ApiKey,
-                ApiKey = "stage-five-test-api-key-32-bytes-minimum"
-            },
-            ForwardedHeaders = new KubeMcpForwardedHeadersOptions
-            {
-                KnownProxies = knownProxies ?? [],
-                KnownNetworks = knownNetworks ?? []
-            }
-        };
-
     private static KubeMcpOptions Options(KubeMcpAuthenticationOptions authentication) => new()
     {
         SecretHmacKey = TestHmacKey,

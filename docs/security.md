@@ -38,7 +38,7 @@ The HMAC key remains on the server. Keep it stable only when fingerprints need t
 
 ## Edge traffic controls
 
-Production runs on a private network behind an ingress, load balancer, or service mesh. That edge must enforce HTTP request-body and header limits plus request rate and concurrency limits. It must also prevent untrusted direct access to the application Service where required. These controls are intentionally not implemented in the application.
+Production runs on a private network behind an ingress, load balancer, or service mesh. That edge must enforce HTTP request-body and header limits plus request rate and concurrency limits. It also owns originating-client IP, external scheme, and external host logging, and must prevent untrusted direct access to the application Service where required. These controls are intentionally not implemented in the application.
 
 The application retains the boundaries only it can enforce: Kubernetes response-body limits, safe tool-output limits, item and page counts, continuation-token bounds, and Kubernetes and overall MCP deadlines. Root, liveness, and readiness routing is independent of MCP authentication.
 
@@ -69,14 +69,10 @@ Records can include:
 - authentication mode
 - operation and resource coordinates for dispatched tool calls
 - result and fixed error category
-- duration, request ID, and client IP
+- duration and request ID
 - successful object count
 
 They do not include Kubernetes response bodies, Secret values or fingerprints, credentials, tokens, or arbitrary exception text. See [observability and audit logging](observability.md#audit-logging) for dispatch and sink behavior.
-
-## Reverse proxies
-
-Forwarded headers are trusted only from explicitly configured proxy addresses or networks. Host filtering remains active. Never configure a trust-all proxy network; see [configuration](configuration.md#reverse-proxies-and-hosts).
 
 ## RBAC
 

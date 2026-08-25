@@ -319,7 +319,6 @@ file static class OptionsTestExtensions
             AllowedResources = resources,
             NamespacePolicy = options.NamespacePolicy,
             Authentication = options.Authentication,
-            ForwardedHeaders = options.ForwardedHeaders,
             MaxListItems = options.MaxListItems,
             MaxResponseBytes = options.MaxResponseBytes,
             KubernetesRequestTimeoutSeconds = options.KubernetesRequestTimeoutSeconds,

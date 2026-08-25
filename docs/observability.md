@@ -51,4 +51,4 @@ Audit identity is derived without recording bearer credentials:
 - Unauthenticated development mode: `anonymous`
 - Static API key: `static-api-key`
 
-When a request arrives through a configured trusted proxy, the audit event records the forwarded originating client IP. Forwarded values from untrusted peers are ignored.
+Audit events retain the authenticated identity and request ID but do not record client IP addresses or forwarded-header values. The ingress, load balancer, or service mesh owns originating-client IP, external scheme, and external host logging.

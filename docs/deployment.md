@@ -5,11 +5,11 @@
 The reference [`deployment.yaml`](../deployment.yaml) is an authenticated production deployment. Before applying it:
 
 1. Create the API-key and HMAC Kubernetes Secrets described below.
-2. Replace `k-mcp.example.internal` in `AllowedHosts` with the deployment hostname.
+2. Replace `k-mcp.example.internal` in `AllowedHosts` with the internal hostname presented to the application.
 3. Pin the image to an immutable `sha-<commit>` tag.
 4. Confirm the GHCR package is public or configure an image pull secret.
-5. Review the resource allowlist, namespace policy, RBAC, and trusted proxy settings.
-6. Configure the private-network ingress, load balancer, or service mesh to enforce HTTP request-body, header, rate, and concurrency limits and to block untrusted direct Service access where required.
+5. Review the resource allowlist, namespace policy, RBAC, and standard ASP.NET Core host filtering.
+6. Configure the private-network ingress, load balancer, or service mesh to enforce HTTP request-body, header, rate, and concurrency limits, own originating-client IP/external scheme/external host logging, and block untrusted direct Service access where required.
 7. Provide secrets through your normal secret-management system; do not commit them.
 
 Missing or invalid production authentication configuration prevents startup rather than exposing `/mcp`.
@@ -49,7 +49,7 @@ The MCP endpoint is `http://127.0.0.1:8080/mcp` through this port-forward. Use T
 
 ## Private-network edge contract
 
-The application Service is intended to remain private. Its ingress, load balancer, or service mesh owns HTTP request-body and header limits, request rate and concurrency limits, and prevention of untrusted direct access where required. Choose limits for the expected MCP client workload and enforce them before requests reach the pod; the application has no admission, request-body, or concurrency limiter.
+The application Service is intended to remain private. Its ingress, load balancer, or service mesh owns HTTP request-body and header limits, request rate and concurrency limits, originating-client IP, external scheme and host logging, and prevention of untrusted direct access where required. Choose limits for the expected MCP client workload and enforce them before requests reach the pod; the application has no admission, request-body, concurrency, or forwarded-header middleware.
 
 The application still bounds Kubernetes upstream bodies, safe MCP output, list items/pages, continuation tokens, and operation deadlines. The deployment retains pod CPU and memory requests and limits because those controls cannot be delegated to HTTP infrastructure.
 

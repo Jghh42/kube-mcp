@@ -1,8 +1,6 @@
-using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
-using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
@@ -106,12 +104,6 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
                 $"{KubeMcpOptions.SectionName}:OverallMcpRequestTimeoutSeconds must be greater than KubernetesRequestTimeoutSeconds so the end-to-end deadline leaves time for MCP error serialization and audit publication.");
         }
 
-        var forwardedHeadersValidation = ValidateForwardedHeaders(options.ForwardedHeaders);
-        if (forwardedHeadersValidation is not null)
-        {
-            return forwardedHeadersValidation;
-        }
-
         return ValidateAuthentication(options.Authentication);
     }
 
@@ -170,52 +162,6 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         return Encoding.UTF8.GetByteCount(authentication.ApiKey) >= 32
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail($"{path}:ApiKey must contain at least 32 bytes in API key mode.");
-    }
-
-    private static ValidateOptionsResult? ValidateForwardedHeaders(KubeMcpForwardedHeadersOptions forwardedHeaders)
-    {
-        const string path = $"{KubeMcpOptions.SectionName}:ForwardedHeaders";
-
-        if (forwardedHeaders is null)
-        {
-            return ValidateOptionsResult.Fail($"{path} is required.");
-        }
-
-        foreach (var proxy in forwardedHeaders.KnownProxies ?? [])
-        {
-            if (!IPAddress.TryParse(proxy, out _))
-            {
-                return ValidateOptionsResult.Fail(
-                    $"{path}:KnownProxies contains invalid IP address \"{proxy}\".");
-            }
-        }
-
-        foreach (var network in forwardedHeaders.KnownNetworks ?? [])
-        {
-            if (!System.Net.IPNetwork.TryParse(network, out var parsed))
-            {
-                return ValidateOptionsResult.Fail(
-                    $"{path}:KnownNetworks contains invalid CIDR network \"{network}\".");
-            }
-
-            if (parsed.PrefixLength == 0)
-            {
-                return ValidateOptionsResult.Fail(
-                    $"{path}:KnownNetworks must not trust every address with \"{network}\".");
-            }
-        }
-
-        const ForwardedHeaders supportedHeaders =
-            ForwardedHeaders.XForwardedFor |
-            ForwardedHeaders.XForwardedProto |
-            ForwardedHeaders.XForwardedHost;
-        if ((forwardedHeaders.AllowedForwardedHeaders & ~supportedHeaders) != 0)
-        {
-            return ValidateOptionsResult.Fail(
-                $"{path}:AllowedForwardedHeaders may contain only XForwardedFor, XForwardedProto, and XForwardedHost.");
-        }
-
-        return null;
     }
 
     private static string? ValidateResource(

@@ -79,7 +79,7 @@ Stage 6 is complete and running in the kind cluster.
 
 - A dedicated audit boundary using the standard `ILogger` pipeline and its default console provider.
 - One structured audit event for every attempted `k8s_get` execution, including successful, failed, and cancelled operations.
-- Safe audit fields for UTC timestamp, authenticated client identity when available, authentication mode, GET/LIST operation, resource, namespace, optional name, result, object count, duration, request ID, and client IP.
+- Safe audit fields for UTC timestamp, authenticated client identity when available, authentication mode, GET/LIST operation, resource, namespace, optional name, result, object count, duration, and request ID.
 - Identity resolution for OAuth client claims (`client_id`, `azp`, or `sub`), the non-secret shared API-key identity, and `anonymous` when authentication is disabled.
 - Audit values are length-bounded and stripped of control characters to prevent multiline/log-forging input.
 - Audit events never include Kubernetes response bodies, Secret values or fingerprints, bearer tokens, client secrets, Kubernetes credentials, or the HMAC key.

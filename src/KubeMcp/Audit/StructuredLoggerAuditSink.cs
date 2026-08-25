@@ -11,7 +11,7 @@ public sealed class StructuredLoggerAuditSink(ILogger<StructuredLoggerAuditSink>
         {
             logger.LogInformation(
                 AuditLogger.McpAccessDeniedEvent,
-                "MCP access-denial audit: timestamp={Timestamp} client={ClientIdentity} authentication={AuthenticationMethod} result={Result} category={Category} statusCode={StatusCode} durationMs={DurationMs} requestId={RequestId} clientIp={ClientIp}",
+                "MCP access-denial audit: timestamp={Timestamp} client={ClientIdentity} authentication={AuthenticationMethod} result={Result} category={Category} statusCode={StatusCode} durationMs={DurationMs} requestId={RequestId}",
                 record.Timestamp,
                 record.ClientIdentity,
                 record.AuthenticationMethod,
@@ -19,14 +19,13 @@ public sealed class StructuredLoggerAuditSink(ILogger<StructuredLoggerAuditSink>
                 record.Category,
                 record.StatusCode,
                 Math.Round(record.Duration.TotalMilliseconds, 2),
-                record.RequestId,
-                record.ClientIp);
+                record.RequestId);
         }
         else
         {
             logger.LogInformation(
                 AuditLogger.KubernetesAccessEvent,
-                "Kubernetes audit: timestamp={Timestamp} client={ClientIdentity} authentication={AuthenticationMethod} operation={Operation} resource={Resource} namespace={Namespace} name={ResourceName} result={Result} objectCount={ObjectCount} category={Category} durationMs={DurationMs} requestId={RequestId} clientIp={ClientIp}",
+                "Kubernetes audit: timestamp={Timestamp} client={ClientIdentity} authentication={AuthenticationMethod} operation={Operation} resource={Resource} namespace={Namespace} name={ResourceName} result={Result} objectCount={ObjectCount} category={Category} durationMs={DurationMs} requestId={RequestId}",
                 record.Timestamp,
                 record.ClientIdentity,
                 record.AuthenticationMethod,
@@ -38,8 +37,7 @@ public sealed class StructuredLoggerAuditSink(ILogger<StructuredLoggerAuditSink>
                 record.ObjectCount,
                 record.Category,
                 Math.Round(record.Duration.TotalMilliseconds, 2),
-                record.RequestId,
-                record.ClientIp);
+                record.RequestId);
         }
 
         return ValueTask.CompletedTask;

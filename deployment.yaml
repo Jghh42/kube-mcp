@@ -119,19 +119,11 @@ spec:
                 secretKeyRef:
                   name: kube-mcp-hmac
                   key: key
-            # AllowedHosts: production hostname(s) plus in-cluster and localhost
-            # names. Replace k-mcp.example.internal with your real hostname(s);
-            # multiple values are semicolon-separated. Required behind an ingress.
+            # Standard ASP.NET Core host filtering remains enabled. Replace
+            # k-mcp.example.internal with the internal hostname presented to the
+            # application; multiple values are semicolon-separated.
             - name: AllowedHosts
               value: "k-mcp.example.internal;kube-mcp;kube-mcp.kube-mcp;kube-mcp.kube-mcp.svc;kube-mcp.kube-mcp.svc.cluster.local;localhost;127.0.0.1;[::1]"
-            # Forwarded headers are honored only from explicit, known proxies and
-            # loopback (never every proxy). To run behind a reverse proxy, set its
-            # IP/CIDR so audit records see the originating client and the app
-            # validates the forwarded production host.
-            #   - name: KubeMcp__ForwardedHeaders__KnownProxies__0
-            #     value: 10.0.0.5
-            #   - name: KubeMcp__ForwardedHeaders__KnownNetworks__0
-            #     value: 10.0.0.0/8
           ports:
             - name: http
               containerPort: 8080

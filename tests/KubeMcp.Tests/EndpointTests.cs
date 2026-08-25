@@ -39,12 +39,33 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
-    public async Task LivenessEndpointReportsHealthy()
+    public async Task LivenessEndpointReportsHealthyWithoutForwardedHeaderConfiguration()
     {
         var response = await client.GetAsync("/healthz");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("Healthy", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task AllowedHostsUsesDirectHostAndIgnoresForwardedHost()
+    {
+        await using var hostFactory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
+            builder.UseSetting("AllowedHosts", "k-mcp.example.internal");
+        });
+        using var hostClient = hostFactory.CreateClient();
+
+        using var allowed = new HttpRequestMessage(HttpMethod.Get, "/healthz");
+        allowed.Headers.Host = "k-mcp.example.internal";
+        allowed.Headers.TryAddWithoutValidation("X-Forwarded-Host", "evil.example.com");
+        Assert.Equal(HttpStatusCode.OK, (await hostClient.SendAsync(allowed)).StatusCode);
+
+        using var rejected = new HttpRequestMessage(HttpMethod.Get, "/healthz");
+        rejected.Headers.Host = "evil.example.com";
+        rejected.Headers.TryAddWithoutValidation("X-Forwarded-Host", "k-mcp.example.internal");
+        Assert.Equal(HttpStatusCode.BadRequest, (await hostClient.SendAsync(rejected)).StatusCode);
     }
 
     [Fact]
@@ -68,7 +89,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
-    public async Task McpEndpointExposesExactlyOneTool()
+    public async Task McpEndpointExposesExactlyOneToolWithoutForwardedHeaderConfiguration()
     {
         await using var transport = new HttpClientTransport(
             new HttpClientTransportOptions

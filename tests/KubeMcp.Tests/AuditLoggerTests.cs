@@ -1,4 +1,3 @@
-using System.Net;
 using System.Security.Claims;
 using KubeMcp.Audit;
 using KubeMcp.Configuration;
@@ -11,14 +10,16 @@ namespace KubeMcp.Tests;
 public sealed class AuditLoggerTests
 {
     [Fact]
-    public void PublishesSanitizedApiKeyKubernetesAuditRecord()
+    public void PublishesSanitizedApiKeyKubernetesAuditRecordWithoutClientIp()
     {
         var timestamp = new DateTimeOffset(2026, 3, 20, 12, 34, 56, TimeSpan.Zero);
         var context = new DefaultHttpContext
         {
             TraceIdentifier = "request-123"
         };
-        context.Connection.RemoteIpAddress = IPAddress.Parse("192.0.2.10");
+        context.Request.Headers["X-Forwarded-For"] = "198.51.100.7";
+        context.Request.Headers["X-Forwarded-Host"] = "caller-controlled.example";
+        context.Request.Headers["X-Forwarded-Proto"] = "https";
         context.User = new ClaimsPrincipal(new ClaimsIdentity(
             [new Claim("client_id", "static-api-key")],
             authenticationType: "ApiKey"));
@@ -58,7 +59,9 @@ public sealed class AuditLoggerTests
         Assert.Equal("kubernetes_access_denied", record.Category);
         Assert.Null(record.ObjectCount);
         Assert.Equal("request-123", record.RequestId);
-        Assert.Equal("192.0.2.10", record.ClientIp);
+        Assert.DoesNotContain(
+            new[] { "198.51.100.7", "caller-controlled.example", "https" },
+            forwardedValue => record.ToString().Contains(forwardedValue, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -150,7 +153,6 @@ public sealed class AuditLoggerTests
             2,
             TimeSpan.FromMilliseconds(12.345),
             "request-1",
-            "127.0.0.1",
             null);
 
         await sink.WriteAsync(record, CancellationToken.None);
@@ -160,6 +162,9 @@ public sealed class AuditLoggerTests
         Assert.Equal("success", entry.Properties["Category"]);
         Assert.Equal(12.34, entry.Properties["DurationMs"]);
         Assert.Equal(2, entry.Properties["ObjectCount"]);
+        Assert.Equal("anonymous", entry.Properties["ClientIdentity"]);
+        Assert.Equal("request-1", entry.Properties["RequestId"]);
+        Assert.DoesNotContain("ClientIp", entry.Properties.Keys);
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset value) : TimeProvider

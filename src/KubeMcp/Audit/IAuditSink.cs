@@ -35,7 +35,6 @@ public sealed record AuditRecord(
     int? ObjectCount,
     TimeSpan Duration,
     string RequestId,
-    string ClientIp,
     int? StatusCode);
 
 public interface IAuditEventPublisher

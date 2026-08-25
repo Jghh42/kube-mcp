@@ -24,9 +24,6 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | `KubeMcp:Telemetry:Enabled` | `false` | Enable OpenTelemetry metrics, traces, and OTLP export. |
 | `KubeMcp:Authentication:Mode` | `ApiKey` | `ApiKey`, or `None` only when the host environment is `Development`. |
 | `KubeMcp:Authentication:ApiKey` | none | Static bearer key of at least 32 UTF-8 bytes. Required in API-key mode. |
-| `KubeMcp:ForwardedHeaders:KnownProxies` | loopback | Trusted reverse-proxy IP addresses. |
-| `KubeMcp:ForwardedHeaders:KnownNetworks` | loopback | Trusted reverse-proxy CIDRs. |
-| `KubeMcp:ForwardedHeaders:AllowedForwardedHeaders` | `XForwardedFor, XForwardedProto, XForwardedHost` | Headers accepted from trusted proxies and networks. |
 | `AllowedHosts` | local and service names | Semicolon-delimited ASP.NET Core host allowlist. |
 
 ## Resource policy
@@ -78,21 +75,11 @@ Clients send `Authorization: Bearer <high-entropy-key>`. Comparison is constant-
 
 ## Edge traffic limits
 
-The application does not configure HTTP request-body, header, rate, or concurrency limits. Production must run on a private network behind an ingress, load balancer, or service mesh that enforces limits appropriate to the expected MCP workload and blocks untrusted direct Service access where required.
+The application does not configure HTTP request-body, header, rate, concurrency, or forwarded-header handling. Production must run on a private network behind an ingress, load balancer, or service mesh that enforces limits appropriate to the expected MCP workload, blocks untrusted direct Service access where required, and owns originating-client IP, external scheme, and external host logging.
 
 `MaxUpstreamBodyBytes`, `MaxResponseBytes`, list item/page sizes and counts, continuation-token bounds, and Kubernetes and overall MCP deadlines remain application settings because they bound Kubernetes input and agent-facing output rather than edge traffic. The reference pod retains explicit CPU and memory requests and limits.
 
-## Reverse proxies and hosts
-
-Forwarded client IP, scheme, and host are accepted only when the immediate peer matches a configured trusted proxy or network. Loopback is the only built-in trust.
-
-```text
-KubeMcp__ForwardedHeaders__KnownProxies__0=10.0.0.5
-KubeMcp__ForwardedHeaders__KnownNetworks__0=10.42.0.0/16
-AllowedHosts=k-mcp.example.internal;kube-mcp;kube-mcp.kube-mcp.svc;localhost;127.0.0.1;[::1]
-```
-
-Use the narrowest ingress address or network possible; never trust `0.0.0.0/0` or `::/0`. Include every external and direct in-cluster hostname in `AllowedHosts`. Forwarded values from untrusted peers are ignored.
+Standard ASP.NET Core `AllowedHosts` filtering remains available. Configure it with the internal hostnames presented directly to the application; the application does not derive hosts from forwarded headers.
 
 ## Secret management
 

@@ -71,17 +71,6 @@ if (authenticationMode == AuthenticationMode.None)
         "Authentication is disabled (Mode=None). The MCP endpoint is reachable WITHOUT credentials. This mode is intended ONLY for isolated local development and must never be exposed to a shared or untrusted network. Set KubeMcp:Authentication:Mode to ApiKey for every non-development deployment.");
 }
 
-// Honor forwarded headers only from explicitly configured, known proxies/networks
-// (and loopback) before authentication and audit handling. This lets audit
-// records observe the originating client IP and forwarded-host validation sees
-// the production hostname behind a trusted proxy without trusting every proxy.
-var forwardedHeadersOptions = new ForwardedHeadersOptions();
-ForwardedHeadersConfiguration.Apply(
-    kubeMcpOptions.ForwardedHeaders,
-    forwardedHeadersOptions,
-    builder.Configuration["AllowedHosts"]);
-app.UseForwardedHeaders(forwardedHeadersOptions);
-
 app.UseRouting();
 // The application retains its end-to-end MCP deadline. HTTP body, header, rate,
 // and concurrency limits belong at the private-network ingress or service mesh.
