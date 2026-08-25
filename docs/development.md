@@ -6,8 +6,7 @@
 - Docker
 - kind
 - kubectl
-- curl and Python 3 for the kind harness
-- OpenSSL for generating development HMAC and API keys
+- curl, Python 3, and OpenSSL for the kind harness
 
 ## Build and test
 
@@ -25,23 +24,24 @@ The test suite covers access policy, authentication, Secret sanitization and fin
 ./tests/integration/run-kind.sh
 ```
 
-For local runs, the harness builds and loads a test image. In CI, it receives the same content-addressed image archive that is later scanned, SBOMed, and published, without rebuilding it.
+The harness owns a new disposable kind cluster for each run. Locally it builds and loads `kube-mcp:integration`; CI supplies the same already-built local image that it scans, SBOMs, and publishes after the harness succeeds. The cluster is deleted on success or failure, so no ambient cluster resources are reused or restored.
 
 The harness creates ephemeral HMAC and API keys, loads the API key through a Kubernetes Secret, and checks:
 
 - missing, malformed, incorrect, and correct API-key credentials
 - exactly one exposed MCP tool
-- generic name/namespace/kind/age LIST summaries and detailed GET responses
+- ordinary detailed GET and generic compact LIST responses
 - Secret LIST key-name sanitization and GET fingerprinting
+- absence of raw Secret data in responses and application logs
 - application resource-policy and Kubernetes RBAC denials
-- both namespace-policy modes
+- blacklist and label-selector namespace policy allow/deny behavior
+- automatic access to a newly created eligible namespace
 - explicit built-in resource mappings
-
-Harness-owned namespaces are deleted afterward. Any pre-existing `kube-mcp-reader` ClusterRole and ClusterRoleBinding are restored from exact snapshots, or removed when they did not exist before the run.
+- practical upstream-body and safe-output size boundaries
 
 ## Continuous integration
 
-[`.github/workflows/container.yml`](../.github/workflows/container.yml) builds and tests pull requests targeting `main`. The workflow also performs container security and publishing steps for eligible pushes and tags.
+[`.github/workflows/container.yml`](../.github/workflows/container.yml) has two jobs. Pull requests run locked restore/build/test, NuGet scanning, and the container/kind/vulnerability gate with a read-only token. Trusted pushes run that same application gate followed by one container build that runs in disposable kind, is scanned and SBOMed, and is then published. GitHub provenance and SBOM attestations accompany published images.
 
 ## Container publishing
 
@@ -61,6 +61,6 @@ v1.2.3
 1.2
 ```
 
-Release-tag builds do not create or move `latest`; only a successful push to the default branch does. Publishing uses the workflow's short-lived `GITHUB_TOKEN` and requires no repository secret.
+Release-tag builds do not create or move `latest`; only a successful push to the default branch does. Publishing uses the workflow's short-lived `GITHUB_TOKEN` and requires no repository secret. Pull-request jobs remain read-only and never receive publication or attestation permissions.
 
-A new GHCR package is private by default. Change its package visibility after the first publish if unauthenticated cluster pulls are required. Production deployments should use immutable `sha-<commit>` tags.
+A new GHCR package is private by default. Change its package visibility after the first publish if unauthenticated cluster pulls are required. The full `sha-<commit>` tag identifies the source revision but, like any registry tag, can technically be moved. Production deployments should pin the published `ghcr.io/jghh42/kube-mcp@sha256:<digest>` reference recorded by the workflow.

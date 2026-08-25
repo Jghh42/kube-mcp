@@ -26,7 +26,7 @@ Read [docs/security.md](docs/security.md) before changing authentication, author
 
 - `src/KubeMcp/` — application code and default settings
 - `tests/KubeMcp.Tests/` — xUnit unit and in-process integration tests
-- `tests/integration/` — kind/Keycloak end-to-end harness
+- `tests/integration/` — disposable-kind end-to-end harness
 - `deployment*.yaml` — production, development, and broad-RBAC manifests
 - `overlays/` — optional CRD mappings and matching RBAC
 - `.github/workflows/container.yml` — build, test, scan, and publish pipeline
@@ -44,7 +44,7 @@ dotnet test KubeMcp.slnx --configuration Release --no-build --no-restore
 git diff --check
 ```
 
-Use targeted tests while iterating, then run the full suite for code or manifest changes. Run `./tests/integration/run-kind.sh` for changes affecting the container, deployment, OAuth flow, Kubernetes integration, or kind harness. See [docs/development.md](docs/development.md).
+Use targeted tests while iterating, then run the full suite for code or manifest changes. Run `./tests/integration/run-kind.sh` for changes affecting the container, deployment, authentication, Kubernetes integration, or kind harness. See [docs/development.md](docs/development.md).
 
 When dependencies change, refresh and commit both relevant `packages.lock.json` files, then verify a locked restore. Keep CI actions and Docker base images pinned; do not replace immutable pins with mutable tags.
 
@@ -53,5 +53,5 @@ When dependencies change, refresh and commit both relevant `packages.lock.json` 
 - Add or update tests for behavior changes and security boundaries.
 - Keep error categories and telemetry labels low-cardinality and sanitized.
 - Update focused documentation rather than expanding the README.
-- Never commit keys, tokens, kubeconfigs, OAuth client secrets, or exporter credentials.
+- Never commit keys, tokens, kubeconfigs, API keys, HMAC keys, or exporter credentials.
 - Preserve unrelated working-tree changes.

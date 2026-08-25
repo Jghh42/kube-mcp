@@ -8,5 +8,5 @@ spec:
     spec:
       containers:
         - name: kube-mcp
-          # The harness loads this candidate into kind before deployment.
+          # The harness loads this exact local image into its disposable cluster.
           imagePullPolicy: Never

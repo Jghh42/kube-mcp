@@ -12,6 +12,8 @@ public sealed class KindIntegrationTests
 {
     private const string Namespace = "kube-mcp-e2e";
     private const string SecretValue = "correct-horse-battery-staple";
+    private const string SecretUsername = "integration-user";
+    private const string UpstreamSecretPrefix = "UPSTREAM-SECRET-BOUNDARY!!!";
 
     [IntegrationTest]
     [Trait("Category", "Integration")]
@@ -53,8 +55,8 @@ public sealed class KindIntegrationTests
             var root = json.RootElement;
             var items = root.GetProperty("items");
             var item = Assert.Single(items.EnumerateArray(), item =>
-                item.GetProperty("name").GetString() == "stage-two");
-            AssertGenericListItem(item, "stage-two", Namespace, "ConfigMap");
+                item.GetProperty("name").GetString() == "stage-ten");
+            AssertGenericListItem(item, "stage-ten", Namespace, "ConfigMap");
             Assert.Equal(items.GetArrayLength(), root.GetProperty("count").GetInt32());
             Assert.False(root.GetProperty("limited").GetBoolean());
         }
@@ -95,7 +97,7 @@ public sealed class KindIntegrationTests
             AssertGenericListItem(item, "kube-mcp", "kube-mcp", "Service");
         }
 
-        var configMapGet = await CallAsync(client, "configmaps", "stage-two");
+        var configMapGet = await CallAsync(client, "configmaps", "stage-ten");
         Assert.NotEqual(true, configMapGet.IsError);
         using (var json = ParseText(configMapGet))
         {
@@ -110,8 +112,16 @@ public sealed class KindIntegrationTests
         Assert.Contains("integration-secret", secretListText);
         Assert.Contains("password", secretListText);
         Assert.DoesNotContain(SecretValue, secretListText);
+        Assert.DoesNotContain(SecretUsername, secretListText);
+        Assert.DoesNotContain(UpstreamSecretPrefix, secretListText);
         Assert.DoesNotContain(
             Convert.ToBase64String(Encoding.UTF8.GetBytes(SecretValue)),
+            secretListText);
+        Assert.DoesNotContain(
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(SecretUsername)),
+            secretListText);
+        Assert.DoesNotContain(
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(UpstreamSecretPrefix)),
             secretListText);
         Assert.DoesNotContain("hmac-sha256:", secretListText);
 
@@ -119,14 +129,18 @@ public sealed class KindIntegrationTests
         Assert.NotEqual(true, secretGet.IsError);
         var secretText = Text(secretGet);
         Assert.DoesNotContain(SecretValue, secretText);
-        Assert.DoesNotContain(Convert.ToBase64String("correct-horse-battery-staple"u8), secretText);
+        Assert.DoesNotContain(SecretUsername, secretText);
+        Assert.DoesNotContain(Convert.ToBase64String(Encoding.UTF8.GetBytes(SecretValue)), secretText);
+        Assert.DoesNotContain(Convert.ToBase64String(Encoding.UTF8.GetBytes(SecretUsername)), secretText);
         Assert.DoesNotContain("annotation-must-not-leak", secretText);
         Assert.DoesNotContain("annotations", secretText);
         using (var json = JsonDocument.Parse(secretText))
         {
             var data = json.RootElement.GetProperty("data");
             var password = data.GetProperty("password").GetString();
-            Assert.StartsWith("hmac-sha256:", password);
+            Assert.All(
+                data.EnumerateObject(),
+                property => Assert.StartsWith("hmac-sha256:", property.Value.GetString()));
             Assert.Equal(password, data.GetProperty("duplicate").GetString());
             Assert.NotEqual(password, data.GetProperty("username").GetString());
         }
@@ -166,6 +180,48 @@ public sealed class KindIntegrationTests
             cancellationToken: CancellationToken.None);
         Assert.True(invalidNamespace.IsError);
         Assert.Contains("The Kubernetes request is invalid.", Text(invalidNamespace));
+    }
+
+    [IntegrationTest]
+    [Trait("Category", "Integration")]
+    public async Task McpEnforcesPracticalResponseBoundaries()
+    {
+        var endpoint = Environment.GetEnvironmentVariable(IntegrationTestAttribute.EndpointVariable);
+        var apiKey = Environment.GetEnvironmentVariable("KUBE_MCP_INTEGRATION_API_KEY");
+        Assert.False(string.IsNullOrWhiteSpace(endpoint));
+        Assert.False(string.IsNullOrWhiteSpace(apiKey));
+
+        using var httpClient = new HttpClient();
+        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        await using var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri(endpoint),
+                Name = "kube-mcp-kind-boundaries"
+            },
+            httpClient,
+            loggerFactory: null,
+            ownsHttpClient: false);
+        await using var client = await McpClient.CreateAsync(transport);
+
+        var safeOutputLimited = await CallAsync(client, "configmaps", "boundary-safe-output");
+        Assert.True(safeOutputLimited.IsError);
+        Assert.Contains(
+            "The Kubernetes response exceeded the configured size limit.",
+            Text(safeOutputLimited));
+
+        // This Secret's raw upstream body exceeds the upstream cap, while its
+        // fingerprinted safe response would fit under the separate output cap.
+        var upstreamLimited = await CallAsync(client, "secrets", "boundary-upstream");
+        Assert.True(upstreamLimited.IsError);
+        var upstreamError = Text(upstreamLimited);
+        Assert.Contains(
+            "The Kubernetes response exceeded the configured size limit.",
+            upstreamError);
+        Assert.DoesNotContain(UpstreamSecretPrefix, upstreamError);
+        Assert.DoesNotContain(
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(UpstreamSecretPrefix)),
+            upstreamError);
     }
 
     private static async Task AssertApiKeyDenialsAsync(string endpoint)
