@@ -40,7 +40,7 @@ The HMAC key remains on the server. Keep it stable only when fingerprints need t
 
 Production runs on a private network behind an ingress, load balancer, or service mesh. That edge must enforce HTTP request-body and header limits plus request rate and concurrency limits. It also owns originating-client IP, external scheme, and external host logging, and must prevent untrusted direct access to the application Service where required. These controls are intentionally not implemented in the application.
 
-The application retains the boundaries only it can enforce: Kubernetes response-body limits, safe tool-output limits, item and page counts, continuation-token bounds, and Kubernetes and overall MCP deadlines. Root, liveness, and readiness routing is independent of MCP authentication.
+The application retains the boundaries only it can enforce: Kubernetes response-body limits, safe tool-output limits, item and page counts, continuation-token bounds, and Kubernetes and overall MCP deadlines. Root, liveness, and readiness routing is independent of MCP authentication. The health endpoints return only fixed process/startup status and do not probe Kubernetes; startup validation and fixed safe request-time errors remain fail-closed.
 
 ## Safe errors
 

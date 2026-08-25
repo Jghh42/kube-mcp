@@ -28,7 +28,6 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
 
     public Func<KubernetesResourceDescriptor, string, string, int, CancellationToken, Task<string>>? GetHandler { get; set; }
     public Func<KubernetesResourceDescriptor, string, int, string?, int, CancellationToken, Task<string>>? ListHandler { get; set; }
-    public Func<KubernetesResourceDescriptor, string, string?, CancellationToken, Task<bool>>? ResourceAccessHandler { get; set; }
     public Func<string, string, CancellationToken, Task<bool>>? NamespaceLabelHandler { get; set; }
 
     public async Task<ReadOnlyMemory<byte>> GetNamespacedAsync(
@@ -58,19 +57,6 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
             : await ListHandler(descriptor, @namespace, pageSize, continueToken, maxBodyBytes, cancellationToken).ConfigureAwait(false);
         LastListBodyBytes = Encoding.UTF8.GetBytes(body);
         return LastListBodyBytes;
-    }
-
-    public async Task<bool> IsResourceAccessAllowedAsync(
-        KubernetesResourceDescriptor descriptor,
-        string verb,
-        string? @namespace,
-        int maxBodyBytes,
-        CancellationToken cancellationToken)
-    {
-        Record($"AUTH {verb} {descriptor.QualifiedName} namespace={@namespace ?? "<cluster>"} maxBody={maxBodyBytes}");
-        return ResourceAccessHandler is null
-            ? true
-            : await ResourceAccessHandler(descriptor, verb, @namespace, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<bool> NamespaceMatchesLabelSelectorAsync(
@@ -338,25 +324,6 @@ public sealed class KubernetesBoundaryOptionsTests
 
         Assert.True(result.Failed);
         Assert.Contains("between 1 and 3600", result.FailureMessage);
-    }
-
-    [Fact]
-    public void InvalidReadinessNamespaceIsRejected()
-    {
-        var baseline = ReaderTestOptions.Options();
-        var options = new KubeMcpOptions
-        {
-            SecretHmacKey = baseline.SecretHmacKey,
-            ReadinessNamespace = "Not A Namespace",
-            AllowedResources = baseline.AllowedResources,
-            NamespacePolicy = baseline.NamespacePolicy
-        };
-
-        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
-            .Validate(null, options);
-
-        Assert.True(result.Failed);
-        Assert.Contains("ReadinessNamespace", result.FailureMessage);
     }
 
     [Fact]

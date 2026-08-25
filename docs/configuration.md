@@ -8,7 +8,6 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | --- | --- | --- |
 | `KubeMcp:SecretHmacKey` | required | Base64-encoded HMAC key of at least 32 bytes. |
 | `KubeMcp:KubeConfigPath` | automatic | Optional kubeconfig path; in-cluster configuration is detected automatically. |
-| `KubeMcp:ReadinessNamespace` | none | Representative namespace for namespaced readiness authorization checks. |
 | `KubeMcp:AllowedResources` | see `appsettings.json` | MCP names mapped to Kubernetes group/version/resource/kind. |
 | `KubeMcp:NamespacePolicy:Mode` | `Blacklist` | `Blacklist` or `LabelSelector`. |
 | `KubeMcp:NamespacePolicy:DeniedNamespaces` | system namespaces | Names denied in blacklist mode. |

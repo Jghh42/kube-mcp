@@ -3,7 +3,6 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using k8s;
 
 namespace KubeMcp.Kubernetes;
@@ -16,10 +15,6 @@ namespace KubeMcp.Kubernetes;
 internal sealed class KubernetesApi : IKubernetesApi
 {
     private const string JsonMediaType = "application/json";
-    private static readonly JsonSerializerOptions AccessReviewSerializerOptions = new()
-    {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-    };
 
     internal const int MaximumContinueTokenBytes = 8 * 1024;
 
@@ -62,41 +57,6 @@ internal sealed class KubernetesApi : IKubernetesApi
             cancellationToken,
             clearTemporaryBuffers: descriptor.IsSecret);
 
-    public async Task<bool> IsResourceAccessAllowedAsync(
-        KubernetesResourceDescriptor descriptor,
-        string verb,
-        string? @namespace,
-        int maxBodyBytes,
-        CancellationToken cancellationToken)
-    {
-        var uri = AppendPath(
-            client.BaseUri,
-            "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
-        var payload = JsonSerializer.SerializeToUtf8Bytes(new
-        {
-            apiVersion = "authorization.k8s.io/v1",
-            kind = "SelfSubjectAccessReview",
-            spec = new
-            {
-                resourceAttributes = new
-                {
-                    group = descriptor.Group,
-                    resource = descriptor.Resource,
-                    verb,
-                    @namespace
-                }
-            }
-        }, AccessReviewSerializerOptions);
-        using var content = new ByteArrayContent(payload);
-        content.Headers.ContentType = new MediaTypeHeaderValue(JsonMediaType);
-        var body = await PostRawAsync(
-            uri,
-            content,
-            maxBodyBytes,
-            cancellationToken).ConfigureAwait(false);
-        return ParseResourceAccessReview(body, cancellationToken);
-    }
-
     public async Task<bool> NamespaceMatchesLabelSelectorAsync(
         string @namespace,
         string labelSelector,
@@ -120,19 +80,6 @@ internal sealed class KubernetesApi : IKubernetesApi
             maxBodyBytes,
             cancellationToken,
             clearTemporaryBuffers).ConfigureAwait(false);
-    }
-
-    private async Task<ReadOnlyMemory<byte>> PostRawAsync(
-        Uri uri,
-        HttpContent content,
-        int maxBodyBytes,
-        CancellationToken cancellationToken)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Post, uri)
-        {
-            Content = content
-        };
-        return await SendRawAsync(request, maxBodyBytes, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<ReadOnlyMemory<byte>> SendRawAsync(
@@ -414,22 +361,6 @@ internal sealed class KubernetesApi : IKubernetesApi
             KubernetesErrorCategory.ResponseTooLarge,
             SafeMessage(KubernetesErrorCategory.ResponseTooLarge));
 
-    private static bool ParseResourceAccessReview(
-        ReadOnlyMemory<byte> body,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        using var document = ParseJson(body);
-        cancellationToken.ThrowIfCancellationRequested();
-        if (!document.RootElement.TryGetProperty("status", out var status))
-        {
-            throw MalformedResponseException();
-        }
-
-        EnsureObject(status);
-        return RequiredBoolean(status, "allowed");
-    }
-
     private static bool ParseNamespaceMatch(
         ReadOnlyMemory<byte> body,
         string @namespace,
@@ -536,17 +467,6 @@ internal sealed class KubernetesApi : IKubernetesApi
         }
 
         return value.GetString()!;
-    }
-
-    private static bool RequiredBoolean(JsonElement parent, string propertyName)
-    {
-        if (!parent.TryGetProperty(propertyName, out var value) ||
-            value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
-        {
-            throw MalformedResponseException();
-        }
-
-        return value.GetBoolean();
     }
 
     private static void EnsureObject(JsonElement value)

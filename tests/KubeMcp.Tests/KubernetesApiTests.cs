@@ -224,59 +224,6 @@ public sealed class KubernetesApiTests
     }
 
     [Fact]
-    public async Task ResourceAccessReviewUsesCurrentIdentityAndParsesAllowedStatus()
-    {
-        var setup = CreateClientAndHandler(() => new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent("{\"status\":{\"allowed\":true}}")
-        });
-        using var k = setup.Client;
-        using var api = new KubernetesApi(k, ownsClient: true);
-
-        var allowed = await api.IsResourceAccessAllowedAsync(
-            Descriptor("apps", "v1", "deployments", "Deployment"),
-            "list",
-            "production",
-            4096,
-            CancellationToken.None);
-
-        Assert.True(allowed);
-        Assert.Equal(HttpMethod.Post, Assert.Single(setup.Handler.Methods));
-        Assert.Equal(
-            "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
-            Assert.Single(setup.Handler.Requests).AbsolutePath);
-        var body = Assert.Single(setup.Handler.Bodies);
-        Assert.Contains("\"group\":\"apps\"", body, StringComparison.Ordinal);
-        Assert.Contains("\"resource\":\"deployments\"", body, StringComparison.Ordinal);
-        Assert.Contains("\"verb\":\"list\"", body, StringComparison.Ordinal);
-        Assert.Contains("\"namespace\":\"production\"", body, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task ClusterScopedAccessReviewOmitsNamespace()
-    {
-        var setup = CreateClientAndHandler(() => new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent("{\"status\":{\"allowed\":true}}")
-        });
-        using var k = setup.Client;
-        using var api = new KubernetesApi(k, ownsClient: true);
-
-        var allowed = await api.IsResourceAccessAllowedAsync(
-            Descriptor("", "v1", "namespaces", "Namespace"),
-            "list",
-            @namespace: null,
-            maxBodyBytes: 4096,
-            CancellationToken.None);
-
-        Assert.True(allowed);
-        Assert.DoesNotContain(
-            "\"namespace\":",
-            Assert.Single(setup.Handler.Bodies),
-            StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
     public async Task NamespaceLabelCheckUsesBoundedFilteredList()
     {
         var setup = CreateClientAndHandler(() => new HttpResponseMessage(HttpStatusCode.OK)

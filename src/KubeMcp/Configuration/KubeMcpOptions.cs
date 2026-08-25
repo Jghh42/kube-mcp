@@ -11,12 +11,6 @@ public sealed class KubeMcpOptions
 
     public string? KubeConfigPath { get; init; }
 
-    /// <summary>
-    /// Optional representative namespace included in readiness SelfSubjectAccessReview
-    /// checks for namespaced resources. Null retains a cluster-wide authorization check.
-    /// </summary>
-    public string? ReadinessNamespace { get; init; }
-
     public Dictionary<string, KubernetesResourceOptions> AllowedResources { get; init; } = [];
 
     public NamespacePolicyOptions NamespacePolicy { get; init; } = new();

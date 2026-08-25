@@ -66,9 +66,9 @@ The overlay selects the `Development` environment and `Authentication:Mode=None`
 
 ## Health and readiness
 
-The root, liveness, and readiness endpoints are public in every authentication mode. Readiness performs an opaque, two-second Kubernetes authorization probe. Concurrent callers share one probe and its result is cached for one second.
+The root, `/healthz`, and `/readyz` endpoints are public in every authentication mode. Both probe endpoints return small fixed responses and report only that the process started successfully; they do not contact Kubernetes or expose configuration and exception details.
 
-By default, readiness asks a cluster-wide authorization question. Set `KubeMcp:ReadinessNamespace` to a representative policy-allowed namespace when namespaced RoleBinding access should be checked instead. Label-selector namespace mode also verifies permission to list namespaces.
+Startup option validation remains fail-closed, including production authentication validation. Kubernetes authorization and connectivity failures are handled through fixed safe errors when an authenticated MCP request performs a read. The deployment retains separate liveness and readiness probes for platform compatibility, but both have process-only semantics.
 
 ## Resource access and RBAC
 

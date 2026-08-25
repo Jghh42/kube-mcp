@@ -5,9 +5,7 @@ using KubeMcp.Kubernetes;
 using KubeMcp.Mcp;
 using KubeMcp.Observability;
 using KubeMcp.Security;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Timeouts;
-using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.AspNetCore;
 
@@ -47,19 +45,11 @@ builder.Services.AddSingleton<IKubernetesClientFactory>(services =>
     new KubernetesClientFactory(
         services.GetRequiredService<IOptions<KubeMcpOptions>>().Value));
 builder.Services.AddSingleton<IKubernetesReader, KubernetesReader>();
-builder.Services.AddSingleton<KubernetesReadinessHealthCheck>();
 
 builder.Services
     .AddMcpServer()
     .WithHttpTransport(options => options.SessionMode = HttpServerSessionMode.Stateless)
     .WithTools<KubernetesGetTool>();
-builder.Services
-    .AddHealthChecks()
-    .AddCheck<KubernetesReadinessHealthCheck>(
-        KubernetesReadinessHealthCheck.Name,
-        failureStatus: HealthStatus.Unhealthy,
-        tags: [KubernetesReadinessHealthCheck.Tag],
-        timeout: KubernetesReadinessHealthCheck.Timeout);
 
 var app = builder.Build();
 
@@ -90,18 +80,10 @@ app.MapGet("/", () => Results.Ok(new
     service = "kube-mcp",
     status = "running"
 }));
-app.MapHealthChecks("/healthz", new HealthCheckOptions
-{
-    // Liveness is intentionally process-only so a dependency outage cannot
-    // trigger Kubernetes restarts.
-    Predicate = static _ => false,
-    ResponseWriter = WriteHealthStatusAsync
-});
-app.MapHealthChecks("/readyz", new HealthCheckOptions
-{
-    Predicate = static check => check.Tags.Contains(KubernetesReadinessHealthCheck.Tag),
-    ResponseWriter = WriteHealthStatusAsync
-});
+// Both public probe endpoints are deliberately process-only and opaque. Startup
+// option validation completes before the application can serve either route.
+app.MapGet("/healthz", static () => Results.Text("Healthy"));
+app.MapGet("/readyz", static () => Results.Text("Ready"));
 var mcpEndpoint = app.MapMcp("/mcp")
     .WithRequestTimeout(McpRequestTimeoutOptionsSetup.PolicyName);
 if (authenticationMode != AuthenticationMode.None)
@@ -110,12 +92,6 @@ if (authenticationMode != AuthenticationMode.None)
 }
 
 app.Run();
-
-static Task WriteHealthStatusAsync(HttpContext context, HealthReport report)
-{
-    context.Response.ContentType = "text/plain; charset=utf-8";
-    return context.Response.WriteAsync(report.Status.ToString());
-}
 
 // Exposes the generated Program type to the functional test project.
 public partial class Program;

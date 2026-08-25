@@ -73,13 +73,6 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
                 $"{KubeMcpOptions.SectionName}:NamespacePolicy:LabelSelector must not exceed 1024 characters.");
         }
 
-        if (options.ReadinessNamespace is not null &&
-            !IsDnsLabel(options.ReadinessNamespace))
-        {
-            return ValidateOptionsResult.Fail(
-                $"{KubeMcpOptions.SectionName}:ReadinessNamespace must be a valid Kubernetes namespace name.");
-        }
-
         if (options.MaxUpstreamBodyBytes < options.MaxResponseBytes)
         {
             return ValidateOptionsResult.Fail(
