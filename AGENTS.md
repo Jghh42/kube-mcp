@@ -64,3 +64,13 @@ When dependencies change, refresh and commit both relevant `packages.lock.json` 
 - Update focused documentation rather than expanding the README.
 - Never commit keys, tokens, kubeconfigs, API keys, or HMAC keys.
 - Preserve unrelated working-tree changes.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues for `Jghh42/kube-mcp`. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+This repository uses a single-context domain documentation layout. See `docs/agents/domain.md`.
