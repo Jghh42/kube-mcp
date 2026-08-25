@@ -1,0 +1,8 @@
+# Development-only overlay. Render with:
+# kubectl kustomize --load-restrictor LoadRestrictionsNone overlays/development
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../deployment.yaml
+patches:
+  - path: deployment-patch.yaml

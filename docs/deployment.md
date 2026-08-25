@@ -55,14 +55,14 @@ The application still bounds Kubernetes upstream bodies, safe MCP output, list i
 
 ## Local unauthenticated deployment
 
-For an isolated local cluster only, apply the explicitly named development overlay after the reference manifest:
+For an isolated local cluster only, render and apply the development Kustomize overlay:
 
 ```sh
-kubectl apply --filename deployment.yaml
-kubectl apply --filename deployment-development.yaml
+kubectl kustomize --load-restrictor LoadRestrictionsNone overlays/development \
+  | kubectl apply --filename -
 ```
 
-The overlay selects the `Development` environment and `Authentication:Mode=None`. The same mode is rejected in every other environment, with no override. Never expose it on a shared or production network. Reapply `deployment.yaml` to restore authenticated mode.
+The load-restrictor option is needed because the overlay reuses the repository-root production manifest. It changes only the environment, authentication mode, and local image pull behavior: `Development`, `Authentication:Mode=None`, and `IfNotPresent`. The production API-key environment entry is deleted; the HMAC Secret reference and all RBAC, probes, hardening, resources, and `ClusterIP` exposure are inherited unchanged. `None` is rejected in every other environment. Never expose this overlay on a shared or production network; reapply `deployment.yaml` to restore authenticated mode.
 
 ## Health and readiness
 

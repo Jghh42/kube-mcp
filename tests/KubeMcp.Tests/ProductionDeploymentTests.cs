@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -18,56 +19,149 @@ public sealed class ProductionDeploymentTests
     private const string ApiKey = "stage-one-test-api-key-32-bytes-minimum";
 
     [Fact]
-    public void ReferenceDeploymentIsAuthenticatedAndNoneIsDevelopmentOnly()
+    public void ProductionManifestSourcesApiAndHmacKeysFromSecrets()
     {
         var production = File.ReadAllText(RepositoryFile("deployment.yaml"));
-        var development = File.ReadAllText(RepositoryFile("deployment-development.yaml"));
 
         Assert.Matches(
-            new Regex(
-                @"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: ApiKey$"),
+            @"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: ApiKey$",
             production);
-        Assert.Matches(
-            new Regex(
-                @"(?s)- name: KubeMcp__Authentication__ApiKey\s+valueFrom:\s+secretKeyRef:\s+name: kube-mcp-api-key\s+key: api-key"),
+        AssertSecretReference(
+            production,
+            "KubeMcp__Authentication__ApiKey",
+            "kube-mcp-api-key",
+            "api-key");
+        AssertSecretReference(production, "KubeMcp__SecretHmacKey", "kube-mcp-hmac", "key");
+        Assert.DoesNotMatch(
+            @"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: None$",
             production);
         Assert.DoesNotMatch(
-            new Regex(
-                @"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: None$"),
+            @"(?s)- name: KubeMcp__(?:Authentication__ApiKey|SecretHmacKey)\s+value:",
             production);
-        Assert.Matches(
-            new Regex(
-                @"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: None$"),
-            development);
-        Assert.DoesNotContain("AllowUnauthenticated", development, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ReferenceManifestsRetainProcessOnlyProbeEndpoints()
+    public void DevelopmentOverlayChangesOnlyDevelopmentRuntimeSettings()
     {
-        foreach (var manifestName in new[] { "deployment.yaml", "deployment-development.yaml" })
-        {
-            var manifest = File.ReadAllText(RepositoryFile(manifestName));
+        var kustomization = File.ReadAllText(
+            RepositoryFile("overlays/development/kustomization.yaml"));
+        var patch = File.ReadAllText(
+            RepositoryFile("overlays/development/deployment-patch.yaml"));
 
-            Assert.Matches(
-                @"(?s)readinessProbe:\s+httpGet:\s+path: /readyz.*?timeoutSeconds:\s*1",
-                manifest);
-            Assert.Matches(@"(?s)livenessProbe:\s+httpGet:\s+path: /healthz", manifest);
-            Assert.Contains("Process-only probe", manifest, StringComparison.Ordinal);
+        Assert.Contains("../../deployment.yaml", kustomization, StringComparison.Ordinal);
+        Assert.Contains("path: deployment-patch.yaml", kustomization, StringComparison.Ordinal);
+        Assert.Matches(
+            @"(?m)- name: DOTNET_ENVIRONMENT\s*\r?\n\s*value: Development$",
+            patch);
+        Assert.Matches(
+            @"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: None$",
+            patch);
+        Assert.Matches(
+            @"(?m)- name: KubeMcp__Authentication__ApiKey\s*\r?\n\s*\$patch: delete$",
+            patch);
+        Assert.Contains("imagePullPolicy: IfNotPresent", patch, StringComparison.Ordinal);
+        Assert.DoesNotContain("SecretHmacKey", patch, StringComparison.Ordinal);
+        Assert.DoesNotContain("readinessProbe", patch, StringComparison.Ordinal);
+        Assert.DoesNotContain("livenessProbe", patch, StringComparison.Ordinal);
+        Assert.DoesNotContain("securityContext", patch, StringComparison.Ordinal);
+        Assert.DoesNotContain("resources:", patch, StringComparison.Ordinal);
+        Assert.False(File.Exists(RepositoryFile("deployment-development.yaml")));
+
+        var rendered = RenderKustomization("overlays/development");
+        Assert.Equal(6, Regex.Matches(rendered, @"(?m)^kind: ").Count);
+        foreach (var kind in new[]
+                 {
+                     "Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding",
+                     "Deployment", "Service"
+                 })
+        {
+            Assert.Matches($@"(?m)^kind: {kind}$", rendered);
         }
+        Assert.Matches(@"(?m)- name: DOTNET_ENVIRONMENT\s*\r?\n\s*value: Development$", rendered);
+        Assert.Matches(@"(?m)- name: KubeMcp__Authentication__Mode\s*\r?\n\s*value: None$", rendered);
+        Assert.DoesNotContain("KubeMcp__Authentication__ApiKey", rendered, StringComparison.Ordinal);
+        AssertSecretReference(rendered, "KubeMcp__SecretHmacKey", "kube-mcp-hmac", "key");
+        Assert.Contains("imagePullPolicy: IfNotPresent", rendered, StringComparison.Ordinal);
+        Assert.Contains("path: /readyz", rendered, StringComparison.Ordinal);
+        Assert.Contains("path: /healthz", rendered, StringComparison.Ordinal);
+        Assert.Contains("runAsNonRoot: true", rendered, StringComparison.Ordinal);
+        Assert.Contains("readOnlyRootFilesystem: true", rendered, StringComparison.Ordinal);
+        Assert.Contains("cpu: 25m", rendered, StringComparison.Ordinal);
+        Assert.Contains("memory: 256Mi", rendered, StringComparison.Ordinal);
+        Assert.Matches(@"(?ms)^kind: Service\s+metadata:.*?^spec:.*?^\s*type: ClusterIP$", rendered);
+        Assert.Matches(@"(?s)resources:\s*\r?\n\s*- namespaces\s+verbs:\s*\r?\n\s*- list", rendered);
     }
 
     [Fact]
-    public void ReferenceDeploymentDelegatesTrafficLimitsButRetainsPodResources()
+    public void ReferenceDeploymentRetainsIntentionalOperationalHardening()
     {
         var production = File.ReadAllText(RepositoryFile("deployment.yaml"));
-        var settings = File.ReadAllText(RepositoryFile("src/KubeMcp/appsettings.json"));
 
-        Assert.DoesNotContain("KubeMcp__McpAdmission", production, StringComparison.Ordinal);
-        Assert.DoesNotContain("KubeMcp__McpConcurrency", production, StringComparison.Ordinal);
-        Assert.DoesNotContain("ForwardedHeaders", production, StringComparison.Ordinal);
-        Assert.DoesNotContain("ForwardedHeaders", settings, StringComparison.Ordinal);
-        Assert.Matches(@"(?s)resources:\s+requests:\s+cpu:\s*25m\s+memory:\s*64Mi\s+limits:\s+cpu:\s*250m\s+memory:\s*256Mi", production);
+        Assert.Matches(
+            @"(?s)readinessProbe:\s+httpGet:\s+path: /readyz.*?timeoutSeconds:\s*1",
+            production);
+        Assert.Matches(@"(?s)livenessProbe:\s+httpGet:\s+path: /healthz", production);
+        Assert.Matches(
+            @"(?s)resources:\s+requests:\s+cpu:\s*25m\s+memory:\s*64Mi\s+limits:\s+cpu:\s*250m\s+memory:\s*256Mi",
+            production);
+        Assert.Contains("runAsNonRoot: true", production, StringComparison.Ordinal);
+        Assert.Contains("type: RuntimeDefault", production, StringComparison.Ordinal);
+        Assert.Contains("allowPrivilegeEscalation: false", production, StringComparison.Ordinal);
+        Assert.Contains("readOnlyRootFilesystem: true", production, StringComparison.Ordinal);
+        Assert.Matches(@"(?s)capabilities:\s+drop:\s+- ALL", production);
+        Assert.Matches(@"(?s)kind: Service\s+metadata:.*?spec:\s+type: ClusterIP", production);
+    }
+
+    [Fact]
+    public void DefaultResourceMappingsMatchNarrowRbac()
+    {
+        using var settings = JsonDocument.Parse(File.ReadAllText(
+            RepositoryFile("src/KubeMcp/appsettings.json")));
+        var expected = settings.RootElement
+            .GetProperty("KubeMcp")
+            .GetProperty("AllowedResources")
+            .EnumerateObject()
+            .Select(entry => (
+                Group: entry.Value.GetProperty("Group").GetString()!,
+                Resource: entry.Value.GetProperty("Resource").GetString()!))
+            .OrderBy(item => item.Group, StringComparer.Ordinal)
+            .ThenBy(item => item.Resource, StringComparer.Ordinal)
+            .ToArray();
+
+        var production = File.ReadAllText(RepositoryFile("deployment.yaml"));
+        var actual = new List<(string Group, string Resource)>();
+        foreach (Match rule in Regex.Matches(
+                     production,
+                     @"(?ms)^\s*- apiGroups:\s*\[(?<groups>[^\]]*)\]\s+resources:\s*(?<resources>.*?)(?=^\s+verbs:)^\s+verbs:\s*\[(?<verbs>[^\]]*)\]"))
+        {
+            var groups = Regex.Matches(rule.Groups["groups"].Value, "\"(?<value>[^\"]*)\"")
+                .Select(match => match.Groups["value"].Value)
+                .ToArray();
+            var resources = Regex.Matches(rule.Groups["resources"].Value, "[a-z][a-z0-9-]*")
+                .Select(match => match.Value)
+                .ToArray();
+            var verbs = Regex.Matches(rule.Groups["verbs"].Value, "\"(?<value>[^\"]*)\"")
+                .Select(match => match.Groups["value"].Value)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+
+            if (resources.Contains("namespaces", StringComparer.Ordinal))
+            {
+                Assert.Equal(["list"], verbs);
+                continue;
+            }
+
+            Assert.Equal(["get", "list"], verbs);
+            foreach (var group in groups)
+            foreach (var resource in resources)
+            {
+                actual.Add((group, resource));
+            }
+        }
+
+        Assert.Equal(expected, actual
+            .OrderBy(item => item.Group, StringComparer.Ordinal)
+            .ThenBy(item => item.Resource, StringComparer.Ordinal));
     }
 
     [Fact]
@@ -252,6 +346,39 @@ public sealed class ProductionDeploymentTests
         await using var mcpClient = await McpClient.CreateAsync(transport);
 
         Assert.Equal("k8s_get", Assert.Single(await mcpClient.ListToolsAsync()).Name);
+    }
+
+    private static void AssertSecretReference(
+        string manifest,
+        string environmentVariable,
+        string secretName,
+        string secretKey)
+    {
+        Assert.Matches(
+            $@"(?s)- name: {Regex.Escape(environmentVariable)}\s+valueFrom:\s+secretKeyRef:\s+(?:name: {Regex.Escape(secretName)}\s+key: {Regex.Escape(secretKey)}|key: {Regex.Escape(secretKey)}\s+name: {Regex.Escape(secretName)})",
+            manifest);
+    }
+
+    private static string RenderKustomization(string relativePath)
+    {
+        var startInfo = new ProcessStartInfo("kubectl")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        startInfo.ArgumentList.Add("kustomize");
+        startInfo.ArgumentList.Add("--load-restrictor");
+        startInfo.ArgumentList.Add("LoadRestrictionsNone");
+        startInfo.ArgumentList.Add(RepositoryFile(relativePath));
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Failed to start kubectl kustomize.");
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        Assert.True(process.ExitCode == 0, $"kubectl kustomize failed: {error}");
+        return output;
     }
 
     private static string RepositoryFile(string relativePath)

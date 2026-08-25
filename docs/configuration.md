@@ -26,7 +26,7 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 
 ## Resource policy
 
-A resource resolves only when its MCP name has an explicit mapping. Resolution is local and never performs Kubernetes API discovery. Every mapping must provide a non-null `Group`; use `""` for the core API group.
+A resource resolves only when its MCP name has an explicit local mapping. Every mapping must provide a non-null `Group`; use `""` for the core API group.
 
 ```json
 {

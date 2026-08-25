@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-mcp
+  namespace: kube-mcp
+spec:
+  template:
+    spec:
+      containers:
+        - name: kube-mcp
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DOTNET_ENVIRONMENT
+              value: Development
+            - name: KubeMcp__Authentication__Mode
+              value: None
+            - name: KubeMcp__Authentication__ApiKey
+              $patch: delete

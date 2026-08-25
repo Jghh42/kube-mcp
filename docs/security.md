@@ -72,7 +72,9 @@ Records can include:
 - duration and request ID
 - successful object count
 
-They do not include Kubernetes response bodies, Secret values or fingerprints, credentials, tokens, or arbitrary exception text. See [observability and audit logging](observability.md#audit-logging) for logging behavior.
+They do not include Kubernetes response bodies, Secret values or fingerprints, credentials, tokens, arbitrary exception text, client IP addresses, or forwarded-header values. Untrusted string fields are length-bounded and have control characters replaced.
+
+Already-sanitized events are written directly through the dedicated `ILogger<AuditLogger>` category and standard logging providers. Logging is best effort and cannot replace the original tool result or error. Deployments that require durable, tamper-resistant retention must configure that guarantee in their logging infrastructure. API-key clients are identified as `static-api-key`; unauthenticated development clients are identified as `anonymous` without recording bearer credentials.
 
 ## RBAC
 

@@ -57,14 +57,13 @@ Endpoints:
 - Liveness: `http://127.0.0.1:8080/healthz`
 - Readiness: `http://127.0.0.1:8080/readyz`
 
-Use an immutable `ghcr.io/jghh42/kube-mcp:sha-<commit>` image tag for repeatable deployments. The unauthenticated [`deployment-development.yaml`](deployment-development.yaml) overlay is for isolated local clusters only.
+Use an immutable `ghcr.io/jghh42/kube-mcp:sha-<commit>` image tag for repeatable deployments. The unauthenticated [`overlays/development`](overlays/development/) Kustomize overlay is for isolated local clusters only.
 
 ## Documentation
 
 - [Deployment guide](docs/deployment.md)
 - [Configuration reference](docs/configuration.md)
 - [Security model](docs/security.md)
-- [Observability and audit logging](docs/observability.md)
 - [Development, testing, and releases](docs/development.md)
 - [Optional resource and RBAC overlays](overlays/README.md)
 
