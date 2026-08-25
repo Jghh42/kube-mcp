@@ -11,6 +11,9 @@ namespace KubeMcp.Tests;
 public sealed class KindIntegrationTests
 {
     private const string Namespace = "kube-mcp-e2e";
+    private const string UnlabelledNamespace = "kube-mcp-e2e-unlabelled";
+    private static readonly string[] DefaultDeniedNamespaces =
+        ["kube-system", "kube-public", "kube-node-lease"];
     private const string SecretValue = "correct-horse-battery-staple";
     private const string SecretUsername = "integration-user";
     private const string UpstreamSecretPrefix = "UPSTREAM-SECRET-BOUNDARY!!!";
@@ -47,6 +50,7 @@ public sealed class KindIntegrationTests
             ["k8s_get", "k8s_list_namespaces"],
             tools.Select(tool => tool.Name).Order().ToArray());
 
+        var policyMode = Environment.GetEnvironmentVariable("KUBE_MCP_NAMESPACE_POLICY_MODE");
         var namespaceList = await client.CallToolAsync(
             "k8s_list_namespaces",
             new Dictionary<string, object?>(),
@@ -55,15 +59,36 @@ public sealed class KindIntegrationTests
         using (var json = ParseText(namespaceList))
         {
             var root = json.RootElement;
+            Assert.Equal(
+                ["count", "items", "limited", "operation", "resource"],
+                root.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal));
             Assert.Equal("LIST", root.GetProperty("operation").GetString());
             Assert.Equal("namespaces", root.GetProperty("resource").GetString());
-            Assert.Equal(root.GetProperty("items").GetArrayLength(), root.GetProperty("count").GetInt32());
-            Assert.Contains(
-                root.GetProperty("items").EnumerateArray(),
-                item => item.GetProperty("name").GetString() == Namespace);
+            Assert.False(root.GetProperty("limited").GetBoolean());
+
+            var items = root.GetProperty("items").EnumerateArray().ToArray();
+            Assert.Equal(items.Length, root.GetProperty("count").GetInt32());
+            Assert.All(items, AssertNamespaceListItem);
+            Assert.Equal(
+                items.Length,
+                items.Select(item => item.GetProperty("name").GetString()).Distinct().Count());
+            Assert.Contains(items, item => item.GetProperty("name").GetString() == Namespace);
             Assert.DoesNotContain(
-                root.GetProperty("items").EnumerateArray(),
-                item => item.GetProperty("name").GetString() == "kube-system");
+                items,
+                item => DefaultDeniedNamespaces.Contains(item.GetProperty("name").GetString()));
+
+            if (policyMode == "LabelSelector")
+            {
+                Assert.DoesNotContain(
+                    items,
+                    item => item.GetProperty("name").GetString() == UnlabelledNamespace);
+            }
+            else
+            {
+                Assert.Contains(
+                    items,
+                    item => item.GetProperty("name").GetString() == UnlabelledNamespace);
+            }
         }
 
         var configMapList = await CallAsync(client, "configmaps");
@@ -177,14 +202,16 @@ public sealed class KindIntegrationTests
         Assert.True(rbacDenied.IsError);
         Assert.Contains("Access to the Kubernetes resource was denied.", Text(rbacDenied));
 
-        var policyMode = Environment.GetEnvironmentVariable("KUBE_MCP_NAMESPACE_POLICY_MODE");
         var deniedNamespace = await CallAsync(client, "pods", @namespace: "kube-system");
         Assert.True(deniedNamespace.IsError);
         Assert.Contains("The Kubernetes namespace is not allowed.", Text(deniedNamespace));
 
         if (policyMode == "LabelSelector")
         {
-            var unlabelledNamespace = await CallAsync(client, "configmaps", @namespace: "default");
+            var unlabelledNamespace = await CallAsync(
+                client,
+                "configmaps",
+                @namespace: UnlabelledNamespace);
             Assert.True(unlabelledNamespace.IsError);
             Assert.Contains(
                 "The Kubernetes namespace is not allowed.",
@@ -284,6 +311,22 @@ public sealed class KindIntegrationTests
         }
 
         return client.CallToolAsync("k8s_get", arguments, cancellationToken: CancellationToken.None);
+    }
+
+    private static void AssertNamespaceListItem(JsonElement item)
+    {
+        Assert.False(string.IsNullOrWhiteSpace(item.GetProperty("name").GetString()));
+        var fields = item.EnumerateObject()
+            .Select(property => property.Name)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        Assert.True(
+            fields.SequenceEqual(["name"], StringComparer.Ordinal) ||
+            fields.SequenceEqual(["age", "name"], StringComparer.Ordinal));
+        if (item.TryGetProperty("age", out var age))
+        {
+            Assert.Equal(JsonValueKind.String, age.ValueKind);
+        }
     }
 
     private static void AssertGenericListItem(

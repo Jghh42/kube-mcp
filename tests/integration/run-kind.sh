@@ -8,6 +8,7 @@ cluster_name=${KIND_CLUSTER_NAME:-kube-mcp-e2e-$$}
 kind_context="kind-${cluster_name}"
 kube_namespace=kube-mcp
 fixture_namespace=kube-mcp-e2e
+unlabelled_namespace=kube-mcp-e2e-unlabelled
 local_port=${KUBE_MCP_TEST_PORT:-18082}
 test_image=kube-mcp:integration
 secret_value=correct-horse-battery-staple
@@ -139,6 +140,53 @@ assert_no_sensitive_logs() {
   done
 }
 
+assert_namespace_audit() {
+  local logs=$1
+  local expected_count=$2
+  local namespace_audit
+  local namespace_name
+  local namespace_names
+  local -a namespace_audits
+
+  mapfile -t namespace_audits < <(
+    grep -F 'operation=LIST resource=namespaces' <<<"$logs" || true
+  )
+  if [[ ${#namespace_audits[@]} -ne 1 ]]; then
+    echo "expected exactly one aggregate namespace-list audit record" >&2
+    return 1
+  fi
+  namespace_audit=${namespace_audits[0]}
+  grep -Fq \
+    "operation=LIST resource=namespaces namespace=- name=- result=success objectCount=$expected_count category=success" \
+    <<<"$namespace_audit"
+
+  # Compare against the live cluster rather than a fixture-name subset so every
+  # admitted or policy-filtered namespace is forbidden from the aggregate log.
+  namespace_names=$(kubectl get namespaces \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+  while IFS= read -r namespace_name; do
+    if [[ -n "$namespace_name" ]] && grep -Fq "$namespace_name" <<<"$namespace_audit"; then
+      echo "namespace name leaked into aggregate namespace-list audit" >&2
+      return 1
+    fi
+  done <<<"$namespace_names"
+}
+
+blacklist_namespace_count() {
+  kubectl get namespaces -o json | python3 -c '
+import json, sys
+namespaces = json.load(sys.stdin)["items"]
+denied = {"kube-system", "kube-public", "kube-node-lease"}
+print(sum(item["metadata"]["name"] not in denied for item in namespaces))
+'
+}
+
+selector_namespace_count() {
+  kubectl get namespaces \
+    --selector kube-mcp.io/agent-access=allowed -o json |
+    python3 -c 'import json, sys; print(len(json.load(sys.stdin)["items"]))'
+}
+
 echo "Restoring integration test dependencies in locked mode..."
 dotnet restore KubeMcp.slnx --locked-mode
 
@@ -186,12 +234,20 @@ wait_for_rollout
 service_account=system:serviceaccount:kube-mcp:kube-mcp
 [[ $(kubectl auth can-i list pods --namespace "$fixture_namespace" --as "$service_account") == yes ]]
 [[ $(kubectl auth can-i list namespaces --as "$service_account") == yes ]]
+[[ $(kubectl auth can-i get namespaces --as "$service_account") == no ]]
+[[ $(kubectl auth can-i watch namespaces --as "$service_account") == no ]]
+for verb in create update patch delete deletecollection; do
+  [[ $(kubectl auth can-i "$verb" namespaces --as "$service_account") == no ]]
+done
 [[ $(kubectl auth can-i list roles --namespace "$fixture_namespace" --as "$service_account") == no ]]
 [[ $(kubectl auth can-i create pods --namespace "$fixture_namespace" --as "$service_account") == no ]]
+[[ $(kubectl auth can-i delete configmaps --namespace "$fixture_namespace" --as "$service_account") == no ]]
 
-# This namespace is intentionally created after the service starts, proving that
-# eligible namespaces are onboarded without discovery caches or restarts.
+# These namespaces are intentionally created after the service starts, proving
+# that discovery reads Kubernetes directly without a cache or restart. The
+# second remains unlabelled to distinguish the two policy modes below.
 kubectl create namespace "$fixture_namespace" >/dev/null
+kubectl create namespace "$unlabelled_namespace" >/dev/null
 kubectl apply -f - <<EOF >/dev/null
 apiVersion: v1
 kind: ConfigMap
@@ -235,6 +291,7 @@ kubectl patch configmap boundary-safe-output --namespace "$fixture_namespace" --
 kubectl patch secret boundary-upstream --namespace "$fixture_namespace" --type merge \
   --patch "$(python3 -c 'import json; print(json.dumps({"stringData":{"payload":"UPSTREAM-SECRET-BOUNDARY!!!" + "u" * 70000}}))')" >/dev/null
 
+blacklist_expected_count=$(blacklist_namespace_count)
 start_port_forward
 run_test "API-key, policy, RBAC, resource, and Secret boundary tests" \
   'FullyQualifiedName=KubeMcp.Tests.KindIntegrationTests.McpReadsRealKindResourcesAndSanitizesSecrets'
@@ -245,6 +302,7 @@ grep -Fq 'KubeMcp.Audit.AuditLogger' <<<"$audit_logs"
 grep -Fq 'client=static-api-key authentication=ApiKey' <<<"$audit_logs"
 grep -F 'resource=roles.rbac.authorization.k8s.io namespace=kube-mcp-e2e' <<<"$audit_logs" |
   grep -Fq 'category=kubernetes_access_denied'
+assert_namespace_audit "$audit_logs" "$blacklist_expected_count"
 assert_no_sensitive_logs "$audit_logs"
 
 kubectl label namespace "$kube_namespace" kube-mcp.io/agent-access=allowed >/dev/null
@@ -253,12 +311,14 @@ kubectl set env deployment/kube-mcp --namespace "$kube_namespace" \
   KubeMcp__NamespacePolicy__Mode=LabelSelector \
   KubeMcp__NamespacePolicy__LabelSelector=kube-mcp.io/agent-access=allowed >/dev/null
 wait_for_rollout
+selector_expected_count=$(selector_namespace_count)
 start_port_forward
 KUBE_MCP_NAMESPACE_POLICY_MODE=LabelSelector \
   run_test "label-selector allow and deny tests" \
   'FullyQualifiedName=KubeMcp.Tests.KindIntegrationTests.McpReadsRealKindResourcesAndSanitizesSecrets'
 stop_port_forward
 label_logs=$(kubectl logs deployment/kube-mcp --namespace "$kube_namespace")
+assert_namespace_audit "$label_logs" "$selector_expected_count"
 assert_no_sensitive_logs "$label_logs"
 
 kubectl set env deployment/kube-mcp --namespace "$kube_namespace" \
