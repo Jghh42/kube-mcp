@@ -44,6 +44,8 @@ OAuth client credentials, JWT validation, Keycloak-specific claims, and the non-
 
 ## Delivery workflow
 
+Use the global `github-stage-delivery` skill for every stage checkpoint. In pi, load it explicitly with `/skill:github-stage-delivery` when necessary. The detailed rules below remain authoritative for agents or environments where that global skill is unavailable.
+
 Each implementation stage is an independent review checkpoint. For every stage:
 
 1. implement only that stage's scoped changes;
