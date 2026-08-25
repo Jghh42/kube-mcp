@@ -17,7 +17,7 @@ dotnet build --configuration Release --no-restore
 dotnet test --configuration Release --no-build --no-restore
 ```
 
-The test suite covers access policy, authentication, Secret sanitization and fingerprinting, compact LIST summaries, response boundaries, concurrency, readiness, reverse proxies, audit sinks, telemetry, production deployment settings, and the single-tool MCP surface.
+The test suite covers access policy, authentication, Secret sanitization and fingerprinting, generic compact LIST summaries, response boundaries, concurrency, readiness, reverse proxies, audit sinks, telemetry, production deployment settings, and the single-tool MCP surface.
 
 ## End-to-end tests with kind
 
@@ -31,8 +31,8 @@ The harness creates ephemeral HMAC and API keys, loads the API key through a Kub
 
 - missing, malformed, incorrect, and correct API-key credentials
 - exactly one exposed MCP tool
-- compact LIST and detailed GET responses
-- Secret sanitization
+- generic name/namespace/kind/age LIST summaries and detailed GET responses
+- Secret LIST key-name sanitization and GET fingerprinting
 - application resource-policy and Kubernetes RBAC denials
 - both namespace-policy modes
 - explicit built-in resource mappings

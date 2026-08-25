@@ -12,7 +12,7 @@ k8s_get(resource, namespace, name?)
 
 Omitting `name` performs a namespaced LIST; supplying it performs a namespaced GET. There are no mutation, watch, exec, proxy, shell, tunnelling, or arbitrary API tools.
 
-LIST responses use compact resource-specific summaries for the default built-in resources and a minimal name/namespace/kind/age fallback for unknown resources and CRDs. GET responses remain detailed. Response size, page count, item count, and upstream body size are bounded.
+Non-Secret LIST responses use one generic compact summary containing only name, namespace, kind, and age when creation metadata is available. This applies equally to built-in resources and configured CRDs. GET responses remain detailed. Response size, page count, item count, and upstream body size are bounded.
 
 ## Defence in depth
 
@@ -31,7 +31,7 @@ The production reference deployment uses a static bearer API key loaded from a K
 
 Raw Kubernetes Secret values are never returned:
 
-- LIST returns safe summary fields and key names.
+- LIST uses a dedicated safe summary with the Secret name, type, key names, and age; it returns neither values nor fingerprints.
 - GET replaces each value with a keyed HMAC-SHA256 fingerprint.
 
 The HMAC key remains on the server. Keep it stable only when fingerprints need to be comparable across restarts. Audit records and telemetry never contain Secret values or fingerprints.
