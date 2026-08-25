@@ -3,7 +3,6 @@ using KubeMcp.Authentication;
 using KubeMcp.Configuration;
 using KubeMcp.Kubernetes;
 using KubeMcp.Mcp;
-using KubeMcp.Observability;
 using KubeMcp.Security;
 using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.Extensions.Options;
@@ -33,7 +32,6 @@ builder.Services.AddSingleton<IAuditEventPublisher>(serviceProvider =>
 builder.Services.AddHostedService(serviceProvider =>
     serviceProvider.GetRequiredService<AuditSinkDispatcher>());
 builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
-builder.Services.AddKubeMcpTelemetry(builder.Configuration);
 builder.Services.AddRequestTimeouts();
 builder.Services.AddSingleton<IConfigureOptions<RequestTimeoutOptions>, McpRequestTimeoutOptionsSetup>();
 builder.Services.AddSingleton<SecretFingerprinter>();
@@ -69,7 +67,7 @@ app.UseWhen(
     branch =>
     {
         branch.UseRequestTimeouts();
-        branch.UseMiddleware<McpRequestObservabilityMiddleware>();
+        branch.UseMiddleware<McpAccessAuditMiddleware>();
     });
 
 app.UseAuthentication();

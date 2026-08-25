@@ -1,30 +1,6 @@
 # Observability and audit logging
 
-## OpenTelemetry
-
-Set the following to export custom MCP and Kubernetes metrics and traces over OTLP:
-
-```text
-KubeMcp__Telemetry__Enabled=true
-OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.example.internal:4317
-OTEL_EXPORTER_OTLP_PROTOCOL=grpc
-OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <collector credential>
-```
-
-`http/protobuf` is also supported through `OTEL_EXPORTER_OTLP_PROTOCOL`. Keep exporter credentials in the deployment's secret-management system.
-
-Custom instruments cover:
-
-- MCP request count, duration, and denials
-- Kubernetes duration and errors
-- safe tool-content response size
-- LIST object count
-- sanitized Secret GET count
-- server and upstream timeouts
-
-Only curated spans at the `/mcp` middleware and Kubernetes tool boundary are exported. Generic ASP.NET URL, query, and user-agent spans are not exported. Request and response bodies and arbitrary exception events are not recorded.
-
-Metrics and spans use fixed operations, outcomes, HTTP status codes, and safe error categories. They do not tag Kubernetes names, namespaces, request or response bodies, tokens, Secret fingerprints, or arbitrary exception text.
+The application emits sanitized structured logs and audit records. Infrastructure-provided ingress, pod, and container metrics remain available through the deployment platform; the application does not configure a telemetry exporter.
 
 ## Audit logging
 

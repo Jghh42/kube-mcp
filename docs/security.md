@@ -34,7 +34,7 @@ Raw Kubernetes Secret values are never returned:
 - LIST uses a dedicated safe summary with the Secret name, type, key names, and age; it returns neither values nor fingerprints.
 - GET replaces each value with a keyed HMAC-SHA256 fingerprint.
 
-The HMAC key remains on the server. Keep it stable only when fingerprints need to be comparable across restarts. Audit records and telemetry never contain Secret values or fingerprints.
+The HMAC key remains on the server. Keep it stable only when fingerprints need to be comparable across restarts. Logs and audit records never contain Secret values or fingerprints.
 
 ## Edge traffic controls
 

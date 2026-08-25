@@ -2,7 +2,7 @@ namespace KubeMcp.Kubernetes;
 
 /// <summary>
 /// Safe, low-cardinality Kubernetes failure categories used across the boundary,
-/// audit, and telemetry surfaces. Upstream HTTP bodies are never carried by this
+/// error and audit surfaces. Upstream HTTP bodies are never carried by this
 /// category; only the coarse reason is retained.
 /// </summary>
 public enum KubernetesErrorCategory

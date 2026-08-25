@@ -2,7 +2,7 @@ namespace KubeMcp.Kubernetes;
 
 /// <summary>
 /// The public boundary exception surfaced to the MCP tool layer. The safe
-/// <see cref="Category"/> is available for audit and telemetry; the upstream
+/// <see cref="Category"/> is available for safe errors and audit; the upstream
 /// Kubernetes response body is never part of the message.
 /// </summary>
 public sealed class KubernetesReadException : Exception

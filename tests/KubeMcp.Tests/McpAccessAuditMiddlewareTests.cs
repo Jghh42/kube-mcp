@@ -1,12 +1,9 @@
-using System.Collections.Concurrent;
-using System.Diagnostics;
 using KubeMcp.Audit;
-using KubeMcp.Observability;
 using Microsoft.AspNetCore.Http;
 
 namespace KubeMcp.Tests;
 
-public sealed class McpRequestObservabilityTests
+public sealed class McpAccessAuditMiddlewareTests
 {
     [Theory]
     [InlineData(StatusCodes.Status401Unauthorized, AuditCategories.AuthenticationDenied)]
@@ -20,15 +17,13 @@ public sealed class McpRequestObservabilityTests
         context.Request.Path = "/mcp";
         context.Request.Body = body;
         var audit = new CapturingAuditLogger();
-        using var telemetry = new KubeMcpTelemetry(new HttpContextAccessor { HttpContext = context });
-        var middleware = new McpRequestObservabilityMiddleware(
+        var middleware = new McpAccessAuditMiddleware(
             next: requestContext =>
             {
                 requestContext.Response.StatusCode = statusCode;
                 return Task.CompletedTask;
             },
-            audit,
-            telemetry);
+            audit);
 
         await middleware.InvokeAsync(context);
 
@@ -39,85 +34,22 @@ public sealed class McpRequestObservabilityTests
         Assert.Empty(audit.KubernetesEvents);
     }
 
-    [Theory]
-    [InlineData(StatusCodes.Status400BadRequest, AuditCategories.InvalidRequest)]
-    [InlineData(StatusCodes.Status500InternalServerError, AuditCategories.InternalError)]
-    public async Task ClassifiesHandledHttpFailures(int statusCode, string expectedCategory)
-    {
-        var stopped = new ConcurrentBag<Activity>();
-        using var listener = ListenForStoppedActivities(stopped);
-        var context = new DefaultHttpContext();
-        using var telemetry = new KubeMcpTelemetry(new HttpContextAccessor { HttpContext = context });
-        var middleware = new McpRequestObservabilityMiddleware(
-            next: requestContext =>
-            {
-                requestContext.Response.StatusCode = statusCode;
-                return Task.CompletedTask;
-            },
-            new CapturingAuditLogger(),
-            telemetry);
-
-        await middleware.InvokeAsync(context);
-
-        var activity = stopped.First(item =>
-            item.OperationName == "mcp.request" &&
-            Equals(item.GetTagItem("mcp.error.category"), expectedCategory));
-        Assert.Equal(ActivityStatusCode.Error, activity.Status);
-    }
-
-    [Fact]
-    public async Task UnhandledFailureOverridesEarlierToolCategory()
-    {
-        var stopped = new ConcurrentBag<Activity>();
-        using var listener = ListenForStoppedActivities(stopped);
-        var context = new DefaultHttpContext();
-        using var telemetry = new KubeMcpTelemetry(new HttpContextAccessor { HttpContext = context });
-        var middleware = new McpRequestObservabilityMiddleware(
-            next: requestContext =>
-            {
-                requestContext.Features.Get<McpRequestState>()!.Category = "resource_not_found";
-                throw new InvalidOperationException("post-tool-transport-failure");
-            },
-            new CapturingAuditLogger(),
-            telemetry);
-
-        await Assert.ThrowsAsync<InvalidOperationException>(() => middleware.InvokeAsync(context));
-
-        Assert.Contains(stopped, item =>
-            item.OperationName == "mcp.request" &&
-            Equals(item.GetTagItem("mcp.error.category"), AuditCategories.InternalError));
-    }
-
     [Fact]
     public async Task AuditExceptionCannotReplaceDenialResponse()
     {
         var context = new DefaultHttpContext();
-        using var telemetry = new KubeMcpTelemetry(new HttpContextAccessor { HttpContext = context });
-        var middleware = new McpRequestObservabilityMiddleware(
+        var middleware = new McpAccessAuditMiddleware(
             next: requestContext =>
             {
                 requestContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 return Task.CompletedTask;
             },
-            new ThrowingAuditLogger(),
-            telemetry);
+            new ThrowingAuditLogger());
 
         var exception = await Record.ExceptionAsync(() => middleware.InvokeAsync(context));
 
         Assert.Null(exception);
         Assert.Equal(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
-    }
-
-    private static ActivityListener ListenForStoppedActivities(ConcurrentBag<Activity> stopped)
-    {
-        var listener = new ActivityListener
-        {
-            ShouldListenTo = source => source.Name == KubeMcpTelemetry.InstrumentationName,
-            Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
-            ActivityStopped = stopped.Add
-        };
-        ActivitySource.AddActivityListener(listener);
-        return listener;
     }
 
     private sealed class CapturingAuditLogger : IAuditLogger

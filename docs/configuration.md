@@ -20,7 +20,6 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | `KubeMcp:MaxListPages` | `20` | Maximum continuation pages per LIST. |
 | `KubeMcp:KubernetesRequestTimeoutSeconds` | `15` | Kubernetes operation timeout. |
 | `KubeMcp:OverallMcpRequestTimeoutSeconds` | `30` | End-to-end MCP deadline; must exceed the Kubernetes timeout. |
-| `KubeMcp:Telemetry:Enabled` | `false` | Enable OpenTelemetry metrics, traces, and OTLP export. |
 | `KubeMcp:Authentication:Mode` | `ApiKey` | `ApiKey`, or `None` only when the host environment is `Development`. |
 | `KubeMcp:Authentication:ApiKey` | none | Static bearer key of at least 32 UTF-8 bytes. Required in API-key mode. |
 | `AllowedHosts` | local and service names | Semicolon-delimited ASP.NET Core host allowlist. |
@@ -82,4 +81,4 @@ Standard ASP.NET Core `AllowedHosts` filtering remains available. Configure it w
 
 ## Secret management
 
-The HMAC key, static API key, and telemetry exporter credentials must not be committed. Supply them through the deployment platform's secret-management system.
+The HMAC key and static API key must not be committed. Supply them through the deployment platform's secret-management system.

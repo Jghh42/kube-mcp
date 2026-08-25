@@ -58,8 +58,6 @@ public sealed class KubeMcpOptions
     /// </summary>
     [Range(1, 3600)]
     public int OverallMcpRequestTimeoutSeconds { get; init; } = 30;
-
-    public KubeMcpTelemetryOptions Telemetry { get; init; } = new();
 }
 
 public sealed class KubernetesResourceOptions
@@ -96,15 +94,6 @@ public sealed class KubeMcpAuthenticationOptions
     public AuthenticationMode Mode { get; init; } = AuthenticationMode.ApiKey;
 
     public string ApiKey { get; init; } = string.Empty;
-}
-
-public sealed class KubeMcpTelemetryOptions
-{
-    /// <summary>
-    /// Enables OpenTelemetry tracing and metrics export. OTLP connection settings
-    /// use the standard OTEL_EXPORTER_OTLP_* environment variables.
-    /// </summary>
-    public bool Enabled { get; init; }
 }
 
 public enum AuthenticationMode
