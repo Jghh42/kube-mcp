@@ -405,17 +405,19 @@ jobs:
             echo "::error::Chart version $VERSION already exists at $reference"
             exit 1
           elif ! grep -Eqi 'not found|manifest unknown' <<<"$existing"; then
-            printf '%s\n' "$existing" >&2
             echo "::error::Could not verify that chart version $VERSION is absent"
             exit 1
           fi
-          output=$(helm push "dist/kube-mcp-${VERSION}.tgz" oci://ghcr.io/jghh42/charts 2>&1)
-          printf '%s\n' "$output"
+          if ! output=$(helm push "dist/kube-mcp-${VERSION}.tgz" oci://ghcr.io/jghh42/charts 2>&1); then
+            echo "::error::Helm chart publication failed"
+            exit 1
+          fi
           digest=$(awk '/^Digest: sha256:/ {print $2}' <<<"$output" | tail -1)
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
             echo "::error::Helm did not report a valid chart digest"
             exit 1
           }
           oci_version=${VERSION//+/_}
+          echo "Published chart digest: $digest"
           echo "Published chart: ghcr.io/jghh42/charts/kube-mcp:$oci_version" >>"$GITHUB_STEP_SUMMARY"
           echo "Chart digest: $digest" >>"$GITHUB_STEP_SUMMARY"
