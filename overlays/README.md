@@ -11,7 +11,7 @@ Enable an optional CRD family only when an actual troubleshooting requirement
 exists. Each overlay is purely additive and requires **two** coordinated changes:
 
 1. **Application allowlist** — add the CRD resource mappings to the kube-mcp
-   configuration so the MCP tool can resolve them. The `resources.json` file in
+   configuration so `k8s_get` can resolve them. The `resources.json` file in
    each overlay contains the `KubeMcp:AllowedResources` mapping.
 
 2. **Kubernetes RBAC** — apply the overlay's `rbac.yaml` so the kube-mcp
