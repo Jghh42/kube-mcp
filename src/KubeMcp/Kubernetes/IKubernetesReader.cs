@@ -7,6 +7,8 @@ public interface IKubernetesReader
         string @namespace,
         string? name,
         CancellationToken cancellationToken);
+
+    Task<KubernetesReadResult> ListNamespacesAsync(CancellationToken cancellationToken);
 }
 
 public sealed record KubernetesReadResult(

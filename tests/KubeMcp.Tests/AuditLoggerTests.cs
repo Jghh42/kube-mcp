@@ -179,6 +179,9 @@ public sealed class AuditLoggerTests
             string? name,
             CancellationToken cancellationToken) =>
             Task.FromException<KubernetesReadResult>(exception);
+
+        public Task<KubernetesReadResult> ListNamespacesAsync(CancellationToken cancellationToken) =>
+            Task.FromException<KubernetesReadResult>(exception);
     }
 
     internal sealed class CapturingLogger<T> : ILogger<T>

@@ -8,7 +8,7 @@ The reference [`deployment.yaml`](../deployment.yaml) is an authenticated produc
 2. Replace `k-mcp.example.internal` in `AllowedHosts` with the internal hostname presented to the application.
 3. Pin the image to its published immutable `ghcr.io/jghh42/kube-mcp@sha256:<digest>` reference; use the full-revision `sha-<commit>` tag only to locate that digest.
 4. Confirm the GHCR package is public or configure an image pull secret.
-5. Review the resource allowlist, namespace policy, RBAC, and standard ASP.NET Core host filtering.
+5. Review the resource allowlist, namespace-discovery disclosure, namespace policy, RBAC, and standard ASP.NET Core host filtering.
 6. Configure the private-network ingress, load balancer, or service mesh to enforce HTTP request-body, header, rate, and concurrency limits, own originating-client IP/external scheme/external host logging, and block untrusted direct Service access where required.
 7. Provide secrets through your normal secret-management system; do not commit them.
 
@@ -83,9 +83,9 @@ Startup option validation remains fail-closed, including production authenticati
 
 ## Resource access and RBAC
 
-The default `ClusterRole` grants only `get` and `list` for the built-in resource allowlist. It also grants namespace `list` so label-selector namespace policy can be evaluated. It does not grant mutation, watch, exec, proxy, wildcard resources, or optional CRDs.
+The default `ClusterRole` grants only `get` and `list` for the built-in resource allowlist. It also grants core Namespace `list` for policy evaluation and the fixed `k8s_list_namespaces` discovery snapshot. It does not grant Namespace GET, mutation, watch, exec, proxy, wildcard resources, or optional CRDs.
 
-Application policy and Kubernetes RBAC are independent; both must allow a request. There is no wildcard application mode or wildcard RBAC manifest. Optional CloudNativePG and Traefik mappings have coordinated [resource and RBAC overlays](../overlays/README.md); each overlay must add both the explicit mapping and matching narrow read-only RBAC.
+Namespace discovery intentionally discloses admitted names and optional approximate ages to authenticated clients. Blacklist mode includes newly created non-denied namespaces; label-selector mode sends the configured selector on every page. A later namespaced read still re-enforces policy and RBAC. Application policy and Kubernetes RBAC are independent; both must allow a request. There is no wildcard application mode or wildcard RBAC manifest, and `namespaces` must not be added to `AllowedResources`. Optional CloudNativePG and Traefik mappings have coordinated [resource and RBAC overlays](../overlays/README.md); each overlay must add both the explicit mapping and matching narrow read-only RBAC.
 
 ## Container image availability
 

@@ -24,9 +24,12 @@ public sealed class NamespaceAccessPolicy
 
     public bool RequiresLabelCheck => mode == NamespacePolicyMode.LabelSelector;
 
+    public bool IsDiscoveredNamespaceAllowed(string @namespace) =>
+        mode != NamespacePolicyMode.Blacklist || !deniedNamespaces.Contains(@namespace);
+
     public void EnsureStaticallyAllowed(string @namespace)
     {
-        if (mode == NamespacePolicyMode.Blacklist && deniedNamespaces.Contains(@namespace))
+        if (!IsDiscoveredNamespaceAllowed(@namespace))
         {
             throw new KubernetesReadException(
                 $"Namespace \"{@namespace}\" is denied by the configured namespace blacklist.",

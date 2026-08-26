@@ -29,6 +29,7 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
     public Func<KubernetesResourceDescriptor, string, string, int, CancellationToken, Task<string>>? GetHandler { get; set; }
     public Func<KubernetesResourceDescriptor, string, int, string?, int, CancellationToken, Task<string>>? ListHandler { get; set; }
     public Func<string, string, CancellationToken, Task<bool>>? NamespaceLabelHandler { get; set; }
+    public Func<int, string?, string?, int, CancellationToken, Task<string>>? NamespaceListHandler { get; set; }
 
     public async Task<ReadOnlyMemory<byte>> GetNamespacedAsync(
         KubernetesResourceDescriptor descriptor, string @namespace, string name, int maxBodyBytes, CancellationToken cancellationToken)
@@ -69,6 +70,20 @@ internal sealed class FakeKubernetesApi : IKubernetesApi
         return NamespaceLabelHandler is null
             ? true
             : await NamespaceLabelHandler(@namespace, labelSelector, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<ReadOnlyMemory<byte>> ListNamespacesAsync(
+        int pageSize,
+        string? continueToken,
+        string? labelSelector,
+        int maxBodyBytes,
+        CancellationToken cancellationToken)
+    {
+        Record($"LIST namespaces pageSize={pageSize} continue={continueToken ?? "<null>"} selector={labelSelector ?? "<null>"} maxBody={maxBodyBytes}");
+        var body = NamespaceListHandler is null
+            ? KubernetesJson.ListBody([], null, "v1", "NamespaceList")
+            : await NamespaceListHandler(pageSize, continueToken, labelSelector, maxBodyBytes, cancellationToken).ConfigureAwait(false);
+        return Encoding.UTF8.GetBytes(body);
     }
 
     private void Record(string call)
@@ -223,6 +238,23 @@ internal static class KubernetesJson
             data = new { password = base64 }
         });
     }
+
+    public static string NamespaceItem(
+        string name,
+        string? creationTimestamp = "2024-01-01T00:00:00Z",
+        string apiVersion = "v1",
+        string kind = "Namespace") => JsonSerializer.Serialize(new
+        {
+            apiVersion,
+            kind,
+            metadata = new
+            {
+                name,
+                creationTimestamp,
+                labels = new { sensitive = "must-not-leak" }
+            },
+            status = new { phase = "Active" }
+        });
 
     public static string ConfigMapGetBody(string name, string value)
     {

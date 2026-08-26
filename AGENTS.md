@@ -2,10 +2,11 @@
 
 ## Project
 
-`kube-mcp` is a .NET 10 ASP.NET Core service exposing one Streamable HTTP MCP tool:
+`kube-mcp` is a .NET 10 ASP.NET Core service exposing two Streamable HTTP MCP tools:
 
 ```text
 k8s_get(resource, namespace, name?)
+k8s_list_namespaces()
 ```
 
 The service is intentionally read-only, deny-by-default, and small. Start with [README.md](README.md); use the focused files under [docs/](docs/) for details.
@@ -19,7 +20,8 @@ The service is intentionally read-only, deny-by-default, and small. Start with [
 
 ## Non-negotiable behavior
 
-- Keep a single MCP tool and namespaced GET/LIST operations only.
+- Keep exactly the two fixed tools: namespaced GET/LIST through `k8s_get` and policy-filtered core-v1 Namespace LIST through argument-free `k8s_list_namespaces`.
+- Namespace discovery is the sole cluster-scoped operation; never add Namespace GET, arbitrary selectors, caller continuation tokens, or generic cluster-scoped reads.
 - Never expose Kubernetes credentials or raw Secret values. Secret GET values remain HMAC fingerprints; Secret LISTs remain sanitized.
 - Preserve independent resource policy, namespace policy, and Kubernetes RBAC enforcement.
 - Keep production authentication fail-closed. Unauthenticated mode is only for explicitly opted-in isolated development.

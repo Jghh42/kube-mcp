@@ -2,11 +2,14 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using KubeMcp.Kubernetes;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace KubeMcp.Tests;
 
@@ -16,12 +19,17 @@ public sealed class AuthenticationTests
     private const string ApiKey = "stage-one-test-api-key-32-bytes-minimum";
 
     [Fact]
-    public async Task ApiKeyModeRejectsInvalidCredentialsAndExposesOneToolForCorrectKey()
+    public async Task ApiKeyModeRejectsInvalidCredentialsAndInvokesNamespaceDiscoveryForCorrectKey()
     {
+        var reader = new NamespaceInvocationReader();
         await using var factory = CreateFactory(new Dictionary<string, string?>
         {
             ["KubeMcp:Authentication:Mode"] = "ApiKey",
             ["KubeMcp:Authentication:ApiKey"] = ApiKey
+        }, services =>
+        {
+            services.RemoveAll<IKubernetesReader>();
+            services.AddSingleton<IKubernetesReader>(reader);
         });
         using var client = factory.CreateClient();
 
@@ -43,7 +51,30 @@ public sealed class AuthenticationTests
 
         client.DefaultRequestHeaders.Remove("Authorization");
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", ApiKey);
-        await AssertSingleToolAsync(client);
+        await AssertToolsAndNamespaceInvocationAsync(client);
+        Assert.Equal(1, reader.NamespaceCalls);
+    }
+
+    [Fact]
+    public async Task ExplicitDevelopmentAnonymousModeInvokesNamespaceDiscovery()
+    {
+        var reader = new NamespaceInvocationReader();
+        await using var factory = CreateFactory(
+            new Dictionary<string, string?>
+            {
+                ["KubeMcp:Authentication:Mode"] = "None"
+            },
+            services =>
+            {
+                services.RemoveAll<IKubernetesReader>();
+                services.AddSingleton<IKubernetesReader>(reader);
+            });
+        using var client = factory.CreateClient();
+
+        await AssertToolsAndNamespaceInvocationAsync(client);
+
+        Assert.Equal(1, reader.NamespaceCalls);
+        Assert.Null(client.DefaultRequestHeaders.Authorization);
     }
 
     [Fact]
@@ -83,7 +114,7 @@ public sealed class AuthenticationTests
             }
         });
 
-    private static async Task AssertSingleToolAsync(HttpClient client)
+    private static async Task AssertToolsAndNamespaceInvocationAsync(HttpClient client)
     {
         await using var transport = new HttpClientTransport(
             new HttpClientTransportOptions
@@ -96,13 +127,43 @@ public sealed class AuthenticationTests
             ownsHttpClient: false);
         await using var mcpClient = await McpClient.CreateAsync(transport);
 
-        Assert.Equal("k8s_get", Assert.Single(await mcpClient.ListToolsAsync()).Name);
+        Assert.Equal(
+            ["k8s_get", "k8s_list_namespaces"],
+            (await mcpClient.ListToolsAsync()).Select(tool => tool.Name).Order().ToArray());
+
+        var result = await mcpClient.CallToolAsync(
+            "k8s_list_namespaces",
+            new Dictionary<string, object?>(),
+            cancellationToken: CancellationToken.None);
+        Assert.NotEqual(true, result.IsError);
+        Assert.Equal(
+            "{\"operation\":\"LIST\",\"resource\":\"namespaces\",\"items\":[],\"count\":0,\"limited\":false}",
+            Assert.Single(result.Content.OfType<TextContentBlock>()).Text);
     }
 
     private static async Task<HttpStatusCode> PostMcpAsync(HttpClient client)
     {
         using var response = await client.PostAsync("/mcp", JsonContent.Create(new { }));
         return response.StatusCode;
+    }
+
+    private sealed class NamespaceInvocationReader : IKubernetesReader
+    {
+        public int NamespaceCalls { get; private set; }
+
+        public Task<KubernetesReadResult> ReadAsync(
+            string resource,
+            string @namespace,
+            string? name,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<KubernetesReadResult> ListNamespacesAsync(CancellationToken cancellationToken)
+        {
+            NamespaceCalls++;
+            return Task.FromResult(new KubernetesReadResult(
+                "{\"operation\":\"LIST\",\"resource\":\"namespaces\",\"items\":[],\"count\":0,\"limited\":false}",
+                0));
+        }
     }
 
     private sealed class CapturingLogProvider : ILoggerProvider

@@ -68,6 +68,17 @@ internal sealed class KubernetesApi : IKubernetesApi
         return ParseNamespaceMatch(body, @namespace, cancellationToken);
     }
 
+    public Task<ReadOnlyMemory<byte>> ListNamespacesAsync(
+        int pageSize,
+        string? continueToken,
+        string? labelSelector,
+        int maxBodyBytes,
+        CancellationToken cancellationToken) =>
+        GetRawAsync(
+            BuildNamespaceDiscoveryUri(client.BaseUri, pageSize, continueToken, labelSelector),
+            maxBodyBytes,
+            cancellationToken);
+
     private async Task<ReadOnlyMemory<byte>> GetRawAsync(
         Uri uri,
         int maxBodyBytes,
@@ -239,6 +250,31 @@ internal sealed class KubernetesApi : IKubernetesApi
         return AppendPath(
             baseUri,
             $"/api/v1/namespaces?fieldSelector={fieldSelector}&labelSelector={escapedLabelSelector}&limit=1");
+    }
+
+    internal static Uri BuildNamespaceDiscoveryUri(
+        Uri baseUri,
+        int pageSize,
+        string? continueToken,
+        string? labelSelector)
+    {
+        var query = $"?limit={pageSize}";
+        if (!string.IsNullOrEmpty(labelSelector))
+        {
+            query += "&labelSelector=" + Uri.EscapeDataString(labelSelector);
+        }
+
+        if (!string.IsNullOrEmpty(continueToken))
+        {
+            if (Encoding.UTF8.GetByteCount(continueToken) > MaximumContinueTokenBytes)
+            {
+                throw MalformedResponseException();
+            }
+
+            query += "&continue=" + Uri.EscapeDataString(continueToken);
+        }
+
+        return AppendPath(baseUri, "/api/v1/namespaces" + query);
     }
 
     private static Uri AppendPath(Uri baseUri, string pathAndQuery)

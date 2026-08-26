@@ -318,14 +318,21 @@ public sealed class ProductionDeploymentTests
         });
         using var client = factory.CreateClient();
 
-        Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(client));
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            await PostMcpMethodAsync(client, "tools/list", new { }));
 
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", "incorrect-api-key-that-is-long-enough");
-        Assert.Equal(HttpStatusCode.Unauthorized, await PostMcpAsync(client));
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            await PostMcpMethodAsync(
+                client,
+                "tools/call",
+                new { name = "k8s_list_namespaces", arguments = new { } }));
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", ApiKey);
-        await AssertSingleToolAsync(client);
+        await AssertTwoToolsAsync(client);
     }
 
     private static async Task<HttpStatusCode> PostMcpAsync(HttpClient client)
@@ -334,7 +341,24 @@ public sealed class ProductionDeploymentTests
         return response.StatusCode;
     }
 
-    private static async Task AssertSingleToolAsync(HttpClient client)
+    private static async Task<HttpStatusCode> PostMcpMethodAsync(
+        HttpClient client,
+        string method,
+        object parameters)
+    {
+        using var response = await client.PostAsync(
+            "/mcp",
+            JsonContent.Create(new
+            {
+                jsonrpc = "2.0",
+                id = 1,
+                method,
+                @params = parameters
+            }));
+        return response.StatusCode;
+    }
+
+    private static async Task AssertTwoToolsAsync(HttpClient client)
     {
         await using var transport = new HttpClientTransport(
             new HttpClientTransportOptions
@@ -347,7 +371,9 @@ public sealed class ProductionDeploymentTests
             ownsHttpClient: false);
         await using var mcpClient = await McpClient.CreateAsync(transport);
 
-        Assert.Equal("k8s_get", Assert.Single(await mcpClient.ListToolsAsync()).Name);
+        Assert.Equal(
+            ["k8s_get", "k8s_list_namespaces"],
+            (await mcpClient.ListToolsAsync()).Select(tool => tool.Name).Order().ToArray());
     }
 
     private static void AssertSecretReference(

@@ -36,7 +36,8 @@ builder.Services.AddSingleton<IKubernetesReader, KubernetesReader>();
 builder.Services
     .AddMcpServer()
     .WithHttpTransport(options => options.SessionMode = HttpServerSessionMode.Stateless)
-    .WithTools<KubernetesGetTool>();
+    .WithTools<KubernetesGetTool>()
+    .WithTools<KubernetesListNamespacesTool>();
 
 var app = builder.Build();
 

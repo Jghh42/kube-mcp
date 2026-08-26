@@ -16,7 +16,7 @@ dotnet build KubeMcp.slnx --configuration Release --no-restore
 dotnet test KubeMcp.slnx --configuration Release --no-build --no-restore
 ```
 
-The test suite covers access policy, authentication, Secret sanitization and fingerprinting, generic compact LIST summaries, upstream and safe-output boundaries, pagination, cancellation, timeouts, process health, structured audit logging, production deployment settings, and the single-tool MCP surface.
+The test suite covers access policy, authentication, Secret sanitization and fingerprinting, generic compact LIST summaries, policy-filtered namespace discovery, upstream and safe-output boundaries, pagination, cancellation, timeouts, process health, structured audit logging, production deployment settings, and the exact two-tool MCP surface.
 
 ## End-to-end tests with kind
 
@@ -29,13 +29,15 @@ The harness owns a new disposable kind cluster for each run. Locally it builds a
 The harness creates ephemeral HMAC and API keys, loads the API key through a Kubernetes Secret, and checks:
 
 - missing, malformed, incorrect, and correct API-key credentials
-- exactly one exposed MCP tool
+- exactly two exposed MCP tools (`k8s_get` and argument-free `k8s_list_namespaces`)
 - ordinary detailed GET and generic compact LIST responses
 - Secret LIST key-name sanitization and GET fingerprinting
 - absence of raw Secret data in responses and application logs
 - application resource-policy and Kubernetes RBAC denials
-- blacklist and label-selector namespace policy allow/deny behavior
-- automatic access to a newly created eligible namespace
+- blacklist and label-selector namespace discovery, including newly created, labelled, unlabelled, and default-denied namespaces
+- the exact namespace snapshot envelope and name/optional-age projection without metadata leakage
+- aggregate namespace discovery audit coordinates and counts without namespace names
+- namespace LIST-only service-account RBAC, plus independent later policy and RBAC denials
 - explicit built-in resource mappings
 - practical upstream-body and safe-output size boundaries
 
