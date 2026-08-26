@@ -34,8 +34,10 @@ The harness creates ephemeral HMAC and API keys, loads the API key through a Kub
 - Secret LIST key-name sanitization and GET fingerprinting
 - absence of raw Secret data in responses and application logs
 - application resource-policy and Kubernetes RBAC denials
-- blacklist and label-selector namespace policy allow/deny behavior
-- automatic access to a newly created eligible namespace
+- blacklist and label-selector namespace discovery, including newly created, labelled, unlabelled, and default-denied namespaces
+- the exact namespace snapshot envelope and name/optional-age projection without metadata leakage
+- aggregate namespace discovery audit coordinates and counts without namespace names
+- namespace LIST-only service-account RBAC, plus independent later policy and RBAC denials
 - explicit built-in resource mappings
 - practical upstream-body and safe-output size boundaries
 
