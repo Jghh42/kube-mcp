@@ -1,0 +1,141 @@
+{{- if and (eq .Values.authentication.mode "None") (ne .Values.dotnetEnvironment "Development") }}
+{{- fail "authentication.mode=None is permitted only when dotnetEnvironment=Development" }}
+{{- end }}
+{{- if and (eq .Values.authentication.mode "None") (ne .Values.service.type "ClusterIP") }}
+{{- fail "authentication.mode=None requires service.type=ClusterIP" }}
+{{- end }}
+{{- if and (ne .Values.dotnetEnvironment "Development") (not .Values.image.digest) }}
+{{- fail "image.digest is required outside the Development environment" }}
+{{- end }}
+{{- if and (not .Values.serviceAccount.create) (not .Values.serviceAccount.name) }}
+{{- fail "serviceAccount.name is required when serviceAccount.create=false" }}
+{{- end }}
+{{- range .Values.allowedHosts }}
+{{- if or (eq . "*") (regexMatch "[;[:space:]]" .) }}
+{{- fail (printf "allowedHosts entry %q must not be '*', contain semicolons, or contain whitespace" .) }}
+{{- end }}
+{{- end }}
+{{- range $key, $_ := .Values.podLabels }}
+{{- if has $key (list "app.kubernetes.io/name" "app.kubernetes.io/instance") }}
+{{- fail (printf "podLabels must not override chart-managed selector label %s" $key) }}
+{{- end }}
+{{- end }}
+{{- range .Values.extraEnv }}
+{{- if has (lower .name) (list "dotnet_environment" "kubemcp__authentication__mode" "kubemcp__authentication__apikey" "kubemcp__secrethmackey" "allowedhosts") }}
+{{- fail (printf "extraEnv must not override chart-managed variable %s" .name) }}
+{{- end }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kube-mcp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-mcp.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kube-mcp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "kube-mcp.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "kube-mcp.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: {{ include "kube-mcp.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: DOTNET_ENVIRONMENT
+              value: {{ .Values.dotnetEnvironment | quote }}
+            - name: KubeMcp__Authentication__Mode
+              value: {{ .Values.authentication.mode | quote }}
+            {{- if eq .Values.authentication.mode "ApiKey" }}
+            - name: KubeMcp__Authentication__ApiKey
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "authentication.apiKeySecret.name is required in ApiKey mode" .Values.authentication.apiKeySecret.name | quote }}
+                  key: {{ required "authentication.apiKeySecret.key is required in ApiKey mode" .Values.authentication.apiKeySecret.key | quote }}
+            {{- end }}
+            - name: KubeMcp__SecretHmacKey
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "secretHmacKeySecret.name is required" .Values.secretHmacKeySecret.name | quote }}
+                  key: {{ required "secretHmacKeySecret.key is required" .Values.secretHmacKeySecret.key | quote }}
+            - name: AllowedHosts
+              value: {{ include "kube-mcp.allowedHosts" . | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+              httpHeaders:
+                - name: Host
+                  value: {{ include "kube-mcp.fullname" . }}
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+            successThreshold: {{ .Values.readinessProbe.successThreshold }}
+          {{- end }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              httpHeaders:
+                - name: Host
+                  value: {{ include "kube-mcp.fullname" . }}
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+            successThreshold: {{ .Values.livenessProbe.successThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

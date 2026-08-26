@@ -71,7 +71,7 @@ Endpoints:
 - Liveness: `http://127.0.0.1:8080/healthz`
 - Readiness: `http://127.0.0.1:8080/readyz`
 
-Full-revision `sha-<commit>` image tags are useful for traceability but, like all tags, can be moved. The unauthenticated [`overlays/development`](overlays/development/) Kustomize overlay is for isolated local clusters only.
+Full-revision `sha-<commit>` image tags are useful for traceability but, like all tags, can be moved. The unauthenticated [`overlays/development`](overlays/development/) Kustomize overlay is for isolated local clusters only. An experimental production-oriented [Helm chart](charts/kube-mcp/) is also available for iteration.
 
 ## Documentation
 

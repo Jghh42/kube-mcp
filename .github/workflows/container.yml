@@ -1,4 +1,4 @@
-name: Build, test, and publish container
+name: Build, test, and publish
 
 on:
   pull_request:
@@ -9,13 +9,17 @@ on:
   workflow_dispatch:
 
 concurrency:
+  # Release tags are serialized because they share floating container tags such
+  # as 1.2. Branch and pull-request runs retain per-ref cancellation.
   group: container-${{ github.workflow }}-${{ startsWith(github.ref, 'refs/tags/v') && 'release-tags' || github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
-# Third-party actions and Docker base images are commit/digest pinned. NuGet
-# restore is locked. The second job builds one linux/amd64 image, exercises it
-# against a real Kubernetes/Secret boundary, scans and SBOMs that same local
-# image, and only then publishes it with GitHub provenance and SBOM attestations.
+# Third-party actions, downloaded tools, and Docker base images are pinned.
+# NuGet restore is locked. The container job builds one linux/amd64 image,
+# exercises it against a real Kubernetes/Secret boundary, scans and SBOMs that
+# same local image, and only then publishes it with provenance and SBOM
+# attestations. Release-tag chart publication waits for that job. Pull requests
+# exercise the same Helm OCI push command against an ephemeral local registry.
 permissions:
   contents: read
 
@@ -60,6 +64,37 @@ jobs:
           else
             git show --check --format= HEAD
           fi
+
+      - name: Install pinned Helm
+        run: |
+          set -euo pipefail
+          curl -fsSLO https://get.helm.sh/helm-v3.21.3-linux-amd64.tar.gz
+          echo "15e041a93a590dce8100f39385cd98c84a765c9e36aeeb9e2dc6ff9e4769e2e0  helm-v3.21.3-linux-amd64.tar.gz" | sha256sum -c -
+          tar -xzf helm-v3.21.3-linux-amd64.tar.gz
+          sudo install -m 0755 linux-amd64/helm /usr/local/bin/helm
+          helm version --short
+
+      - name: Validate Helm chart
+        run: tests/helm/run.sh
+
+      - name: Smoke-test Helm OCI push
+        run: tests/helm/push-oci.sh
+
+      - name: Validate release chart version
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=${VERSION#v}
+          [[ "$version" =~ ^[0-9A-Za-z.+-]+$ && "$version" == "${version,,}" ]] || {
+            echo "::error::Chart version must contain only lowercase SemVer characters: $version"
+            exit 1
+          }
+          helm package charts/kube-mcp \
+            --version "$version" \
+            --app-version "$version" \
+            --destination /tmp
 
       - name: Scan NuGet dependencies for known vulnerabilities
         run: |
@@ -141,7 +176,7 @@ jobs:
 
   container-kind-scan-publish:
     name: Container, kind, scan, and publish
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push'
     needs: build-test
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -306,3 +341,81 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
           category: trivy-container
+
+  publish-helm-release:
+    name: Publish release Helm chart
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: container-kind-scan-publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # actions/checkout v5.1.0
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Helm
+        run: |
+          set -euo pipefail
+          curl -fsSLO https://get.helm.sh/helm-v3.21.3-linux-amd64.tar.gz
+          echo "15e041a93a590dce8100f39385cd98c84a765c9e36aeeb9e2dc6ff9e4769e2e0  helm-v3.21.3-linux-amd64.tar.gz" | sha256sum -c -
+          tar -xzf helm-v3.21.3-linux-amd64.tar.gz
+          sudo install -m 0755 linux-amd64/helm /usr/local/bin/helm
+          helm version --short
+
+      - name: Package release chart
+        id: package
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=${VERSION#v}
+          [[ "$version" =~ ^[0-9A-Za-z.+-]+$ && "$version" == "${version,,}" ]] || {
+            echo "::error::Chart version must contain only lowercase SemVer characters: $version"
+            exit 1
+          }
+          mkdir -p dist
+          helm package charts/kube-mcp \
+            --version "$version" \
+            --app-version "$version" \
+            --destination dist
+          test -f "dist/kube-mcp-${version}.tgz"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | helm registry login ghcr.io \
+            --username '${{ github.actor }}' \
+            --password-stdin
+
+      - name: Publish chart
+        env:
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          reference="oci://ghcr.io/jghh42/charts/kube-mcp"
+          if existing=$(helm show chart "$reference" --version "$VERSION" 2>&1); then
+            echo "::error::Chart version $VERSION already exists at $reference"
+            exit 1
+          elif ! grep -Eqi 'not found|manifest unknown' <<<"$existing"; then
+            printf '%s\n' "$existing" >&2
+            echo "::error::Could not verify that chart version $VERSION is absent"
+            exit 1
+          fi
+          output=$(helm push "dist/kube-mcp-${VERSION}.tgz" oci://ghcr.io/jghh42/charts 2>&1)
+          printf '%s\n' "$output"
+          digest=$(awk '/^Digest: sha256:/ {print $2}' <<<"$output" | tail -1)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::Helm did not report a valid chart digest"
+            exit 1
+          }
+          oci_version=${VERSION//+/_}
+          echo "Published chart: ghcr.io/jghh42/charts/kube-mcp:$oci_version" >>"$GITHUB_STEP_SUMMARY"
+          echo "Chart digest: $digest" >>"$GITHUB_STEP_SUMMARY"

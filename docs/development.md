@@ -6,6 +6,7 @@
 - Docker
 - kind
 - kubectl
+- Helm 3 for chart validation
 - curl, Python 3, and OpenSSL for the kind harness
 
 ## Build and test
@@ -17,6 +18,12 @@ dotnet test KubeMcp.slnx --configuration Release --no-build --no-restore
 ```
 
 The test suite covers access policy, authentication, Secret sanitization and fingerprinting, generic compact LIST summaries, policy-filtered namespace discovery, upstream and safe-output boundaries, pagination, cancellation, timeouts, process health, structured audit logging, production deployment settings, and the exact two-tool MCP surface.
+
+Validate the proof-of-concept Helm chart separately:
+
+```sh
+tests/helm/run.sh
+```
 
 ## End-to-end tests with kind
 
@@ -43,7 +50,7 @@ The harness creates ephemeral HMAC and API keys, loads the API key through a Kub
 
 ## Continuous integration
 
-[`.github/workflows/container.yml`](../.github/workflows/container.yml) has two jobs. Pull requests run locked restore/build/test, NuGet scanning, and the container/kind/vulnerability gate with a read-only token. Trusted pushes run that same application gate followed by one container build that runs in disposable kind, is scanned and SBOMed, and is then published. GitHub provenance and SBOM attestations accompany published images.
+[`.github/workflows/container.yml`](../.github/workflows/container.yml) validates the Helm chart alongside the application on every run. Pull requests run locked restore/build/test, chart validation, NuGet scanning, and the container/kind/vulnerability gate with a read-only token. Trusted pushes run that same application gate followed by one container build that runs in disposable kind, is scanned and SBOMed, and is then published. GitHub provenance and SBOM attestations accompany published images. Release tags publish the chart only after the container job succeeds.
 
 ## Container publishing
 
@@ -66,3 +73,15 @@ v1.2.3
 Release-tag builds do not create or move `latest`; only a successful push to the default branch does. Publishing uses the workflow's short-lived `GITHUB_TOKEN` and requires no repository secret. Pull-request jobs remain read-only and never receive publication or attestation permissions.
 
 A new GHCR package is private by default. Change its package visibility after the first publish if unauthenticated cluster pulls are required. The full `sha-<commit>` tag identifies the source revision but, like any registry tag, can technically be moved. Production deployments should pin the published `ghcr.io/jghh42/kube-mcp@sha256:<digest>` reference recorded by the workflow.
+
+## Helm chart publishing
+
+A release tag such as `v1.2.3` packages the chart as version `1.2.3`, sets its application version to `1.2.3`, and publishes it only after the tested container pipeline succeeds:
+
+```text
+ghcr.io/jghh42/charts/kube-mcp:1.2.3
+```
+
+The workflow derives the package version from the release tag with `helm package --version`; it does not create version-bump commits. Release versions are required to use lowercase SemVer characters. Publications targeting the same version share a non-cancelling concurrency group, while different versions can proceed independently. Publication fails closed unless the registry explicitly reports the requested version as absent. GHCR tags can still be changed by credentials outside this workflow, so restrict package write access accordingly. Helm represents SemVer build metadata separators (`+`) as underscores in OCI tags.
+
+Every CI run packages the chart and exercises `helm push` against an ephemeral unauthenticated registry bound to the runner loopback interface. Main-branch and release-tag pushes can publish container images, but only release tags publish Helm charts externally.

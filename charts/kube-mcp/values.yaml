@@ -1,0 +1,94 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/jghh42/kube-mcp
+  # Used only for Development unless digest is set. Non-Development rendering
+  # requires an immutable digest.
+  tag: latest
+  digest: ""
+  pullPolicy: Always
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: true
+  annotations: {}
+  name: ""
+
+rbac:
+  create: true
+
+podAnnotations: {}
+podLabels: {}
+
+dotnetEnvironment: Production
+authentication:
+  mode: ApiKey
+  apiKeySecret:
+    name: kube-mcp-api-key
+    key: api-key
+
+secretHmacKeySecret:
+  name: kube-mcp-hmac
+  key: key
+
+# Additional hostnames presented directly to ASP.NET Core. Service DNS names
+# and local port-forward hosts are added automatically by the chart.
+allowedHosts:
+  - k-mcp.example.internal
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+service:
+  annotations: {}
+  # Keep ClusterIP unless a trusted edge provides the documented traffic controls.
+  type: ClusterIP
+  port: 80
+
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  timeoutSeconds: 1
+  failureThreshold: 3
+  successThreshold: 1
+
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 1
+  failureThreshold: 3
+  successThreshold: 1
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+# Use these for additional non-secret application settings. Do not duplicate
+# the managed authentication, HMAC, environment, or AllowedHosts variables.
+extraEnv: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+terminationGracePeriodSeconds: 30
