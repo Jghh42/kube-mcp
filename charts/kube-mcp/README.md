@@ -42,4 +42,6 @@ The Service defaults to `ClusterIP`. Edge request limits, TLS, traffic policy, a
 
 ```sh
 tests/helm/run.sh
+# Requires Docker; pushes only to an ephemeral loopback OCI registry.
+tests/helm/push-oci.sh
 ```
