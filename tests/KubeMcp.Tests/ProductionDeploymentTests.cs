@@ -95,6 +95,57 @@ public sealed class ProductionDeploymentTests
     }
 
     [Fact]
+    public void HelmChartDefaultsRetainProductionSecurityBoundaries()
+    {
+        var values = File.ReadAllText(RepositoryFile("charts/kube-mcp/values.yaml"));
+        var deployment = File.ReadAllText(
+            RepositoryFile("charts/kube-mcp/templates/deployment.yaml"));
+        var rbac = File.ReadAllText(RepositoryFile("charts/kube-mcp/templates/rbac.yaml"));
+        var referenceDeployment = File.ReadAllText(RepositoryFile("deployment.yaml"));
+
+        Assert.Matches(@"(?m)^dotnetEnvironment: Production$", values);
+        Assert.Matches(@"(?m)^  mode: ApiKey$", values);
+        Assert.Contains("name: kube-mcp-api-key", values, StringComparison.Ordinal);
+        Assert.Contains("key: api-key", values, StringComparison.Ordinal);
+        Assert.Contains("name: kube-mcp-hmac", values, StringComparison.Ordinal);
+        Assert.DoesNotContain("apiKey: ", values, StringComparison.Ordinal);
+        Assert.DoesNotContain("hmacKey: ", values, StringComparison.Ordinal);
+        Assert.Contains(
+            "authentication.mode=None is permitted only when dotnetEnvironment=Development",
+            deployment,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "authentication.mode=None requires service.type=ClusterIP",
+            deployment,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "image.digest is required outside the Development environment",
+            deployment,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "serviceAccount.name is required when serviceAccount.create=false",
+            deployment,
+            StringComparison.Ordinal);
+        Assert.Contains("KubeMcp__Authentication__ApiKey", deployment, StringComparison.Ordinal);
+        Assert.Contains("KubeMcp__SecretHmacKey", deployment, StringComparison.Ordinal);
+        Assert.Contains("runAsNonRoot: true", values, StringComparison.Ordinal);
+        Assert.Contains("type: RuntimeDefault", values, StringComparison.Ordinal);
+        Assert.Contains("allowPrivilegeEscalation: false", values, StringComparison.Ordinal);
+        Assert.Contains("readOnlyRootFilesystem: true", values, StringComparison.Ordinal);
+        Assert.Contains("path: /readyz", deployment, StringComparison.Ordinal);
+        Assert.Contains("path: /healthz", deployment, StringComparison.Ordinal);
+        Assert.Contains("resources: [\"namespaces\"]", rbac, StringComparison.Ordinal);
+        Assert.Matches(@"resources: \[""namespaces""\]\s+verbs: \[""list""\]", rbac);
+        Assert.DoesNotMatch("""(?m)^\s*(apiGroups|resources):[^\r\n]*["']?\*["']?""", rbac);
+
+        var rulePattern = @"(?ms)^rules:\s*\r?\n(?<rules>.*?)(?=^---\r?$)";
+        var referenceRules = Regex.Match(referenceDeployment, rulePattern).Groups["rules"].Value;
+        var chartRules = Regex.Match(rbac, rulePattern).Groups["rules"].Value;
+        Assert.False(string.IsNullOrWhiteSpace(referenceRules));
+        Assert.Equal(referenceRules.ReplaceLineEndings(), chartRules.ReplaceLineEndings());
+    }
+
+    [Fact]
     public void ReferenceDeploymentRetainsIntentionalOperationalHardening()
     {
         var production = File.ReadAllText(RepositoryFile("deployment.yaml"));

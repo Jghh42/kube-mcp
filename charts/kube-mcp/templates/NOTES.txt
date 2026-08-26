@@ -1,0 +1,18 @@
+kube-mcp has been installed in namespace {{ .Release.Namespace }}.
+
+The chart expects these existing Secret keys:
+{{- if eq .Values.authentication.mode "ApiKey" }}
+  API key: {{ .Values.authentication.apiKeySecret.name }}/{{ .Values.authentication.apiKeySecret.key }}
+{{- end }}
+  HMAC key: {{ .Values.secretHmacKeySecret.name }}/{{ .Values.secretHmacKeySecret.key }}
+
+Wait for the Deployment and open a local port-forward:
+  kubectl rollout status deployment/{{ include "kube-mcp.fullname" . }} --namespace {{ .Release.Namespace }}
+  kubectl port-forward service/{{ include "kube-mcp.fullname" . }} --namespace {{ .Release.Namespace }} 8080:{{ .Values.service.port }}
+
+MCP endpoint: http://127.0.0.1:8080/mcp
+Health:       http://127.0.0.1:8080/healthz
+Readiness:    http://127.0.0.1:8080/readyz
+
+For production, pin image.digest to a published sha256 digest and replace the
+example entry in allowedHosts with the internal hostname presented to the app.

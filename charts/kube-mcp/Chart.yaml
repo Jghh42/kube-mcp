@@ -1,0 +1,11 @@
+apiVersion: v2
+name: kube-mcp
+description: A small, read-only Kubernetes MCP service
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/Jghh42/kube-mcp
+sources:
+  - https://github.com/Jghh42/kube-mcp
+annotations:
+  org.opencontainers.image.source: https://github.com/Jghh42/kube-mcp

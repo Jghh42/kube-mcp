@@ -41,12 +41,28 @@ fi
 
 The shell variables are only a convenient handoff during setup. Retain the API key in your secret manager and configure MCP clients with that same bearer value. Retain the HMAC key too when fingerprints must survive Secret recreation. Do not print either value into logs or commit it.
 
+### Reference manifest
+
 Deploy and wait for readiness:
 
 ```sh
 kubectl apply --filename deployment.yaml
 kubectl rollout status deployment/kube-mcp --namespace kube-mcp
 ```
+
+### Helm chart proof of concept
+
+The experimental chart under [`charts/kube-mcp`](../charts/kube-mcp/) renders the same production authentication, Secret references, narrow RBAC, pod hardening, probes, resource limits, and private Service defaults. It does not create credentials, a Namespace resource, or an Ingress. Create the namespace and Secrets above, then install with an immutable published image digest:
+
+```sh
+helm upgrade --install kube-mcp charts/kube-mcp \
+  --namespace kube-mcp \
+  --create-namespace \
+  --set-string image.digest='sha256:<published-digest>' \
+  --set-json 'allowedHosts=["k-mcp.example.internal"]'
+```
+
+The chart defaults to the existing `kube-mcp-api-key/api-key` and `kube-mcp-hmac/key` Secret references. Secret names and keys, image settings, replicas, Service settings, probes, resources, scheduling, labels, and annotations can be changed through values. Never put API-key or HMAC material directly in Helm values because rendered releases and value history are not a secret-management system. See the [chart README](../charts/kube-mcp/README.md) for the current proof-of-concept interface.
 
 Access the service locally:
 
