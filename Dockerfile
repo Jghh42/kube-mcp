@@ -12,7 +12,7 @@
 # them (and the NuGet lock file) via Dependabot rather than editing tags by hand.
 #   sdk:10.0.400  @ sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c
 #   aspnet:10.0.11 @ sha256:a4556ed033fa96f984bb7a8d348851cb2d36b1281dd2420070045f664fbb5f94
-FROM mcr.microsoft.com/dotnet/sdk:10.0.400@sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.400@sha256:4beef5b8919dcaa2dc924233bd069257e883cc7a061e09088a97d152d6a48510 AS build
 WORKDIR /source
 
 # Restore is locked to the checked-in NuGet lock file (packages.lock.json) so a
