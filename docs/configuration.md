@@ -43,7 +43,7 @@ A resource resolves only when its MCP name has an explicit local mapping. Every 
 }
 ```
 
-Custom mappings also need matching read-only Kubernetes RBAC. See [optional overlays](../overlays/README.md) for examples. There is no wildcard application resource mode; resources that are not explicitly mapped are denied before any Kubernetes request. Do not add `namespaces`: argument-free `k8s_list_namespaces` is a fixed core-v1 LIST independent of this mapping, and `k8s_get` remains namespaced-only.
+Custom mappings also need matching read-only Kubernetes RBAC. Helm deployments can opt into [five predefined namespaced CRD families](../charts/kube-mcp/README.md#optional-crds) using `crds.certManager`, `crds.traefik`, `crds.rookCeph`, `crds.cnpg`, or `crds.argoCD` flags. Each enabled flag adds explicit application mappings and matching chart RBAC (unless `rbac.create=false`, in which case external RBAC is required). Non-Helm deployments can use [optional overlays](../overlays/README.md) for examples. There is no wildcard application resource mode; resources that are not explicitly mapped are denied before any Kubernetes request. Do not add `namespaces`: argument-free `k8s_list_namespaces` is a fixed core-v1 LIST independent of this mapping, and `k8s_get` remains namespaced-only.
 
 ## Namespace policy
 

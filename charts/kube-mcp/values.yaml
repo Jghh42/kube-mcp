@@ -21,6 +21,15 @@ serviceAccount:
 rbac:
   create: true
 
+# Opt-in namespaced CRD families. Each enabled flag adds both application
+# mappings and matching read-only RBAC (when rbac.create=true).
+crds:
+  certManager: false
+  traefik: false
+  rookCeph: false
+  cnpg: false
+  argoCD: false
+
 podAnnotations: {}
 podLabels: {}
 

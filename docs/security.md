@@ -79,4 +79,4 @@ Already-sanitized events are written directly through the dedicated `ILogger<Aud
 
 ## RBAC
 
-The default ClusterRole grants narrow GET/LIST access for the default built-in resource set and namespace LIST for policy evaluation and namespace discovery. Optional CRDs require explicit, coordinated application mappings and narrow RBAC changes; wildcard reads are not supported. See the [deployment guide](deployment.md#resource-access-and-rbac) and [resource overlays](../overlays/README.md).
+The default ClusterRole grants narrow GET/LIST access for the default built-in resource set and namespace LIST for policy evaluation and namespace discovery. Optional CRDs require explicit, coordinated application mappings and narrow RBAC changes; wildcard reads are not supported. Helm [CRD preset flags](../charts/kube-mcp/README.md#optional-crds) render both gates for selected namespaced families, while the non-Helm [resource overlays](../overlays/README.md) remain separate. Detailed CRD GETs may include sensitive spec/status fields; review each enabled family. See the [deployment guide](deployment.md#resource-access-and-rbac).

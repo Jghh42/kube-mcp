@@ -142,7 +142,9 @@ public sealed class ProductionDeploymentTests
         var referenceRules = Regex.Match(referenceDeployment, rulePattern).Groups["rules"].Value;
         var chartRules = Regex.Match(rbac, rulePattern).Groups["rules"].Value;
         Assert.False(string.IsNullOrWhiteSpace(referenceRules));
-        Assert.Equal(referenceRules.ReplaceLineEndings(), chartRules.ReplaceLineEndings());
+        var presetStart = chartRules.IndexOf("  {{- range $family,", StringComparison.Ordinal);
+        Assert.True(presetStart > 0, "Chart CRD rules must be appended after the built-in rules.");
+        Assert.Equal(referenceRules.ReplaceLineEndings(), chartRules[..presetStart].ReplaceLineEndings());
     }
 
     [Fact]

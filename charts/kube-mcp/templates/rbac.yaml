@@ -1,3 +1,4 @@
+{{- $presets := .Files.Get "files/crd-presets.yaml" | fromYaml }}
 {{- if .Values.rbac.create }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -40,6 +41,17 @@ rules:
   - apiGroups: ["policy"]
     resources: ["poddisruptionbudgets"]
     verbs: ["get", "list"]
+  {{- range $family, $enabled := .Values.crds }}
+  {{- if $enabled }}
+  {{- $preset := index $presets $family }}
+  - apiGroups: [{{ $preset.group | quote }}]
+    resources:
+      {{- range $resource, $_ := $preset.resources }}
+      - {{ $resource }}
+      {{- end }}
+    verbs: ["get", "list"]
+  {{- end }}
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
