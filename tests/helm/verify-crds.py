@@ -62,11 +62,13 @@ assert actual_env == expected_env, (actual_env, expected_env)
 
 rules = re.findall(
     r'^  - apiGroups: \["([^"]+)"\]\n    resources:\n'
-    r'((?:      - [a-z]+\n)+)    verbs: \["get", "list"\]$', manifest, re.M,
+    r'((?:      - [a-z]+\n)+)    verbs: \[([^\]\n]*)\]$', manifest, re.M,
 )
+assert all(verbs == '"get", "list"' for _, _, verbs in rules), \
+    "unexpected CRD RBAC verbs"
 actual_rules = {
     group: set(re.findall(r'^      - ([a-z]+)$', resources, re.M))
-    for group, resources in rules
+    for group, resources, _ in rules
 }
 assert len(actual_rules) == len(rules), "duplicate CRD API groups"
 assert actual_rules == expected_rules, (actual_rules, expected_rules)

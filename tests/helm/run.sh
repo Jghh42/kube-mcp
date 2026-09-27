@@ -53,7 +53,10 @@ helm template external-rbac "$chart" \
   --set-string image.digest="$digest" \
   --set crds.cnpg=true --set rbac.create=false >"$tmp_dir/external-rbac.yaml"
 python3 tests/helm/verify-crds.py "$tmp_dir/external-rbac.yaml" cnpg external
-! grep -F 'kind: ClusterRole' "$tmp_dir/external-rbac.yaml" >/dev/null
+if grep -F 'kind: ClusterRole' "$tmp_dir/external-rbac.yaml" >/dev/null; then
+  echo 'External RBAC output unexpectedly contains a ClusterRole' >&2
+  exit 1
+fi
 
 helm template development "$chart" \
   --namespace development \
