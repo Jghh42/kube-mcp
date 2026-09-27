@@ -14,6 +14,18 @@
         "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
       }
     },
+    "crds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["certManager", "traefik", "rookCeph", "cnpg", "argoCD"],
+      "properties": {
+        "certManager": { "type": "boolean" },
+        "traefik": { "type": "boolean" },
+        "rookCeph": { "type": "boolean" },
+        "cnpg": { "type": "boolean" },
+        "argoCD": { "type": "boolean" }
+      }
+    },
     "dotnetEnvironment": { "type": "string", "enum": ["Production", "Development", "Staging"] },
     "serviceAccount": {
       "type": "object",

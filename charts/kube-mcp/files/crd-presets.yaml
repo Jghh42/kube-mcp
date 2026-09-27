@@ -1,0 +1,46 @@
+# Predefined namespaced CRDs. The chart derives both application mappings and
+# read-only RBAC from these entries; cluster-scoped CRDs are intentionally absent.
+certManager:
+  group: cert-manager.io
+  version: v1
+  resources:
+    certificates: Certificate
+    certificaterequests: CertificateRequest
+    issuers: Issuer
+traefik:
+  group: traefik.io
+  version: v1alpha1
+  resources:
+    ingressroutes: IngressRoute
+    middlewares: Middleware
+    traefikservices: TraefikService
+    tlsoptions: TLSOption
+    tlsstores: TLSStore
+    serverstransports: ServersTransport
+    ingressroutetcps: IngressRouteTCP
+    middlewaretcps: MiddlewareTCP
+    serverstransporttcps: ServersTransportTCP
+    ingressrouteudps: IngressRouteUDP
+rookCeph:
+  group: ceph.rook.io
+  version: v1
+  resources:
+    cephclusters: CephCluster
+    cephblockpools: CephBlockPool
+    cephfilesystems: CephFilesystem
+    cephobjectstores: CephObjectStore
+cnpg:
+  group: postgresql.cnpg.io
+  version: v1
+  resources:
+    clusters: Cluster
+    backups: Backup
+    scheduledbackups: ScheduledBackup
+    poolers: Pooler
+argoCD:
+  group: argoproj.io
+  version: v1alpha1
+  resources:
+    applications: Application
+    applicationsets: ApplicationSet
+    appprojects: AppProject

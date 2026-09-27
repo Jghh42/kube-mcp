@@ -34,7 +34,32 @@ The chart derives the Service DNS entries in `AllowedHosts` from the Helm releas
 
 `authentication.mode=None` is rejected unless `dotnetEnvironment=Development` and `service.type=ClusterIP`. Never expose that combination outside an isolated development cluster.
 
-RBAC creation can be disabled with `rbac.create=false` when equivalent externally managed RBAC already exists. If `serviceAccount.create=false`, `serviceAccount.name` is mandatory; the chart never grants its ClusterRole to the shared `default` ServiceAccount implicitly. The built-in chart RBAC is intentionally fixed. Optional CRDs still require coordinated application mappings and additive read-only RBAC; see [`overlays/README.md`](../../overlays/README.md).
+RBAC creation can be disabled with `rbac.create=false` when equivalent externally managed RBAC already exists. If `serviceAccount.create=false`, `serviceAccount.name` is mandatory; the chart never grants its ClusterRole to the shared `default` ServiceAccount implicitly.
+
+## Optional CRDs
+
+Enable any of the five predefined namespaced CRD families directly in Helm values (all default to `false`):
+
+```yaml
+crds:
+  certManager: true
+  traefik: true
+  rookCeph: true
+  cnpg: true
+  argoCD: true
+```
+
+Enable only the families you need, for example `--set crds.cnpg=true`. Each flag adds explicit `KubeMcp:AllowedResources` mappings to the Deployment **and**, when `rbac.create=true`, matching `get`/`list` rules to the chart ClusterRole. The two independent gates remain in force. With `rbac.create=false`, provide equivalent external RBAC yourself; the flag still adds application mappings. The chart does not install CRDs or their controllers. Installing a CRD alone does not grant access.
+
+| Flag | Namespaced resources (full MCP resource names use `<resource>.<group>`) | API group/version |
+| --- | --- | --- |
+| `certManager` | certificates, certificaterequests, issuers | `cert-manager.io/v1` |
+| `traefik` | ingressroutes, middlewares, traefikservices, tlsoptions, tlsstores, serverstransports, ingressroutetcps, middlewaretcps, serverstransporttcps, ingressrouteudps | `traefik.io/v1alpha1` |
+| `rookCeph` | cephclusters, cephblockpools, cephfilesystems, cephobjectstores | `ceph.rook.io/v1` |
+| `cnpg` | clusters, backups, scheduledbackups, poolers | `postgresql.cnpg.io/v1` |
+| `argoCD` | applications, applicationsets, appprojects | `argoproj.io/v1alpha1` |
+
+Cluster-scoped resources (for example cert-manager ClusterIssuers) are deliberately excluded. Detailed CRD GET responses may include sensitive fields placed in custom-resource specs/status; review what clients can read before enabling a family. Namespace policy and Kubernetes RBAC still apply. The non-Helm reference manifest and its [optional overlays](../../overlays/README.md) remain independent.
 
 The Service defaults to `ClusterIP`. Edge request limits, TLS, traffic policy, and prevention of untrusted direct access remain the responsibility of a private ingress, load balancer, or service mesh.
 
