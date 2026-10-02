@@ -7,6 +7,7 @@ using KubeMcp.Security;
 using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.AspNetCore;
+using ModelContextProtocol.Server;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -42,6 +43,20 @@ builder.Services
 var app = builder.Build();
 
 var kubeMcpOptions = app.Services.GetRequiredService<IOptions<KubeMcpOptions>>().Value;
+
+// Generate metadata once, before serving requests, from validated local mappings.
+// This advertises configured argument names, not discovered cluster capabilities.
+var resourceGroups = kubeMcpOptions.AllowedResources
+    .GroupBy(entry => entry.Value.Group, StringComparer.Ordinal)
+    .OrderBy(group => group.Key, StringComparer.Ordinal)
+    .Select(group => $"- {(group.Key.Length == 0 ? "core" : group.Key)}: " +
+        string.Join(", ", group.Select(entry => entry.Key).Order(StringComparer.Ordinal)));
+var getTool = app.Services.GetServices<McpServerTool>()
+    .Single(tool => tool.ProtocolTool.Name == "k8s_get");
+getTool.ProtocolTool.Description += "\n\nConfigured resource argument names (by API group):\n" +
+    string.Join("\n", resourceGroups) +
+    "\n\nAccess remains subject to namespace policy, Kubernetes RBAC, " +
+    "and whether the resource API exists in the cluster.";
 
 if (authenticationMode == AuthenticationMode.None)
 {
