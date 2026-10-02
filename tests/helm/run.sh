@@ -30,6 +30,33 @@ grep -F 'resources: ["namespaces"]' "$tmp_dir/production.yaml" >/dev/null
 grep -F 'verbs: ["list"]' "$tmp_dir/production.yaml" >/dev/null
 grep -F 'readOnlyRootFilesystem: true' "$tmp_dir/production.yaml" >/dev/null
 grep -F 'type: ClusterIP' "$tmp_dir/production.yaml" >/dev/null
+python3 tests/helm/verify-crds.py "$tmp_dir/production.yaml" '' rbac
+
+# Test every flag independently, the combined surface, and external RBAC mode.
+for family in certManager traefik rookCeph cnpg argoCD; do
+  helm template preset "$chart" \
+    --namespace kube-mcp \
+    --set-string image.digest="$digest" \
+    --set "crds.$family=true" >"$tmp_dir/$family.yaml"
+  python3 tests/helm/verify-crds.py "$tmp_dir/$family.yaml" "$family" rbac
+done
+helm template all-crds "$chart" \
+  --namespace kube-mcp \
+  --set-string image.digest="$digest" \
+  --set crds.certManager=true --set crds.traefik=true \
+  --set crds.rookCeph=true --set crds.cnpg=true \
+  --set crds.argoCD=true >"$tmp_dir/all-crds.yaml"
+python3 tests/helm/verify-crds.py "$tmp_dir/all-crds.yaml" \
+  certManager,traefik,rookCeph,cnpg,argoCD rbac
+helm template external-rbac "$chart" \
+  --namespace kube-mcp \
+  --set-string image.digest="$digest" \
+  --set crds.cnpg=true --set rbac.create=false >"$tmp_dir/external-rbac.yaml"
+python3 tests/helm/verify-crds.py "$tmp_dir/external-rbac.yaml" cnpg external
+if grep -F 'kind: ClusterRole' "$tmp_dir/external-rbac.yaml" >/dev/null; then
+  echo 'External RBAC output unexpectedly contains a ClusterRole' >&2
+  exit 1
+fi
 
 helm template development "$chart" \
   --namespace development \
@@ -61,6 +88,22 @@ expect_failure 'podLabels must not override chart-managed selector label app.kub
 expect_failure 'extraEnv must not override chart-managed variable allowedhosts' \
   --set dotnetEnvironment=Development \
   --set-string 'extraEnv[0].name=allowedhosts' \
+  --set-string 'extraEnv[0].value=unsafe'
+expect_failure "at '/crds/cnpg': got string, want boolean" \
+  --set dotnetEnvironment=Development \
+  --set-string crds.cnpg=true
+expect_failure "at '/crds': additional properties 'unknown' not allowed" \
+  --set dotnetEnvironment=Development \
+  --set crds.unknown=true
+expect_failure 'extraEnv must not override chart-managed variable KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Group' \
+  --set dotnetEnvironment=Development \
+  --set crds.cnpg=true \
+  --set-string 'extraEnv[0].name=KubeMcp__AllowedResources__clusters.postgresql.cnpg.io__Group' \
+  --set-string 'extraEnv[0].value=unsafe'
+expect_failure 'extraEnv must not override chart-managed variable kubemcp__allowedresources__clusters.postgresql.cnpg.io__kind' \
+  --set dotnetEnvironment=Development \
+  --set crds.cnpg=true \
+  --set-string 'extraEnv[0].name=kubemcp__allowedresources__clusters.postgresql.cnpg.io__kind' \
   --set-string 'extraEnv[0].value=unsafe'
 
 helm template quoted "$chart" \
@@ -96,6 +139,13 @@ helm template packaged "$tmp_dir/kube-mcp-1.2.3-rc.1+build.1.tgz" \
   --namespace kube-mcp \
   --set-string image.digest="$digest" >"$tmp_dir/packaged.yaml"
 grep -F 'app.kubernetes.io/version: "1.2.3-rc.1_build.1"' "$tmp_dir/packaged.yaml" >/dev/null
+helm template packaged-crds "$tmp_dir/kube-mcp-1.2.3-rc.1+build.1.tgz" \
+  --namespace kube-mcp --set-string image.digest="$digest" \
+  --set crds.certManager=true --set crds.traefik=true \
+  --set crds.rookCeph=true --set crds.cnpg=true \
+  --set crds.argoCD=true >"$tmp_dir/packaged-crds.yaml"
+python3 tests/helm/verify-crds.py "$tmp_dir/packaged-crds.yaml" \
+  certManager,traefik,rookCeph,cnpg,argoCD rbac
 
 long_version="1.2.3-$(printf 'a%.0s' {1..56})-b"
 helm package "$chart" \

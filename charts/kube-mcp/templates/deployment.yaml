@@ -1,3 +1,4 @@
+{{- $presets := .Files.Get "files/crd-presets.yaml" | fromYaml }}
 {{- if and (eq .Values.authentication.mode "None") (ne .Values.dotnetEnvironment "Development") }}
 {{- fail "authentication.mode=None is permitted only when dotnetEnvironment=Development" }}
 {{- end }}
@@ -21,8 +22,21 @@
 {{- end }}
 {{- end }}
 {{- range .Values.extraEnv }}
-{{- if has (lower .name) (list "dotnet_environment" "kubemcp__authentication__mode" "kubemcp__authentication__apikey" "kubemcp__secrethmackey" "allowedhosts") }}
+{{- $envNameOriginal := .name }}
+{{- $envName := lower $envNameOriginal }}
+{{- if has $envName (list "dotnet_environment" "kubemcp__authentication__mode" "kubemcp__authentication__apikey" "kubemcp__secrethmackey" "allowedhosts") }}
 {{- fail (printf "extraEnv must not override chart-managed variable %s" .name) }}
+{{- end }}
+{{- range $family, $enabled := $.Values.crds }}
+{{- if $enabled }}
+{{- $preset := index $presets $family }}
+{{- range $resource, $_ := $preset.resources }}
+{{- $prefix := printf "kubemcp__allowedresources__%s.%s__" $resource $preset.group }}
+{{- if has $envName (list (printf "%sgroup" $prefix) (printf "%sversion" $prefix) (printf "%sresource" $prefix) (printf "%skind" $prefix)) }}
+{{- fail (printf "extraEnv must not override chart-managed variable %s" $envNameOriginal) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}
 apiVersion: apps/v1
@@ -86,6 +100,21 @@ spec:
                   key: {{ required "secretHmacKeySecret.key is required" .Values.secretHmacKeySecret.key | quote }}
             - name: AllowedHosts
               value: {{ include "kube-mcp.allowedHosts" . | quote }}
+            {{- range $family, $enabled := .Values.crds }}
+            {{- if $enabled }}
+            {{- $preset := index $presets $family }}
+            {{- range $resource, $kind := $preset.resources }}
+            - name: {{ printf "KubeMcp__AllowedResources__%s.%s__Group" $resource $preset.group | quote }}
+              value: {{ $preset.group | quote }}
+            - name: {{ printf "KubeMcp__AllowedResources__%s.%s__Version" $resource $preset.group | quote }}
+              value: {{ $preset.version | quote }}
+            - name: {{ printf "KubeMcp__AllowedResources__%s.%s__Resource" $resource $preset.group | quote }}
+              value: {{ $resource | quote }}
+            - name: {{ printf "KubeMcp__AllowedResources__%s.%s__Kind" $resource $preset.group | quote }}
+              value: {{ $kind | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -62,7 +62,7 @@ helm upgrade --install kube-mcp charts/kube-mcp \
   --set-json 'allowedHosts=["k-mcp.example.internal"]'
 ```
 
-The chart defaults to the existing `kube-mcp-api-key/api-key` and `kube-mcp-hmac/key` Secret references. Secret names and keys, image settings, replicas, Service settings, probes, resources, scheduling, labels, and annotations can be changed through values. Never put API-key or HMAC material directly in Helm values because rendered releases and value history are not a secret-management system. See the [chart README](../charts/kube-mcp/README.md) for the current proof-of-concept interface.
+The chart defaults to the existing `kube-mcp-api-key/api-key` and `kube-mcp-hmac/key` Secret references. Secret names and keys, image settings, replicas, Service settings, probes, resources, scheduling, labels, and annotations can be changed through values. Five optional namespaced CRD families can be enabled with `crds.certManager`, `crds.traefik`, `crds.rookCeph`, `crds.cnpg`, and `crds.argoCD` boolean values; each enabled flag renders both application mappings and matching RBAC when `rbac.create=true`. Never put API-key or HMAC material directly in Helm values because rendered releases and value history are not a secret-management system. See the [chart README](../charts/kube-mcp/README.md#optional-crds) for the preset contents and example.
 
 Access the service locally:
 
@@ -101,7 +101,7 @@ Startup option validation remains fail-closed, including production authenticati
 
 The default `ClusterRole` grants only `get` and `list` for the built-in resource allowlist. It also grants core Namespace `list` for policy evaluation and the fixed `k8s_list_namespaces` discovery snapshot. It does not grant Namespace GET, mutation, watch, exec, proxy, wildcard resources, or optional CRDs.
 
-Namespace discovery intentionally discloses admitted names and optional approximate ages to authenticated clients. Blacklist mode includes newly created non-denied namespaces; label-selector mode sends the configured selector on every page. A later namespaced read still re-enforces policy and RBAC. Application policy and Kubernetes RBAC are independent; both must allow a request. There is no wildcard application mode or wildcard RBAC manifest, and `namespaces` must not be added to `AllowedResources`. Optional CloudNativePG and Traefik mappings have coordinated [resource and RBAC overlays](../overlays/README.md); each overlay must add both the explicit mapping and matching narrow read-only RBAC.
+Namespace discovery intentionally discloses admitted names and optional approximate ages to authenticated clients. Blacklist mode includes newly created non-denied namespaces; label-selector mode sends the configured selector on every page. A later namespaced read still re-enforces policy and RBAC. Application policy and Kubernetes RBAC are independent; both must allow a request. There is no wildcard application mode or wildcard RBAC manifest, and `namespaces` must not be added to `AllowedResources`. For Helm, opt-in [CRD presets](../charts/kube-mcp/README.md#optional-crds) add matching namespaced mappings and RBAC without Kustomize. The non-Helm manifest still has optional CloudNativePG and Traefik [resource and RBAC overlays](../overlays/README.md); each overlay must add both the explicit mapping and matching narrow read-only RBAC.
 
 ## Container image availability
 
