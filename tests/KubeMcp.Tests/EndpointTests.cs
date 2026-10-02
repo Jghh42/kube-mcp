@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using KubeMcp.Audit;
+using KubeMcp.Configuration;
 using KubeMcp.Kubernetes;
 using KubeMcp.Mcp;
 using Microsoft.AspNetCore.Hosting;
@@ -90,6 +91,60 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task ToolDescriptionAdvertisesConfiguredCustomArgumentNamesWithoutClusterDiscovery()
+    {
+        await using var configuredFactory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Development");
+            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
+            // Deliberately use aliases rather than Kubernetes resource names.
+            builder.UseSetting("KubeMcp:AllowedResources:database:Group", "postgresql.cnpg.io");
+            builder.UseSetting("KubeMcp:AllowedResources:database:Version", "v1");
+            builder.UseSetting("KubeMcp:AllowedResources:database:Resource", "clusters");
+            builder.UseSetting("KubeMcp:AllowedResources:database:Kind", "Cluster");
+            builder.UseSetting("KubeMcp:AllowedResources:backups.postgresql.cnpg.io:Group", "postgresql.cnpg.io");
+            builder.UseSetting("KubeMcp:AllowedResources:backups.postgresql.cnpg.io:Version", "v1");
+            builder.UseSetting("KubeMcp:AllowedResources:backups.postgresql.cnpg.io:Resource", "backups");
+            builder.UseSetting("KubeMcp:AllowedResources:backups.postgresql.cnpg.io:Kind", "Backup");
+            builder.UseSetting("KubeMcp:AllowedResources:routes:Group", "traefik.io");
+            builder.UseSetting("KubeMcp:AllowedResources:routes:Version", "v1alpha1");
+            builder.UseSetting("KubeMcp:AllowedResources:routes:Resource", "ingressroutes");
+            builder.UseSetting("KubeMcp:AllowedResources:routes:Kind", "IngressRoute");
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IKubernetesClientFactory>();
+                services.AddSingleton<IKubernetesClientFactory>(_ =>
+                    throw new InvalidOperationException("Tool discovery must not initialize Kubernetes access."));
+            });
+        });
+        using var configuredClient = configuredFactory.CreateClient();
+        await using var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri(configuredClient.BaseAddress!, "/mcp"),
+                Name = "configured-resource-test"
+            },
+            configuredClient,
+            loggerFactory: null,
+            ownsHttpClient: false);
+        await using var mcpClient = await McpClient.CreateAsync(transport);
+
+        var tools = await mcpClient.ListToolsAsync();
+        Assert.Equal(2, tools.Count);
+        var description = Assert.Single(tools, tool => tool.Name == "k8s_get").Description;
+        Assert.Contains("- postgresql.cnpg.io: backups.postgresql.cnpg.io, database\n- traefik.io: routes", description, StringComparison.Ordinal);
+        Assert.DoesNotContain("clusters.postgresql.cnpg.io", description, StringComparison.Ordinal);
+        Assert.DoesNotContain("argoproj.io", description, StringComparison.Ordinal);
+        Assert.DoesNotContain(TestHmacKey, description, StringComparison.Ordinal);
+        Assert.Equal(
+            "Lists a bounded snapshot of Kubernetes namespaces admitted by the server namespace policy.",
+            Assert.Single(tools, tool => tool.Name == "k8s_list_namespaces").Description);
+
+        var repeated = await mcpClient.ListToolsAsync();
+        Assert.Equal(description, Assert.Single(repeated, tool => tool.Name == "k8s_get").Description);
+    }
+
+    [Fact]
     public async Task McpEndpointExposesExactlyTwoToolsWithoutForwardedHeaderConfiguration()
     {
         await using var transport = new HttpClientTransport(
@@ -107,6 +162,16 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
 
         Assert.Equal(2, tools.Count);
         var getTool = Assert.Single(tools, tool => tool.Name == "k8s_get");
+        var mappings = factory.Services.GetRequiredService<IOptions<KubeMcpOptions>>().Value.AllowedResources;
+        var expectedGroups = mappings
+            .GroupBy(entry => entry.Value.Group, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => $"- {(group.Key.Length == 0 ? "core" : group.Key)}: " +
+                string.Join(", ", group.Select(entry => entry.Key).Order(StringComparer.Ordinal)));
+        Assert.Contains(string.Join("\n", expectedGroups), getTool.Description, StringComparison.Ordinal);
+        Assert.Contains("Access remains subject to namespace policy, Kubernetes RBAC", getTool.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("postgresql.cnpg.io", getTool.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("traefik.io", getTool.Description, StringComparison.Ordinal);
         Assert.Equal(
             ["name", "namespace", "resource"],
             getTool.JsonSchema.GetProperty("properties")
