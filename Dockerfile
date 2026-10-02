@@ -5,13 +5,13 @@
 # silently change its parser, SDK, or runtime. The .NET images are both pinned
 # to explicit .NET 10 SDK/runtime versions so local, CI, and image builds stay
 # aligned. global.json's "latestPatch" roll-forward remains within SDK feature
-# band 4. The runtime image is 10.0.11 so it ships current security fixes; the
-# SDK image is 10.0.400 and is only used for building, never shipped. The
+# band 4. The runtime image is 10.0.12 with patched OpenSSL packages; the
+# SDK image is 10.0.401 and is only used for building, never shipped. The
 # digests are the multi-arch manifest-list
 # digests published by MCR; the build resolves the linux/amd64 variant. Update
 # them (and the NuGet lock file) via Dependabot rather than editing tags by hand.
-#   sdk:10.0.400  @ sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c
-#   aspnet:10.0.11 @ sha256:a4556ed033fa96f984bb7a8d348851cb2d36b1281dd2420070045f664fbb5f94
+#   sdk:10.0.401  @ sha256:35d40304542c8689331f8cab17c65926cdf48fe711e289321d71924b230a7d29
+#   aspnet:10.0.12 @ sha256:57460add89e2b3dd1950c41d8b7dc96eeb7a24d13d98e3656ce9997a8b746bd6
 FROM mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:35d40304542c8689331f8cab17c65926cdf48fe711e289321d71924b230a7d29 AS build
 WORKDIR /source
 
@@ -30,7 +30,7 @@ RUN dotnet publish src/KubeMcp/KubeMcp.csproj \
     --output /app/publish \
     /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.12@sha256:2d584d8147faddb0d678c5748d47953e5b8e18621ed4fb7049a91381d9d7746f AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.12@sha256:57460add89e2b3dd1950c41d8b7dc96eeb7a24d13d98e3656ce9997a8b746bd6 AS runtime
 WORKDIR /app
 
 ENV ASPNETCORE_HTTP_PORTS=8080 \
