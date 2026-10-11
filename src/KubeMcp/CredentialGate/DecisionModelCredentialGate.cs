@@ -2,7 +2,7 @@ using KubeMcp.Configuration;
 
 namespace KubeMcp.CredentialGate;
 
-internal sealed class ClefCredentialGate(
+internal sealed class DecisionModelCredentialGate(
     ICredentialDecisionClient client,
     CredentialGateOptions options) : ICredentialGate
 {

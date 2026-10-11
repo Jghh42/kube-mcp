@@ -48,7 +48,7 @@ builder.Services.AddSingleton<ICredentialDecisionClient>(services =>
     {
         Timeout = Timeout.InfiniteTimeSpan
     };
-    return new ClefCredentialDecisionClient(
+    return new DecisionModelCredentialClient(
         client,
         services.GetRequiredService<IOptions<KubeMcpOptions>>().Value.CredentialGate);
 });
@@ -56,7 +56,7 @@ builder.Services.AddSingleton<ICredentialGate>(services =>
 {
     var gateOptions = services.GetRequiredService<IOptions<KubeMcpOptions>>().Value.CredentialGate;
     return gateOptions.Enabled
-        ? new ClefCredentialGate(
+        ? new DecisionModelCredentialGate(
             services.GetRequiredService<ICredentialDecisionClient>(),
             gateOptions)
         : new DisabledCredentialGate();

@@ -236,7 +236,7 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
             builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
             builder.UseSetting("KubeMcp:Authentication:Mode", "None");
             builder.UseSetting("KubeMcp:CredentialGate:Enabled", "true");
-            builder.UseSetting("KubeMcp:CredentialGate:Endpoint", "https://clef.example/systemone");
+            builder.UseSetting("KubeMcp:CredentialGate:Endpoint", "https://decision-model.example/api/decision");
             builder.UseSetting("KubeMcp:CredentialGate:RequestModel", "decision");
             builder.UseSetting("KubeMcp:CredentialGate:ExpectedResponseModel", "physical-model");
             builder.UseSetting("KubeMcp:CredentialGate:ProbabilityThreshold", "0.20");

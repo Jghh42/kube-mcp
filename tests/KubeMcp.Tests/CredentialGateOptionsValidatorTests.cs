@@ -22,12 +22,21 @@ public sealed class CredentialGateOptionsValidatorTests
         Assert.True(validator.Validate(null, Options(new CredentialGateOptions
         {
             Enabled = true,
-            Endpoint = "https://clef.example/v1/systemone",
+            Endpoint = "https://decision-model.example/v1/systemone",
             RequestModel = "decision",
             ExpectedResponseModel = "physical-model",
             ProbabilityThreshold = 0.20,
             TotalTimeoutSeconds = 15
         }, overallTimeout: 35)).Succeeded);
+    }
+
+    [Theory]
+    [InlineData("https://decision-model.example/v1/systemone")]
+    [InlineData("http://decision-model.example/api/decision")]
+    [InlineData("https://decision-model.example/")]
+    public void AcceptsConfiguredEndpointPaths(string endpoint)
+    {
+        Assert.True(validator.Validate(null, Options(ValidGate() with { Endpoint = endpoint })).Succeeded);
     }
 
     [Theory]
@@ -41,11 +50,15 @@ public sealed class CredentialGateOptionsValidatorTests
     }
 
     [Theory]
-    [InlineData("http://clef.example/v1", "Endpoint")]
-    [InlineData("https://user@clef.example/systemone", "Endpoint")]
-    [InlineData("https://clef.example/systemone?q=1", "Endpoint")]
-    [InlineData("ftp://clef.example/systemone", "Endpoint")]
-    public void RejectsInvalidEndpoint(string endpoint, string expected)
+    [InlineData(null, "Endpoint")]
+    [InlineData("", "Endpoint")]
+    [InlineData("/api/decision", "Endpoint")]
+    [InlineData("https://user@decision-model.example/api/decision", "Endpoint")]
+    [InlineData("https://decision-model.example/api/decision?q=1", "Endpoint")]
+    [InlineData("https://decision-model.example/api/decision#fragment", "Endpoint")]
+    [InlineData("ftp://decision-model.example/api/decision", "Endpoint")]
+    [InlineData("file:///api/decision", "Endpoint")]
+    public void RejectsInvalidEndpoint(string? endpoint, string expected)
     {
         var result = validator.Validate(null, Options(ValidGate() with { Endpoint = endpoint }));
         Assert.True(result.Failed);
@@ -107,7 +120,7 @@ public sealed class CredentialGateOptionsValidatorTests
         var invalid = new (CredentialGateOptions Gate, string Field)[]
         {
             (ValidGate() with { ApiKey = new string('é', 4097) }, "ApiKey"),
-            (ValidGate() with { Endpoint = "https://clef.example/" + new string('x', 2040) + "/systemone" }, "length"),
+            (ValidGate() with { Endpoint = "https://decision-model.example/" + new string('x', 2040) + "/systemone" }, "length"),
             (ValidGate() with { RequestModel = new string('m', 257) }, "length"),
             (ValidGate() with { ExpectedResponseModel = new string('m', 257) }, "length"),
             (ValidGate() with { Prompt = new string('p', 16_385) }, "length")
@@ -124,7 +137,7 @@ public sealed class CredentialGateOptionsValidatorTests
     private static CredentialGateOptions ValidGate() => new()
     {
         Enabled = true,
-        Endpoint = "https://clef.example/systemone",
+        Endpoint = "https://decision-model.example/systemone",
         RequestModel = "decision",
         ExpectedResponseModel = "physical-model",
         ProbabilityThreshold = 0.20,

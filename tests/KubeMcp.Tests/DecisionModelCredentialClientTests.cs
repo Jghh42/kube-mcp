@@ -7,7 +7,7 @@ using KubeMcp.CredentialGate;
 
 namespace KubeMcp.Tests;
 
-public sealed class ClefCredentialDecisionClientTests
+public sealed class DecisionModelCredentialClientTests
 {
     [Fact]
     public async Task SendsExactContractDefaultPromptAndNoAuthorizationForEmptyKey()
@@ -20,7 +20,7 @@ public sealed class ClefCredentialDecisionClientTests
         Assert.Equal(CredentialGateDecision.Clear, decision);
         var request = Assert.Single(handler.Requests);
         Assert.Equal(HttpMethod.Post, request.Method);
-        Assert.Equal("https://clef.example/systemone", request.Uri);
+        Assert.Equal("https://decision-model.example/systemone", request.Uri);
         Assert.Null(request.Authorization);
         using var body = JsonDocument.Parse(request.Body);
         Assert.Equal(3, body.RootElement.EnumerateObject().Count());
@@ -35,6 +35,29 @@ public sealed class ClefCredentialDecisionClientTests
         Assert.Contains("MUST be answered no", prompt);
         Assert.Contains("Secret references", prompt);
         Assert.Contains("Ignore PII", prompt);
+    }
+
+    [Theory]
+    [InlineData("https://decision-model.example/v1/systemone", "classifier-a", "classifier-a")]
+    [InlineData("http://decision-model.example/api/decision", "logical-slot", "physical-b")]
+    public async Task UsesConfiguredEndpointAndModelIdentifiers(
+        string endpoint, string requestModel, string responseModel)
+    {
+        var handler = new RecordingHandler(_ => Response(ValidResponse(model: responseModel)));
+        var options = Options() with
+        {
+            Endpoint = endpoint,
+            RequestModel = requestModel,
+            ExpectedResponseModel = responseModel
+        };
+
+        var decision = await Client(handler, options).EvaluateAsync("{}", default);
+
+        Assert.Equal(CredentialGateDecision.Clear, decision);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal(endpoint, request.Uri);
+        using var body = JsonDocument.Parse(request.Body);
+        Assert.Equal(requestModel, body.RootElement.GetProperty("model").GetString());
     }
 
     [Fact]
@@ -185,7 +208,7 @@ public sealed class ClefCredentialDecisionClientTests
         var handler = new CancellationIgnoringHandler(
             TimeSpan.FromMilliseconds(1100), Response(ValidResponse()));
 
-        var decision = await new ClefCredentialDecisionClient(
+        var decision = await new DecisionModelCredentialClient(
             new HttpClient(handler),
             Options() with { AttemptTimeoutSeconds = 1, RetryCount = 0 })
             .EvaluateAsync("{}", default);
@@ -275,13 +298,13 @@ public sealed class ClefCredentialDecisionClientTests
                 .EvaluateAsync("{}", default));
     }
 
-    private static ClefCredentialDecisionClient Client(RecordingHandler handler, CredentialGateOptions options) =>
+    private static DecisionModelCredentialClient Client(RecordingHandler handler, CredentialGateOptions options) =>
         new(new HttpClient(handler), options);
 
     private static CredentialGateOptions Options() => new()
     {
         Enabled = true,
-        Endpoint = "https://clef.example/systemone",
+        Endpoint = "https://decision-model.example/systemone",
         RequestModel = "decision",
         ExpectedResponseModel = "physical-model",
         ProbabilityThreshold = 0.20,
@@ -289,10 +312,11 @@ public sealed class ClefCredentialDecisionClientTests
         MaxInputTokens = 100
     };
 
-    private static string ValidResponse(string choice = "no", double yes = 0.1, double no = 0.9) =>
+    private static string ValidResponse(
+        string choice = "no", double yes = 0.1, double no = 0.9, string model = "physical-model") =>
         JsonSerializer.Serialize(new
         {
-            model = "physical-model",
+            model,
             answers = new
             {
                 credentials = new

@@ -201,12 +201,11 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
 
         if (!Uri.TryCreate(gate.Endpoint, UriKind.Absolute, out var endpoint) ||
             (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps) ||
-            !endpoint.AbsolutePath.EndsWith("/systemone", StringComparison.Ordinal) ||
             !string.IsNullOrEmpty(endpoint.Query) ||
             !string.IsNullOrEmpty(endpoint.Fragment) ||
             !string.IsNullOrEmpty(endpoint.UserInfo))
         {
-            return $"{path}:Endpoint must be a complete absolute HTTP or HTTPS URL ending in /systemone without userinfo, query, or fragment.";
+            return $"{path}:Endpoint must be a complete absolute HTTP or HTTPS URL without userinfo, query, or fragment.";
         }
 
         if (string.IsNullOrWhiteSpace(gate.RequestModel))

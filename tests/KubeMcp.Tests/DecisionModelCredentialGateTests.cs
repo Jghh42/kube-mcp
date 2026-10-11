@@ -4,7 +4,7 @@ using KubeMcp.CredentialGate;
 
 namespace KubeMcp.Tests;
 
-public sealed class ClefCredentialGateTests
+public sealed class DecisionModelCredentialGateTests
 {
     [Fact]
     public async Task RequiresEveryChunkToClear()
@@ -14,7 +14,7 @@ public sealed class ClefCredentialGateTests
             CredentialGateDecision.Detected,
             CredentialGateDecision.Clear
         ]);
-        var gate = new ClefCredentialGate(client, Options(chunkSize: 256));
+        var gate = new DecisionModelCredentialGate(client, Options(chunkSize: 256));
         var json = JsonSerializer.Serialize(new string('a', 800));
 
         Assert.Equal(CredentialGateDecision.Detected, await gate.EvaluateAsync(json, default));
@@ -32,7 +32,7 @@ public sealed class ClefCredentialGateTests
             data = new { first = new string('a', 1700), second = new string('b', 1700) }
         });
         var client = new StubClient(Enumerable.Repeat(CredentialGateDecision.Clear, 100));
-        var gate = new ClefCredentialGate(client, new CredentialGateOptions { Enabled = true });
+        var gate = new DecisionModelCredentialGate(client, new CredentialGateOptions { Enabled = true });
 
         Assert.Equal(CredentialGateDecision.Clear, await gate.EvaluateAsync(json, default));
         Assert.True(client.CallCount > 1);
@@ -41,12 +41,12 @@ public sealed class ClefCredentialGateTests
     [Fact]
     public async Task AnyClientOrChunkingFailureIsUnavailable()
     {
-        var unavailable = new ClefCredentialGate(
+        var unavailable = new DecisionModelCredentialGate(
             new StubClient([CredentialGateDecision.Unavailable]), Options());
         Assert.Equal(CredentialGateDecision.Unavailable,
             await unavailable.EvaluateAsync("{}", default));
 
-        var malformed = new ClefCredentialGate(
+        var malformed = new DecisionModelCredentialGate(
             new StubClient([CredentialGateDecision.Clear]), Options());
         Assert.Equal(CredentialGateDecision.Unavailable,
             await malformed.EvaluateAsync("raw-secret-not-json", default));
@@ -55,7 +55,7 @@ public sealed class ClefCredentialGateTests
     [Fact]
     public async Task GateOwnedTimeoutBlocksButCallerCancellationPropagates()
     {
-        var gate = new ClefCredentialGate(new CancellingClient(), Options());
+        var gate = new DecisionModelCredentialGate(new CancellingClient(), Options());
         Assert.Equal(CredentialGateDecision.Unavailable, await gate.EvaluateAsync("{}", default));
 
         using var caller = new CancellationTokenSource();
@@ -66,7 +66,7 @@ public sealed class ClefCredentialGateTests
     [Fact]
     public async Task CancellationIgnoringClientCannotRaceAClientCancellationIntoClear()
     {
-        var gate = new ClefCredentialGate(
+        var gate = new DecisionModelCredentialGate(
             new DelayedIgnoringClient(TimeSpan.FromMilliseconds(40)), Options());
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(10));
 
@@ -78,7 +78,7 @@ public sealed class ClefCredentialGateTests
     public async Task TotalBudgetCoversAllChunksEvenWhenClientIgnoresCancellation()
     {
         var client = new DelayedIgnoringClient(TimeSpan.FromMilliseconds(600));
-        var gate = new ClefCredentialGate(client, Options(chunkSize: 256) with
+        var gate = new DecisionModelCredentialGate(client, Options(chunkSize: 256) with
         {
             TotalTimeoutSeconds = 1,
             AttemptTimeoutSeconds = 1
