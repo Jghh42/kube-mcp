@@ -1,4 +1,5 @@
 using KubeMcp.Audit;
+using KubeMcp.CredentialGate;
 using KubeMcp.Kubernetes;
 using KubeMcp.Mcp;
 using Microsoft.AspNetCore.Http;
@@ -18,7 +19,8 @@ public sealed class KubernetesGetToolAuditTests
         var tool = new KubernetesGetTool(
             reader,
             audit,
-            NullLogger<KubernetesGetTool>.Instance);
+            NullLogger<KubernetesGetTool>.Instance,
+            new DisabledCredentialGate());
 
         var response = await tool.GetAsync("pods", "production");
 
@@ -43,7 +45,8 @@ public sealed class KubernetesGetToolAuditTests
         var tool = new KubernetesGetTool(
             reader,
             audit,
-            NullLogger<KubernetesGetTool>.Instance);
+            NullLogger<KubernetesGetTool>.Instance,
+            new DisabledCredentialGate());
 
         var exception = await Assert.ThrowsAsync<McpException>(() =>
             tool.GetAsync("secrets", "production", "credentials"));
@@ -84,7 +87,8 @@ public sealed class KubernetesGetToolAuditTests
         var tool = new KubernetesGetTool(
             new StubReader(new KubernetesReadException(sensitiveBody, errorCategory)),
             audit,
-            NullLogger<KubernetesGetTool>.Instance);
+            NullLogger<KubernetesGetTool>.Instance,
+            new DisabledCredentialGate());
 
         var exception = await Assert.ThrowsAsync<McpException>(() =>
             tool.GetAsync("secrets", "production", "credentials"));
@@ -105,7 +109,8 @@ public sealed class KubernetesGetToolAuditTests
         var callerTool = new KubernetesGetTool(
             new StubReader(new OperationCanceledException(callerCancellation.Token)),
             callerAudit,
-            NullLogger<KubernetesGetTool>.Instance);
+            NullLogger<KubernetesGetTool>.Instance,
+            new DisabledCredentialGate());
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             callerTool.GetAsync("pods", "production", cancellationToken: callerCancellation.Token));
@@ -123,6 +128,7 @@ public sealed class KubernetesGetToolAuditTests
             new StubReader(new OperationCanceledException(serverDeadline.Token)),
             serverAudit,
             NullLogger<KubernetesGetTool>.Instance,
+            new DisabledCredentialGate(),
             new HttpContextAccessor { HttpContext = context });
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -134,12 +140,62 @@ public sealed class KubernetesGetToolAuditTests
     }
 
     [Fact]
+    public async Task CredentialGateRunsOnlyForDetailedGetAndReceivesReaderOutput()
+    {
+        const string sanitizedSecret = "{\"data\":{\"password\":\"hmac-sha256:abc123\"}}";
+        var gate = new CapturingGate(CredentialGateDecision.Clear);
+        var tool = new KubernetesGetTool(
+            new StubReader(new KubernetesReadResult(sanitizedSecret, 1)),
+            new CapturingAuditLogger(),
+            NullLogger<KubernetesGetTool>.Instance,
+            credentialGate: gate);
+
+        Assert.Equal(sanitizedSecret, await tool.GetAsync("secrets", "production", "credentials"));
+        Assert.Equal(sanitizedSecret, Assert.Single(gate.Payloads));
+
+        var listGate = new CapturingGate(CredentialGateDecision.Detected);
+        var listTool = new KubernetesGetTool(
+            new StubReader(new KubernetesReadResult("{\"items\":[]}", 0)),
+            new CapturingAuditLogger(),
+            NullLogger<KubernetesGetTool>.Instance,
+            credentialGate: listGate);
+        Assert.Equal("{\"items\":[]}", await listTool.GetAsync("secrets", "production"));
+        Assert.Empty(listGate.Payloads);
+    }
+
+    [Theory]
+    [InlineData(CredentialGateDecision.Detected, AuditCategories.CredentialDetected)]
+    [InlineData(CredentialGateDecision.Unavailable, AuditCategories.CredentialGateUnavailable)]
+    public async Task CredentialGateBlocksWithOneSafeMessageAndLowCardinalityAudit(
+        CredentialGateDecision decision,
+        string expectedCategory)
+    {
+        var audit = new CapturingAuditLogger();
+        var tool = new KubernetesGetTool(
+            new StubReader(new KubernetesReadResult("{\"sensitive\":\"must-not-leak\"}", 1)),
+            audit,
+            NullLogger<KubernetesGetTool>.Instance,
+            credentialGate: new CapturingGate(decision));
+
+        var exception = await Assert.ThrowsAsync<McpException>(() =>
+            tool.GetAsync("pods", "production", "pod-1"));
+
+        Assert.Equal(KubernetesGetTool.CredentialGateErrorMessage, exception.Message);
+        Assert.DoesNotContain("must-not-leak", exception.ToString());
+        var entry = Assert.Single(audit.Events);
+        Assert.Equal("blocked", entry.Result);
+        Assert.Equal(expectedCategory, entry.Category);
+        Assert.Null(entry.ObjectCount);
+    }
+
+    [Fact]
     public async Task AuditFailureNeverReplacesSuccessfulResponse()
     {
         var tool = new KubernetesGetTool(
             new StubReader(new KubernetesReadResult("{}", 1)),
             new ThrowingAuditLogger(),
-            NullLogger<KubernetesGetTool>.Instance);
+            NullLogger<KubernetesGetTool>.Instance,
+            new DisabledCredentialGate());
 
         Assert.Equal("{}", await tool.GetAsync("pods", "production", "pod-1"));
     }
@@ -166,6 +222,17 @@ public sealed class KubernetesGetToolAuditTests
             exception is null
                 ? Task.FromResult(result!)
                 : Task.FromException<KubernetesReadResult>(exception);
+    }
+
+    private sealed class CapturingGate(CredentialGateDecision decision) : ICredentialGate
+    {
+        public List<string> Payloads { get; } = [];
+
+        public Task<CredentialGateDecision> EvaluateAsync(string sanitizedJson, CancellationToken cancellationToken)
+        {
+            Payloads.Add(sanitizedJson);
+            return Task.FromResult(decision);
+        }
     }
 
     private sealed class CapturingAuditLogger : IAuditLogger

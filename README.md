@@ -78,6 +78,7 @@ Full-revision `sha-<commit>` image tags are useful for traceability but, like al
 - [Deployment guide](docs/deployment.md)
 - [Configuration reference](docs/configuration.md)
 - [Security model](docs/security.md)
+- [Optional Clef credential decision gate](docs/decision-model-gate.md)
 - [Development, testing, and releases](docs/development.md)
 - [Optional resource and RBAC overlays](overlays/README.md)
 

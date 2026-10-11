@@ -17,6 +17,8 @@ public sealed class KubeMcpOptions
 
     public KubeMcpAuthenticationOptions Authentication { get; init; } = new();
 
+    public CredentialGateOptions CredentialGate { get; init; } = new();
+
     [Range(1, 1000)]
     public int MaxListItems { get; init; } = 100;
 
@@ -58,6 +60,46 @@ public sealed class KubeMcpOptions
     /// </summary>
     [Range(1, 3600)]
     public int OverallMcpRequestTimeoutSeconds { get; init; } = 30;
+}
+
+public sealed record CredentialGateOptions
+{
+    public bool Enabled { get; init; }
+
+    public string? Endpoint { get; init; }
+
+    public string ApiKey { get; init; } = string.Empty;
+
+    public string? RequestModel { get; init; }
+
+    public string? ExpectedResponseModel { get; init; }
+
+    public double? ProbabilityThreshold { get; init; }
+
+    // Null selects the application-owned safe default. An explicitly empty
+    // value is rejected when the gate is enabled.
+    public string? Prompt { get; init; }
+
+    [Range(256, 1024 * 1024)]
+    public int ChunkSizeBytes { get; init; } = 4096;
+
+    [Range(0, 1024 * 1024)]
+    public int ScalarOverlapBytes { get; init; } = 256;
+
+    [Range(1, 120)]
+    public int TotalTimeoutSeconds { get; init; } = 15;
+
+    [Range(1, 120)]
+    public int AttemptTimeoutSeconds { get; init; } = 5;
+
+    [Range(0, 2)]
+    public int RetryCount { get; init; } = 2;
+
+    [Range(1, 1_000_000)]
+    public int MaxInputTokens { get; init; } = 4096;
+
+    [Range(1024, 1024 * 1024)]
+    public int MaxResponseBodyBytes { get; init; } = 64 * 1024;
 }
 
 public sealed class KubernetesResourceOptions

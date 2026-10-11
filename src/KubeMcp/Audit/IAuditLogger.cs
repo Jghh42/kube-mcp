@@ -32,5 +32,7 @@ public static class AuditCategories
     public const string AuthorizationDenied = "authorization_denied";
     public const string ClientCancelled = "client_cancelled";
     public const string ServerTimeout = "server_timeout";
+    public const string CredentialDetected = "credential_detected";
+    public const string CredentialGateUnavailable = "credential_gate_unavailable";
     public const string InternalError = "internal_error";
 }

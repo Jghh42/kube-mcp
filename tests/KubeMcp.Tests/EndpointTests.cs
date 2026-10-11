@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using KubeMcp.Audit;
 using KubeMcp.Configuration;
+using KubeMcp.CredentialGate;
 using KubeMcp.Kubernetes;
 using KubeMcp.Mcp;
 using Microsoft.AspNetCore.Hosting;
@@ -14,6 +15,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace KubeMcp.Tests;
 
@@ -226,6 +228,62 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task EnabledCredentialGateIsWiredFailClosedThroughMcpTransport()
+    {
+        var auditLogs = new CapturingAuditLogProvider();
+        await using var gateFactory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("KubeMcp:SecretHmacKey", TestHmacKey);
+            builder.UseSetting("KubeMcp:Authentication:Mode", "None");
+            builder.UseSetting("KubeMcp:CredentialGate:Enabled", "true");
+            builder.UseSetting("KubeMcp:CredentialGate:Endpoint", "https://clef.example/systemone");
+            builder.UseSetting("KubeMcp:CredentialGate:RequestModel", "decision");
+            builder.UseSetting("KubeMcp:CredentialGate:ExpectedResponseModel", "physical-model");
+            builder.UseSetting("KubeMcp:CredentialGate:ProbabilityThreshold", "0.20");
+            builder.UseSetting("KubeMcp:OverallMcpRequestTimeoutSeconds", "35");
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IKubernetesReader>();
+                services.AddSingleton<IKubernetesReader>(new FixedReader(
+                    new KubernetesReadResult("{\"kind\":\"Pod\"}", 1)));
+                services.RemoveAll<ICredentialDecisionClient>();
+                services.AddSingleton<ICredentialDecisionClient>(
+                    new FixedDecisionClient(CredentialGateDecision.Unavailable));
+                services.AddSingleton<ILoggerProvider>(auditLogs);
+            });
+        });
+        using var gateHttpClient = gateFactory.CreateClient();
+        await using var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri(gateHttpClient.BaseAddress!, "/mcp"),
+                Name = "credential-gate-wiring-test"
+            },
+            gateHttpClient,
+            loggerFactory: null,
+            ownsHttpClient: false);
+        await using var mcpClient = await McpClient.CreateAsync(transport);
+
+        var result = await mcpClient.CallToolAsync(
+            "k8s_get",
+            new Dictionary<string, object?>
+            {
+                ["resource"] = "pods",
+                ["namespace"] = "default",
+                ["name"] = "pod-1"
+            });
+        Assert.True(result.IsError);
+        var error = Assert.Single(result.Content.OfType<TextContentBlock>()).Text;
+        Assert.Equal(
+            $"An error occurred invoking 'k8s_get': {KubernetesGetTool.CredentialGateErrorMessage}",
+            error);
+        Assert.DoesNotContain("Pod", error, StringComparison.Ordinal);
+
+        var audit = await auditLogs.WaitForCategoryAsync(AuditCategories.CredentialGateUnavailable);
+        Assert.Equal("blocked", audit.Properties["Result"]);
+    }
+
+    [Fact]
     public async Task OverallDeadlineCancelsTheReaderAndIsAuditedAsServerTimeout()
     {
         var reader = new CancellationObservingReader();
@@ -325,6 +383,24 @@ public sealed class EndpointTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     private sealed record ServiceStatus(string Service, string Status);
+
+    private sealed class FixedDecisionClient(CredentialGateDecision decision) : ICredentialDecisionClient
+    {
+        public Task<CredentialGateDecision> EvaluateAsync(string stateJson, CancellationToken cancellationToken) =>
+            Task.FromResult(decision);
+    }
+
+    private sealed class FixedReader(KubernetesReadResult result) : IKubernetesReader
+    {
+        public Task<KubernetesReadResult> ReadAsync(
+            string resource,
+            string @namespace,
+            string? name,
+            CancellationToken cancellationToken) => Task.FromResult(result);
+
+        public Task<KubernetesReadResult> ListNamespacesAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(result);
+    }
 
     private sealed class CancellationObservingReader : IKubernetesReader
     {

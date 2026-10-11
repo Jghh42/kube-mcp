@@ -91,10 +91,18 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
                 $"{KubeMcpOptions.SectionName}:OverallMcpRequestTimeoutSeconds must be between 1 and 3600.");
         }
 
-        if (options.OverallMcpRequestTimeoutSeconds <= options.KubernetesRequestTimeoutSeconds)
+        var gateValidation = ValidateCredentialGate(options.CredentialGate);
+        if (gateValidation is not null)
+        {
+            return ValidateOptionsResult.Fail(gateValidation);
+        }
+
+        var requiredWorkSeconds = options.KubernetesRequestTimeoutSeconds +
+            (options.CredentialGate?.Enabled == true ? options.CredentialGate.TotalTimeoutSeconds : 0);
+        if (options.OverallMcpRequestTimeoutSeconds <= requiredWorkSeconds)
         {
             return ValidateOptionsResult.Fail(
-                $"{KubeMcpOptions.SectionName}:OverallMcpRequestTimeoutSeconds must be greater than KubernetesRequestTimeoutSeconds so the end-to-end deadline leaves time for MCP error serialization and audit publication.");
+                $"{KubeMcpOptions.SectionName}:OverallMcpRequestTimeoutSeconds must be greater than KubernetesRequestTimeoutSeconds plus the enabled credential gate total timeout so the end-to-end deadline leaves time for MCP error serialization and audit publication.");
         }
 
         return ValidateAuthentication(options.Authentication);
@@ -127,6 +135,103 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         {
             CryptographicOperations.ZeroMemory(key);
         }
+    }
+
+    private static string? ValidateCredentialGate(CredentialGateOptions? gate)
+    {
+        const string path = $"{KubeMcpOptions.SectionName}:CredentialGate";
+        if (gate is null)
+        {
+            return $"{path} is required.";
+        }
+
+        if (gate.RetryCount is < 0 or > 2)
+        {
+            return $"{path}:RetryCount must be between 0 and 2.";
+        }
+
+        if (gate.ChunkSizeBytes is < 256 or > 1024 * 1024)
+        {
+            return $"{path}:ChunkSizeBytes must be between 256 and 1048576.";
+        }
+
+        // Leave enough state capacity for structural context and meaningful
+        // forward progress on each oversized scalar segment.
+        if (gate.ScalarOverlapBytes < 0 || gate.ScalarOverlapBytes > gate.ChunkSizeBytes / 4)
+        {
+            return $"{path}:ScalarOverlapBytes must be non-negative and no greater than one quarter of ChunkSizeBytes.";
+        }
+
+        if (gate.TotalTimeoutSeconds is < 1 or > 120)
+        {
+            return $"{path}:TotalTimeoutSeconds must be between 1 and 120.";
+        }
+
+        if (gate.AttemptTimeoutSeconds is < 1 or > 120 ||
+            gate.AttemptTimeoutSeconds > gate.TotalTimeoutSeconds)
+        {
+            return $"{path}:AttemptTimeoutSeconds must be between 1 and TotalTimeoutSeconds.";
+        }
+
+        if (gate.MaxInputTokens is < 1 or > 1_000_000)
+        {
+            return $"{path}:MaxInputTokens must be between 1 and 1000000.";
+        }
+
+        if (gate.MaxResponseBodyBytes is < 1024 or > 1024 * 1024)
+        {
+            return $"{path}:MaxResponseBodyBytes must be between 1024 and 1048576.";
+        }
+
+        if (gate.ApiKey is null || Encoding.UTF8.GetByteCount(gate.ApiKey) > 8192)
+        {
+            return $"{path}:ApiKey must not exceed 8192 UTF-8 bytes.";
+        }
+
+        if (gate.Endpoint?.Length > 2048 || gate.RequestModel?.Length > 256 ||
+            gate.ExpectedResponseModel?.Length > 256 || gate.Prompt?.Length > 16_384)
+        {
+            return $"{path}:Endpoint, model names, or Prompt exceeds its configured length bound.";
+        }
+
+        if (!gate.Enabled)
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(gate.Endpoint, UriKind.Absolute, out var endpoint) ||
+            (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps) ||
+            !endpoint.AbsolutePath.EndsWith("/systemone", StringComparison.Ordinal) ||
+            !string.IsNullOrEmpty(endpoint.Query) ||
+            !string.IsNullOrEmpty(endpoint.Fragment) ||
+            !string.IsNullOrEmpty(endpoint.UserInfo))
+        {
+            return $"{path}:Endpoint must be a complete absolute HTTP or HTTPS URL ending in /systemone without userinfo, query, or fragment.";
+        }
+
+        if (string.IsNullOrWhiteSpace(gate.RequestModel))
+        {
+            return $"{path}:RequestModel is required when enabled.";
+        }
+
+        if (string.IsNullOrWhiteSpace(gate.ExpectedResponseModel))
+        {
+            return $"{path}:ExpectedResponseModel is required when enabled.";
+        }
+
+        if (gate.ProbabilityThreshold is null ||
+            !double.IsFinite(gate.ProbabilityThreshold.Value) ||
+            gate.ProbabilityThreshold.Value is < 0 or >= 0.5)
+        {
+            return $"{path}:ProbabilityThreshold must be finite, at least zero, and less than 0.5 when enabled.";
+        }
+
+        if (gate.Prompt is not null && string.IsNullOrWhiteSpace(gate.Prompt))
+        {
+            return $"{path}:Prompt must not be empty when enabled.";
+        }
+
+        return null;
     }
 
     private ValidateOptionsResult ValidateAuthentication(KubeMcpAuthenticationOptions authentication)

@@ -19,7 +19,21 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | `KubeMcp:SecretListPageSize` | `10` | Page size for Secret LISTs; must not exceed `ListPageSize`. |
 | `KubeMcp:MaxListPages` | `20` | Maximum continuation pages per LIST. |
 | `KubeMcp:KubernetesRequestTimeoutSeconds` | `15` | Kubernetes operation timeout. |
-| `KubeMcp:OverallMcpRequestTimeoutSeconds` | `30` | End-to-end MCP deadline; must exceed the Kubernetes timeout. |
+| `KubeMcp:OverallMcpRequestTimeoutSeconds` | `30` | End-to-end MCP deadline; must exceed the Kubernetes timeout plus the credential-gate timeout when that gate is enabled. |
+| `KubeMcp:CredentialGate:Enabled` | `false` | Enables the optional Clef credential gate for detailed `k8s_get` GET results only. |
+| `KubeMcp:CredentialGate:Endpoint` | required when enabled | Complete absolute HTTP/HTTPS URL whose path ends in `/systemone`; userinfo, query, fragment, and redirects are prohibited. |
+| `KubeMcp:CredentialGate:ApiKey` | empty | Optional Clef bearer key, bounded to 8192 UTF-8 bytes. Empty means no `Authorization` header. |
+| `KubeMcp:CredentialGate:RequestModel` | required when enabled | Logical model sent in each request. |
+| `KubeMcp:CredentialGate:ExpectedResponseModel` | required when enabled | Exact physical model required in Clef responses. |
+| `KubeMcp:CredentialGate:ProbabilityThreshold` | none | Required finite release threshold in `[0,0.5)` when enabled. There is deliberately no production default. |
+| `KubeMcp:CredentialGate:Prompt` | built-in credential policy | Optional policy override, bounded to 16384 characters. An explicitly empty value is invalid when enabled. |
+| `KubeMcp:CredentialGate:ChunkSizeBytes` | `4096` | Maximum UTF-8 bytes in each complete structural JSON state. |
+| `KubeMcp:CredentialGate:ScalarOverlapBytes` | `256` | Maximum overlap when an oversized string is split at rune boundaries; cannot exceed one quarter of `ChunkSizeBytes`. |
+| `KubeMcp:CredentialGate:TotalTimeoutSeconds` | `15` | Whole-gate deadline, including chunking, every chunk, and every retry. |
+| `KubeMcp:CredentialGate:AttemptTimeoutSeconds` | `5` | Per-attempt deadline; must not exceed the total gate timeout. |
+| `KubeMcp:CredentialGate:RetryCount` | `2` | Retries (`0`–`2`) for transport failures and HTTP 408, 429, or 5xx; backoffs are 100 ms then 300 ms. |
+| `KubeMcp:CredentialGate:MaxInputTokens` | `4096` | Maximum accepted `usage.input_tokens` in a Clef decision (`1`–`1000000`). Set to the deployed slot's validated bound. |
+| `KubeMcp:CredentialGate:MaxResponseBodyBytes` | `65536` | Maximum Clef response body read before validation. |
 | `KubeMcp:Authentication:Mode` | `ApiKey` | `ApiKey`, or `None` only when the host environment is `Development`. |
 | `KubeMcp:Authentication:ApiKey` | none | Static bearer key of at least 32 UTF-8 bytes. Required in API-key mode. |
 | `AllowedHosts` | local and service names | Semicolon-delimited ASP.NET Core host allowlist. |
@@ -72,6 +86,24 @@ Clients send `Authorization: Bearer <high-entropy-key>`. Comparison is constant-
 ### Unauthenticated mode
 
 `None` is intended only for isolated local development and is rejected unless the host environment is `Development`. There is no non-development override.
+
+## Optional Clef credential gate
+
+The gate is an outbound release check, not an authorization mechanism. It receives the exact bounded JSON returned by `IKubernetesReader` after Secret sanitization, then structurally chunks that JSON if needed. Classification is scalar-centric: every field value retains available nearest and ancestor `name` identity context, while pairwise state overlap is defense in depth; detection of credentials deliberately fragmented across three or more independent fields is not guaranteed. It runs only when `k8s_get` has a non-null `name`; all LIST results and namespace discovery bypass it. See the [credential decision gate](decision-model-gate.md) for the response contract and failure behavior.
+
+Use generic environment configuration and a deployment secret; no dedicated chart values are required. This illustrative threshold is experimental and must be privately qualified for the actual workload:
+
+```text
+KubeMcp__CredentialGate__Enabled=true
+KubeMcp__CredentialGate__Endpoint=https://clef.internal.example/systemone
+KubeMcp__CredentialGate__ApiKey=<from-secret-manager-or-empty>
+KubeMcp__CredentialGate__RequestModel=decision
+KubeMcp__CredentialGate__ExpectedResponseModel=clef-flash-q4_k_m
+KubeMcp__CredentialGate__ProbabilityThreshold=0.20
+KubeMcp__OverallMcpRequestTimeoutSeconds=35
+```
+
+The built-in prompt treats state as untrusted and detects reusable credentials while allowing HMAC-SHA256 fingerprints, placeholders, and unresolved Secret references. It intentionally does not classify PII. The API key, payload, prompt, response, and probabilities must not be logged.
 
 ## Edge traffic limits
 

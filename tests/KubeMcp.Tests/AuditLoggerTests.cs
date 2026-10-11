@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using KubeMcp.Audit;
 using KubeMcp.Configuration;
+using KubeMcp.CredentialGate;
 using KubeMcp.Kubernetes;
 using KubeMcp.Mcp;
 using Microsoft.AspNetCore.Http;
@@ -72,7 +73,8 @@ public sealed class AuditLoggerTests
                 $"{{\"data\":{{\"password\":\"{rawSecret}\",\"fingerprint\":\"{fingerprint}\"}}}}",
                 KubernetesErrorCategory.AccessDenied)),
             audit,
-            NullLogger<KubernetesGetTool>.Instance);
+            NullLogger<KubernetesGetTool>.Instance,
+            new DisabledCredentialGate());
 
         var exception = await Assert.ThrowsAsync<McpException>(() =>
             tool.GetAsync("secrets", "database", "credentials"));
