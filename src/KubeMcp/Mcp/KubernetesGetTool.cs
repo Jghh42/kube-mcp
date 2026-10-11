@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using KubeMcp.Audit;
+using KubeMcp.CredentialGate;
 using KubeMcp.Kubernetes;
 using Microsoft.AspNetCore.Http.Timeouts;
 using ModelContextProtocol;
@@ -14,17 +15,20 @@ public sealed class KubernetesGetTool
     private readonly IAuditLogger auditLogger;
     private readonly ILogger<KubernetesGetTool> logger;
     private readonly IHttpContextAccessor? httpContextAccessor;
+    private readonly ICredentialGate credentialGate;
 
     public KubernetesGetTool(
         IKubernetesReader reader,
         IAuditLogger auditLogger,
         ILogger<KubernetesGetTool> logger,
+        ICredentialGate credentialGate,
         IHttpContextAccessor? httpContextAccessor = null)
     {
         this.reader = reader;
         this.auditLogger = auditLogger;
         this.logger = logger;
         this.httpContextAccessor = httpContextAccessor;
+        this.credentialGate = credentialGate ?? throw new ArgumentNullException(nameof(credentialGate));
     }
 
     [McpServerTool(
@@ -57,10 +61,27 @@ public sealed class KubernetesGetTool
         {
             KubernetesNameValidator.ValidateResourceIdentifierLength(resource);
             var response = await reader.ReadAsync(resource, @namespace, name, cancellationToken);
+            if (name is not null)
+            {
+                var gateDecision = await credentialGate.EvaluateAsync(response.Json, cancellationToken);
+                if (gateDecision != CredentialGateDecision.Clear)
+                {
+                    result = "blocked";
+                    category = gateDecision == CredentialGateDecision.Detected
+                        ? AuditCategories.CredentialDetected
+                        : AuditCategories.CredentialGateUnavailable;
+                    throw new McpException(CredentialGateErrorMessage);
+                }
+            }
+
             result = "success";
             category = AuditCategories.Success;
             objectCount = response.ObjectCount;
             return response.Json;
+        }
+        catch (McpException) when (category is AuditCategories.CredentialDetected or AuditCategories.CredentialGateUnavailable)
+        {
+            throw;
         }
         catch (KubernetesReadException exception)
         {
@@ -125,6 +146,9 @@ public sealed class KubernetesGetTool
             }
         }
     }
+
+    internal const string CredentialGateErrorMessage =
+        "The requested resource could not be returned because credential screening did not clear it.";
 
     private bool IsServerDeadlineExpired() =>
         httpContextAccessor?.HttpContext?.Features
