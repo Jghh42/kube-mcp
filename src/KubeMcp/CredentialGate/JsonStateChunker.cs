@@ -162,7 +162,8 @@ internal sealed class JsonStateChunker
 
     private IEnumerable<StateEntry> Normalize(Leaf leaf, CancellationToken cancellationToken)
     {
-        var contexts = SelectContexts(leaf, cancellationToken);
+        var value = leaf.Value.ValueKind == JsonValueKind.String ? leaf.Value.GetString() : null;
+        var contexts = SelectContexts(leaf, value, cancellationToken);
         var ordinary = new StateEntry(
             leaf.Path,
             leaf.Value,
@@ -183,8 +184,7 @@ internal sealed class JsonStateChunker
                 "A non-string JSON value cannot be safely contextualized within the state bound.");
         }
 
-        var value = leaf.Value.GetString()!;
-        var runes = value.EnumerateRunes().ToArray();
+        var runes = value!.EnumerateRunes().ToArray();
         if (runes.Length == 0)
         {
             throw new InvalidOperationException("An empty scalar could not fit in a contextual state.");
@@ -195,38 +195,80 @@ internal sealed class JsonStateChunker
         {
             cancellationToken.ThrowIfCancellationRequested();
             var end = FindMaximumEnd(leaf.Path, runes, start, contexts, cancellationToken);
-            if (end == start)
+            var nextStart = end == runes.Length ? end : OverlapStart(runes, start, end);
+            var forwardBytes = Utf8Bytes(runes, start, nextStart);
+            if (end == start ||
+                (end < runes.Length && forwardBytes < Math.Max(16, overlapBytes)))
             {
+                // Later runes may need more JSON escaping than the initial
+                // capacity probe. Retry this segment without optional siblings,
+                // but never discard required identity context.
+                var requiredContexts = contexts.Where(IsIdentityContext).ToArray();
+                if (requiredContexts.Length < contexts.Count)
+                {
+                    contexts = requiredContexts;
+                    continue;
+                }
                 throw new InvalidOperationException(
-                    "A scalar segment cannot fit in a complete contextual state.");
+                    "Scalar overlap leaves insufficient forward progress.");
             }
 
             var segment = Join(runes, start, end);
             yield return new StateEntry(leaf.Path, segment, contexts, start, end);
-            if (end == runes.Length)
-            {
-                yield break;
-            }
-
-            var nextStart = OverlapStart(runes, start, end);
-            var forwardBytes = Utf8Bytes(runes, start, nextStart);
-            if (nextStart <= start || forwardBytes < Math.Max(16, overlapBytes))
-            {
-                throw new InvalidOperationException(
-                    "Scalar overlap leaves insufficient forward progress.");
-            }
             start = nextStart;
         }
     }
 
-    private IReadOnlyList<ContextEntry> SelectContexts(Leaf leaf, CancellationToken cancellationToken)
+    private IReadOnlyList<ContextEntry> SelectContexts(
+        Leaf leaf,
+        string? value,
+        CancellationToken cancellationToken)
     {
+        object probeValue = leaf.Value;
+        int? probeOffset = null;
+        if (value is not null)
+        {
+            // Optional siblings must leave space for both overlap and meaningful
+            // forward progress, not merely an empty value. Short values reserve
+            // their complete representation instead.
+            var minimumSegmentBytes = overlapBytes + Math.Max(16, overlapBytes);
+            var probe = new StringBuilder();
+            var bytes = 0;
+            foreach (var rune in value.EnumerateRunes())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (bytes >= minimumSegmentBytes)
+                {
+                    break;
+                }
+                probe.Append(rune.ToString());
+                bytes += rune.Utf8SequenceLength;
+            }
+            if (probe.Length < value.Length)
+            {
+                probeValue = probe.ToString();
+                // Reserve the largest possible offset width for later segments.
+                probeOffset = value.Length;
+            }
+        }
+
         var selected = new List<ContextEntry>();
         foreach (var context in leaf.Context)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var candidate = new StateEntry(leaf.Path, string.Empty, [.. selected, context], 0, 0);
-            if (Fits([candidate, candidate]))
+            ContextEntry[] candidateContexts = [.. selected, context];
+            var candidate = new StateEntry(
+                leaf.Path, probeValue, candidateContexts, probeOffset, probeOffset);
+            var fits = Fits([candidate, candidate]);
+            if (!fits && probeOffset is not null && value!.Length <= maximumBytes / 2)
+            {
+                // A complete ordinary value can fit even when synthetic segment
+                // offsets would not. Never reject its required context merely
+                // because segmentation has more framing overhead.
+                var ordinary = new StateEntry(leaf.Path, leaf.Value, candidateContexts, null, null);
+                fits = Fits([ordinary, ordinary]);
+            }
+            if (fits)
             {
                 selected.Add(context);
                 continue;
@@ -266,7 +308,9 @@ internal sealed class JsonStateChunker
         CancellationToken cancellationToken)
     {
         var low = start;
-        var high = runes.Length;
+        // Every rune occupies at least one serialized byte, and two entries must
+        // fit. Never construct a trial proportional to the remaining input.
+        var high = start + Math.Min(runes.Length - start, maximumBytes / 2);
         while (low < high)
         {
             cancellationToken.ThrowIfCancellationRequested();

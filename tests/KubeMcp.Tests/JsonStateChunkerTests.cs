@@ -54,6 +54,105 @@ public sealed class JsonStateChunkerTests
         Assert.Equal(credential, MergeWithOverlap(valueEntries.Select(entry => entry.Value).ToArray(), 32));
     }
 
+    [Theory]
+    [InlineData(1700)]
+    [InlineData(4000)]
+    public void LargeOptionalSiblingsDoNotBlockHarmlessConfigMap(int valueLength)
+    {
+        var first = new string('a', valueLength);
+        var second = new string('b', valueLength);
+        var json = JsonSerializer.Serialize(new
+        {
+            apiVersion = "v1",
+            kind = "ConfigMap",
+            metadata = new { name = "harmless", @namespace = "default" },
+            data = new { first, second }
+        });
+
+        var chunks = new JsonStateChunker(4096, 256).Chunk(json).ToArray();
+
+        Assert.NotEmpty(chunks);
+        Assert.All(chunks, chunk => Assert.True(Encoding.UTF8.GetByteCount(chunk) <= 4096));
+        AssertScalarCoverage(chunks, "/data/first", first, 256);
+        AssertScalarCoverage(chunks, "/data/second", second, 256);
+        Assert.All(chunks.SelectMany(Entries).Where(entry => entry.Path == "/data/first"),
+            entry => Assert.DoesNotContain(entry.Context, context => context.Path == "/data/second"));
+    }
+
+    [Fact]
+    public void DroppingOptionalSiblingsStillPreservesRequiredNameForUnicodeSegments()
+    {
+        var first = string.Concat(Enumerable.Repeat("🔐é", 1000));
+        var second = new string('b', 1700);
+        var json = JsonSerializer.Serialize(new { name = "DB_PASSWORD", first, second });
+
+        var chunks = new JsonStateChunker(4096, 256).Chunk(json).ToArray();
+
+        Assert.All(chunks, chunk => Assert.True(Encoding.UTF8.GetByteCount(chunk) <= 4096));
+        var firstEntries = chunks.SelectMany(Entries).Where(entry => entry.Path == "/first").ToArray();
+        Assert.NotEmpty(firstEntries);
+        Assert.All(firstEntries, entry => Assert.Contains(entry.Context,
+            context => context.Path == "/name" && context.Value == "DB_PASSWORD"));
+        Assert.All(firstEntries, entry => Assert.DoesNotContain(entry.Context,
+            context => context.Path == "/second"));
+        AssertScalarCoverage(chunks, "/first", first, 256);
+        AssertScalarCoverage(chunks, "/second", second, 256);
+    }
+
+    [Theory]
+    [InlineData(1000, 1000, 1200)]
+    [InlineData(2000, 2000, 1000)]
+    public void OptionalContextCanBeDroppedWhenLaterSegmentsNeedMoreEscapedBytes(
+        int asciiLength, int unicodeLength, int siblingLength)
+    {
+        var first = new string('a', asciiLength) + new string('é', unicodeLength);
+        var second = new string('b', siblingLength);
+        var json = JsonSerializer.Serialize(new { name = "DB_PASSWORD", first, second });
+
+        var chunks = new JsonStateChunker(4096, 256).Chunk(json).ToArray();
+
+        Assert.All(chunks, chunk => Assert.True(Encoding.UTF8.GetByteCount(chunk) <= 4096));
+        var entries = chunks.SelectMany(Entries).Where(entry => entry.Path == "/first").ToArray();
+        Assert.Contains(entries, entry => entry.Context.Any(context => context.Path == "/second"));
+        Assert.Contains(entries, entry => !entry.Context.Any(context => context.Path == "/second"));
+        Assert.All(entries, entry => Assert.Contains(entry.Context,
+            context => context.Path == "/name" && context.Value == "DB_PASSWORD"));
+        AssertScalarCoverage(chunks, "/first", first, 256);
+    }
+
+    [Fact]
+    public void RequiredNameContextIsAcceptedWhenOrdinaryEntriesFitWithoutSegmentMetadata()
+    {
+        var name = new string('n', 1450);
+        var value = new string('v', 513);
+        var json = JsonSerializer.Serialize(new { name, value });
+
+        var chunks = new JsonStateChunker(4096, 256).Chunk(json).ToArray();
+
+        Assert.True(Encoding.UTF8.GetByteCount(Assert.Single(chunks)) <= 4096);
+        var entry = Assert.Single(Entries(chunks[0]), item => item.Path == "/value");
+        Assert.Equal(value, entry.Value);
+        Assert.Null(entry.Start);
+        Assert.Contains(entry.Context, context => context.Path == "/name" && context.Value == name);
+        AssertScalarCoverage(chunks, "/name", name, 256);
+    }
+
+    [Fact]
+    public void SegmentSearchAllocationsScaleWithInputRatherThanItsSquare()
+    {
+        // Warm up serialization and iterator paths before measuring cumulative
+        // thread-local allocations, not wall-clock timing or peak memory.
+        new JsonStateChunker(4096, 256)
+            .Chunk(JsonSerializer.Serialize(new string('x', 4096))).Count();
+        var smaller = MeasureChunkAllocations(64 * 1024);
+        var larger = MeasureChunkAllocations(128 * 1024);
+
+        Assert.True(larger < 128L * 1024 * 1024,
+            $"128 KiB input allocated {larger} bytes.");
+        Assert.True(larger < smaller * 2.5 + 4 * 1024 * 1024,
+            $"Doubling input increased allocations from {smaller} to {larger} bytes.");
+    }
+
     [Fact]
     public void OrdinaryValueRetainsNameAcrossManyFieldsAndChunkBoundaries()
     {
@@ -171,6 +270,29 @@ public sealed class JsonStateChunkerTests
                 name = new string('n', 400),
                 value = "123e4567-e89b-12d3-a456-426614174000"
             })).ToArray());
+    }
+
+    private static long MeasureChunkAllocations(int valueLength)
+    {
+        var json = JsonSerializer.Serialize(new string('x', valueLength));
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var count = new JsonStateChunker(4096, 256).Chunk(json).Count();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(count > 1);
+        return allocated;
+    }
+
+    private static void AssertScalarCoverage(string[] chunks, string path, string original, int overlap)
+    {
+        var parts = chunks.SelectMany(Entries)
+            .Where(entry => entry.Path == path)
+            .GroupBy(entry => entry.Start)
+            .Select(group => group.First())
+            .OrderBy(entry => entry.Start)
+            .Select(entry => entry.Value)
+            .ToArray();
+        Assert.NotEmpty(parts);
+        Assert.Equal(original, MergeWithOverlap(parts, overlap));
     }
 
     private static Entry[] Entries(string chunk)

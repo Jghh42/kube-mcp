@@ -22,6 +22,23 @@ public sealed class ClefCredentialGateTests
     }
 
     [Fact]
+    public async Task HarmlessConfigMapWithLargeSiblingsClearsAtDefaultChunkBounds()
+    {
+        var json = JsonSerializer.Serialize(new
+        {
+            apiVersion = "v1",
+            kind = "ConfigMap",
+            metadata = new { name = "harmless", @namespace = "default" },
+            data = new { first = new string('a', 1700), second = new string('b', 1700) }
+        });
+        var client = new StubClient(Enumerable.Repeat(CredentialGateDecision.Clear, 100));
+        var gate = new ClefCredentialGate(client, new CredentialGateOptions { Enabled = true });
+
+        Assert.Equal(CredentialGateDecision.Clear, await gate.EvaluateAsync(json, default));
+        Assert.True(client.CallCount > 1);
+    }
+
+    [Fact]
     public async Task AnyClientOrChunkingFailureIsUnavailable()
     {
         var unavailable = new ClefCredentialGate(
