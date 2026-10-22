@@ -25,6 +25,7 @@ A request must pass all applicable controls:
 4. GET/LIST-only application behavior.
 5. Kubernetes RBAC for the service identity.
 6. Kubernetes deadlines, pagination bounds, upstream body limits, and safe-output limits.
+7. When explicitly enabled, a fail-closed decision-model credential gate before release of detailed GET results.
 
 The production reference deployment uses a static bearer API key loaded from a Kubernetes Secret. Unauthenticated mode is accepted only when the host environment is `Development`. See [configuration](configuration.md#authentication).
 
@@ -36,6 +37,14 @@ Raw Kubernetes Secret values are never returned:
 - GET replaces each value with a keyed HMAC-SHA256 fingerprint.
 
 The HMAC key remains on the server. Keep it stable only when fingerprints need to be comparable across restarts. Logs and audit records never contain Secret values or fingerprints.
+
+## Optional credential decision gate
+
+The optional gate is disabled by default and applies only to detailed namespaced `k8s_get` GET results (`name` is present), for every mapped resource type. Namespaced LIST and namespace discovery bypass it. The input is exactly the bounded, post-sanitization JSON from the Kubernetes reader, so raw Secret values never reach the decision-model server; sanitized Secret GET fingerprints are still evaluated. The application adds no regex, YAML, or PII scanner, and the gate does not add a tool or expand Kubernetes access.
+
+JSON is flattened into complete bounded states with JSON Pointer paths. The credential-classification unit is one scalar Kubernetes field value, or the overlapping segments of one oversized scalar—not arbitrary reconstruction across independent fields. Every scalar carries available nearest and ancestor `name` identity context (for example, an environment-variable name beside its value), including ordinary values and every oversized segment; required identity context that cannot fit fails closed. Adjacent entries are also packed together and one entry overlaps each state boundary as pairwise structural defense, but the service does not claim to detect a credential intentionally fragmented across three or more fields. Strings split at rune boundaries with overlap, and every source scalar is covered. Every state is evaluated sequentially. Detection, malformed input, incomplete chunking, timeout, transport/HTTP failure, or invalid decision-model output blocks the whole result with the same fixed client-safe message. Redirects and cookies are disabled, responses are bounded, and only transport/per-attempt timeouts plus HTTP 408, 429, or 500–599 are retried within one total deadline. Caller and server cancellation still propagate normally; expiration of the gate-owned deadline blocks safely.
+
+The configured decision-model server receives only `{model,state,questions}` with one credential choice question. Release requires a strictly validated response, `choice=no`, and `probabilities.yes` at or below the configured threshold. The built-in policy treats state as untrusted, identifies reusable credentials, permits HMAC-SHA256 fingerprints/placeholders/unresolved Secret references, and excludes PII-only concerns. The payload, API key, policy prompt, response, probabilities, and arbitrary errors are never logged. Readiness remains a process-only check and performs no decision-model network probe.
 
 ## Edge traffic controls
 
@@ -57,7 +66,7 @@ Kubernetes failures are converted to fixed messages and low-cardinality categori
 - `upstream_timeout`
 - `internal_error`
 
-Overall server deadlines use `server_timeout`; caller disconnects use `client_cancelled`. Upstream response bodies and arbitrary exception messages do not cross the Kubernetes boundary.
+Overall server deadlines use `server_timeout`; caller disconnects use `client_cancelled`. Credential detection and gate unavailability use distinct low-cardinality internal audit categories but the same fixed MCP message. Upstream response bodies and arbitrary exception messages do not cross the Kubernetes or credential-gate boundaries.
 
 ## Audit guarantees
 
@@ -72,6 +81,7 @@ Records can include:
 - result and fixed error category
 - duration and request ID
 - successful object count
+- fixed credential-gate category (`credential_detected` or `credential_gate_unavailable`) when a detailed GET is blocked
 
 They do not include Kubernetes response bodies, Secret values or fingerprints, credentials, tokens, arbitrary exception text, client IP addresses, or forwarded-header values. Untrusted string fields are length-bounded and have control characters replaced.
 

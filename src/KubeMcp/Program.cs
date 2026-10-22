@@ -1,6 +1,7 @@
 using KubeMcp.Audit;
 using KubeMcp.Authentication;
 using KubeMcp.Configuration;
+using KubeMcp.CredentialGate;
 using KubeMcp.Kubernetes;
 using KubeMcp.Mcp;
 using KubeMcp.Security;
@@ -33,6 +34,33 @@ builder.Services.AddSingleton<IKubernetesClientFactory>(services =>
     new KubernetesClientFactory(
         services.GetRequiredService<IOptions<KubeMcpOptions>>().Value));
 builder.Services.AddSingleton<IKubernetesReader, KubernetesReader>();
+builder.Services.AddSingleton<ICredentialDecisionClient>(services =>
+{
+    // A directly owned client avoids factory logging of request metadata on this
+    // sensitive path. Handler recycling is bounded without replacing the client.
+    var handler = new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+        UseCookies = false,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+    };
+    var client = new HttpClient(handler)
+    {
+        Timeout = Timeout.InfiniteTimeSpan
+    };
+    return new DecisionModelCredentialClient(
+        client,
+        services.GetRequiredService<IOptions<KubeMcpOptions>>().Value.CredentialGate);
+});
+builder.Services.AddSingleton<ICredentialGate>(services =>
+{
+    var gateOptions = services.GetRequiredService<IOptions<KubeMcpOptions>>().Value.CredentialGate;
+    return gateOptions.Enabled
+        ? new DecisionModelCredentialGate(
+            services.GetRequiredService<ICredentialDecisionClient>(),
+            gateOptions)
+        : new DisabledCredentialGate();
+});
 
 builder.Services
     .AddMcpServer()
