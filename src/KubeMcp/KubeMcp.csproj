@@ -13,7 +13,7 @@
 
   <ItemGroup>
     <PackageReference Include="KubernetesClient" Version="21.0.8" />
-    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.3.0" />
   </ItemGroup>
 
 </Project>
