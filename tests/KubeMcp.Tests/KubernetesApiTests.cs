@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using KubeMcp.Kubernetes;
@@ -110,6 +111,72 @@ public sealed class KubernetesApiTests
 
         Assert.False(stream.FirstReadBuffer.IsEmpty);
         Assert.All(stream.FirstReadBuffer.ToArray(), value => Assert.Equal(0, value));
+    }
+
+    [Fact]
+    public async Task ReadCappedStartsSmallAndGrowsToBodySize()
+    {
+        const int bodyBytes = 200 * 1024;
+        using var stream = new RepeatingByteStream(bodyBytes);
+
+        var body = await KubernetesApi.ReadCappedAsync(
+            stream,
+            maxBodyBytes: 4 * 1024 * 1024,
+            CancellationToken.None,
+            clearTemporaryBuffers: true);
+
+        Assert.Equal(bodyBytes, body.Length);
+        Assert.All(body.ToArray(), value => Assert.Equal((byte)'x', value));
+        // Every smaller buffer abandoned during growth was cleared in full,
+        // including the prefix copied into its successor. The returned body
+        // is handed to the caller, which owns clearing it after sanitizing.
+        Assert.True(MemoryMarshal.TryGetArray(body, out var returned));
+        var abandoned = stream.ReadArrays.Where(array => array != returned.Array).ToList();
+        Assert.NotEmpty(abandoned);
+        Assert.All(abandoned, AssertCleared);
+    }
+
+    [Theory]
+    [InlineData(null)] // default 64 KiB initial buffer
+    [InlineData(0L)] // declared-empty body that keeps growing from one byte
+    public async Task SensitiveCappedReadClearsEveryBufferWhenOverflowingAfterGrowth(long? contentLength)
+    {
+        // A non-power-of-two cap above the initial buffer forces several
+        // expansions, the last one clamped to the cap.
+        const int maxBodyBytes = 300_000;
+        using var stream = new RepeatingByteStream(10 * maxBodyBytes);
+
+        await Assert.ThrowsAsync<KubernetesApiException>(() =>
+            KubernetesApi.ReadCappedAsync(
+                stream,
+                maxBodyBytes,
+                CancellationToken.None,
+                clearTemporaryBuffers: true,
+                contentLength));
+
+        Assert.Equal(maxBodyBytes + 1, stream.BytesRead);
+        // Nothing is returned on overflow, so every backing array the stream
+        // wrote into, including copied prefixes and the final buffer, is cleared.
+        Assert.NotEmpty(stream.ReadArrays);
+        Assert.All(stream.ReadArrays, AssertCleared);
+    }
+
+    private static void AssertCleared(byte[] array) =>
+        Assert.All(array, value => Assert.Equal(0, value));
+
+    [Fact]
+    public async Task ReadCappedUsesDeclaredContentLengthWithoutGrowing()
+    {
+        using var stream = new RepeatingByteStream(1000);
+
+        var body = await KubernetesApi.ReadCappedAsync(
+            stream,
+            maxBodyBytes: 4 * 1024 * 1024,
+            CancellationToken.None,
+            contentLength: 1000);
+
+        Assert.Equal(1000, body.Length);
+        Assert.Equal(1000, stream.FirstReadBuffer.Length);
     }
 
     [Fact]
@@ -396,6 +463,8 @@ public sealed class KubernetesApiTests
 
         public int BytesRead { get; private set; }
         public Memory<byte> FirstReadBuffer { get; private set; }
+        // Full backing arrays, not just the slices passed to ReadAsync.
+        public HashSet<byte[]> ReadArrays { get; } = new(ReferenceEqualityComparer.Instance);
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
@@ -424,6 +493,11 @@ public sealed class KubernetesApiTests
             if (FirstReadBuffer.IsEmpty)
             {
                 FirstReadBuffer = buffer;
+            }
+
+            if (MemoryMarshal.TryGetArray<byte>(buffer, out var segment) && segment.Array is not null)
+            {
+                ReadArrays.Add(segment.Array);
             }
 
             var read = (int)Math.Min(buffer.Length, remaining);

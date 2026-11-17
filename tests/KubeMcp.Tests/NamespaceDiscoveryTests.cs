@@ -321,10 +321,10 @@ public sealed class KubernetesListNamespacesToolTests
     public async Task AuditsOneAggregateEventWithoutNamespaceNames()
     {
         var audit = new CapturingAudit();
-        var tool = new KubernetesListNamespacesTool(
+        var tool = new KubernetesTools(
             new NamespaceReader(new KubernetesReadResult("{\"items\":[]}", 2)),
             audit,
-            NullLogger<KubernetesListNamespacesTool>.Instance);
+            NullLogger<KubernetesTools>.Instance);
 
         Assert.Equal("{\"items\":[]}", await tool.ListAsync());
         var entry = Assert.Single(audit.Events);
@@ -340,12 +340,12 @@ public sealed class KubernetesListNamespacesToolTests
     public async Task MapsReaderFailureToFixedErrorAndAuditCategory()
     {
         var audit = new CapturingAudit();
-        var tool = new KubernetesListNamespacesTool(
+        var tool = new KubernetesTools(
             new NamespaceReader(new KubernetesReadException(
                 "namespace-name-must-not-leak",
                 KubernetesErrorCategory.MalformedResponse)),
             audit,
-            NullLogger<KubernetesListNamespacesTool>.Instance);
+            NullLogger<KubernetesTools>.Instance);
 
         var exception = await Assert.ThrowsAsync<McpException>(() => tool.ListAsync());
 
@@ -361,10 +361,10 @@ public sealed class KubernetesListNamespacesToolTests
         using var callerCancellation = new CancellationTokenSource();
         callerCancellation.Cancel();
         var callerAudit = new CapturingAudit();
-        var callerTool = new KubernetesListNamespacesTool(
+        var callerTool = new KubernetesTools(
             new NamespaceReader(new OperationCanceledException(callerCancellation.Token)),
             callerAudit,
-            NullLogger<KubernetesListNamespacesTool>.Instance);
+            NullLogger<KubernetesTools>.Instance);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             callerTool.ListAsync(callerCancellation.Token));
@@ -378,10 +378,10 @@ public sealed class KubernetesListNamespacesToolTests
         var context = new DefaultHttpContext();
         context.Features.Set<IHttpRequestTimeoutFeature>(new TimeoutFeature(serverDeadline.Token));
         var serverAudit = new CapturingAudit();
-        var serverTool = new KubernetesListNamespacesTool(
+        var serverTool = new KubernetesTools(
             new NamespaceReader(new OperationCanceledException(serverDeadline.Token)),
             serverAudit,
-            NullLogger<KubernetesListNamespacesTool>.Instance,
+            NullLogger<KubernetesTools>.Instance,
             new HttpContextAccessor { HttpContext = context });
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -414,7 +414,6 @@ public sealed class KubernetesListNamespacesToolTests
     {
         public List<KubernetesAuditEvent> Events { get; } = [];
         public void LogKubernetesAccess(KubernetesAuditEvent auditEvent) => Events.Add(auditEvent);
-        public void LogMcpAccessDenied(McpAccessDeniedAuditEvent auditEvent) { }
     }
 
     private sealed class TimeoutFeature(CancellationToken token) : IHttpRequestTimeoutFeature

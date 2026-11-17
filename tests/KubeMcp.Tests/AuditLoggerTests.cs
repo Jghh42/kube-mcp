@@ -67,12 +67,12 @@ public sealed class AuditLoggerTests
         const string fingerprint = "hmac-sha256:fingerprint-must-not-appear";
         var output = new CapturingLogger<AuditLogger>();
         var audit = CreateLogger(output, new DefaultHttpContext(), AuthenticationMode.None);
-        var tool = new KubernetesGetTool(
+        var tool = new KubernetesTools(
             new SensitiveFailureReader(new KubernetesReadException(
                 $"{{\"data\":{{\"password\":\"{rawSecret}\",\"fingerprint\":\"{fingerprint}\"}}}}",
                 KubernetesErrorCategory.AccessDenied)),
             audit,
-            NullLogger<KubernetesGetTool>.Instance);
+            NullLogger<KubernetesTools>.Instance);
 
         var exception = await Assert.ThrowsAsync<McpException>(() =>
             tool.GetAsync("secrets", "database", "credentials"));
@@ -83,29 +83,6 @@ public sealed class AuditLoggerTests
         Assert.DoesNotContain(rawSecret, entry.Rendered, StringComparison.Ordinal);
         Assert.DoesNotContain(fingerprint, entry.Rendered, StringComparison.Ordinal);
         Assert.Null(entry.Exception);
-    }
-
-    [Fact]
-    public void LogsCoordinateFreeApplicationAuthorizationDenial()
-    {
-        var output = new CapturingLogger<AuditLogger>();
-        var audit = CreateLogger(output, new DefaultHttpContext(), AuthenticationMode.ApiKey);
-
-        audit.LogMcpAccessDenied(new McpAccessDeniedAuditEvent(
-            AuditCategories.AuthorizationDenied,
-            StatusCodes.Status403Forbidden,
-            TimeSpan.FromMilliseconds(4)));
-
-        var entry = Assert.Single(output.Entries);
-        Assert.Equal(AuditLogger.McpAccessDeniedEvent, entry.EventId);
-        Assert.Equal("anonymous", entry.Properties["ClientIdentity"]);
-        Assert.Equal("denied", entry.Properties["Result"]);
-        Assert.Equal(AuditCategories.AuthorizationDenied, entry.Properties["Category"]);
-        Assert.Equal(403, entry.Properties["StatusCode"]);
-        Assert.DoesNotContain("Operation", entry.Properties.Keys);
-        Assert.DoesNotContain("Resource", entry.Properties.Keys);
-        Assert.DoesNotContain("Namespace", entry.Properties.Keys);
-        Assert.DoesNotContain("ResourceName", entry.Properties.Keys);
     }
 
     [Fact]

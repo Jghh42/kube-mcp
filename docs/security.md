@@ -45,8 +45,11 @@ The application retains the boundaries only it can enforce: Kubernetes response-
 
 ## Safe errors
 
-Kubernetes failures are converted to fixed messages and low-cardinality categories:
+Policy and validation failures, and Kubernetes failures, are converted to fixed messages and low-cardinality categories:
 
+- `resource_not_allowed`
+- `namespace_not_allowed`
+- `invalid_request`
 - `resource_not_found`
 - `kubernetes_access_denied`
 - `upstream_throttled`
@@ -61,7 +64,7 @@ Overall server deadlines use `server_timeout`; caller disconnects use `client_ca
 
 ## Audit guarantees
 
-Every dispatched `k8s_get` or `k8s_list_namespaces` call writes a sanitized structured Kubernetes audit event through the standard `ILogger` pipeline. Application-owned authorization denials write a coordinate-free MCP access-denial event. Authentication failures are handled by ASP.NET Core and infrastructure access logging. Middleware does not inspect arbitrary request bodies to infer audit fields.
+Every dispatched `k8s_get` or `k8s_list_namespaces` call writes a sanitized structured Kubernetes audit event through the standard `ILogger` pipeline. Authentication failures are handled by ASP.NET Core and infrastructure access logging. Audit does not inspect arbitrary request bodies to infer audit fields.
 
 Records can include:
 

@@ -37,8 +37,7 @@ builder.Services.AddSingleton<IKubernetesReader, KubernetesReader>();
 builder.Services
     .AddMcpServer()
     .WithHttpTransport(options => options.SessionMode = HttpServerSessionMode.Stateless)
-    .WithTools<KubernetesGetTool>()
-    .WithTools<KubernetesListNamespacesTool>();
+    .WithTools<KubernetesTools>();
 
 var app = builder.Build();
 
@@ -65,15 +64,10 @@ if (authenticationMode == AuthenticationMode.None)
 }
 
 app.UseRouting();
-// The application retains its end-to-end MCP deadline. HTTP body, header, rate,
-// and concurrency limits belong at the private-network ingress or service mesh.
-app.UseWhen(
-    context => context.Request.Path.StartsWithSegments("/mcp"),
-    branch =>
-    {
-        branch.UseRequestTimeouts();
-        branch.UseMiddleware<McpAccessAuditMiddleware>();
-    });
+// The application retains its end-to-end MCP deadline, attached only to the MCP
+// endpoint below. HTTP body, header, rate, and concurrency limits belong at the
+// private-network ingress or service mesh.
+app.UseRequestTimeouts();
 
 app.UseAuthentication();
 app.UseAuthorization();

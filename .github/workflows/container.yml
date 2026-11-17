@@ -29,15 +29,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      # actions/checkout v5.1.0
       - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      # actions/setup-dotnet v5.4.0
       - name: Set up .NET
-        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
 
@@ -162,10 +160,9 @@ jobs:
           KUBE_MCP_SKIP_IMAGE_BUILD: true
         run: tests/integration/run-kind.sh
 
-      # aquasecurity/trivy-action v0.36.0
       - name: Scan pull-request candidate image
         if: github.event_name == 'pull_request'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: kube-mcp:integration
@@ -187,13 +184,11 @@ jobs:
       attestations: write
       security-events: write
     steps:
-      # actions/checkout v5.1.0
       - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # actions/setup-dotnet v5.4.0
       - name: Set up .NET
-        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
 
@@ -231,9 +226,8 @@ jobs:
           KUBE_MCP_SKIP_IMAGE_BUILD: true
         run: tests/integration/run-kind.sh
 
-      # aquasecurity/trivy-action v0.36.0
       - name: Scan tested image for vulnerabilities
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: kube-mcp:integration
@@ -244,21 +238,19 @@ jobs:
           format: sarif
           output: trivy-results.sarif
 
-      # aquasecurity/trivy-action v0.36.0
       - name: Generate image SBOM
         if: github.event_name == 'push'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: kube-mcp:integration
           format: cyclonedx
           output: sbom.cdx.json
 
-      # docker/metadata-action v6.2.0
       - name: Generate image metadata
         if: github.event_name == 'push'
         id: metadata
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/jghh42/kube-mcp
           flavor: latest=false
@@ -270,10 +262,9 @@ jobs:
             type=sha,prefix=sha-,format=long
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
-      # docker/login-action v4.6.0
       - name: Log in to GHCR
         if: github.event_name == 'push'
-        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -315,29 +306,26 @@ jobs:
           echo "digest=$digest" >>"$GITHUB_OUTPUT"
           echo "Published immutable image: ghcr.io/jghh42/kube-mcp@$digest" >>"$GITHUB_STEP_SUMMARY"
 
-      # actions/attest-build-provenance v4.2.2
       - name: Attest build provenance
         if: github.event_name == 'push'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/jghh42/kube-mcp
           subject-digest: ${{ steps.publish.outputs.digest }}
           push-to-registry: true
 
-      # actions/attest v4.1.0
       - name: Attest SBOM
         if: github.event_name == 'push'
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/jghh42/kube-mcp
           subject-digest: ${{ steps.publish.outputs.digest }}
           sbom-path: sbom.cdx.json
           push-to-registry: true
 
-      # github/codeql-action v3.37.8
       - name: Upload Trivy SARIF
         if: always() && github.event_name == 'push' && hashFiles('trivy-results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: trivy-results.sarif
           category: trivy-container
@@ -352,9 +340,8 @@ jobs:
       contents: read
       packages: write
     steps:
-      # actions/checkout v5.1.0
       - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 

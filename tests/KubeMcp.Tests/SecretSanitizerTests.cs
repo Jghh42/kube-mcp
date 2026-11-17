@@ -110,9 +110,9 @@ public sealed class SecretSanitizerTests : IDisposable
         Assert.DoesNotContain("not base64!", exception.Message);
     }
 
-    private static DynamicKubernetesObject ParseSecret(string json)
+    private static JsonElement ParseSecret(string json)
     {
-        return JsonSerializer.Deserialize<DynamicKubernetesObject>(json)!;
+        return JsonSerializer.Deserialize<JsonElement>(json)!;
     }
 
     public void Dispose()
