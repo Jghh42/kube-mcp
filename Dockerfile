@@ -12,7 +12,7 @@
 # them (and the NuGet lock file) via Dependabot rather than editing tags by hand.
 #   sdk:10.0.401  @ sha256:35d40304542c8689331f8cab17c65926cdf48fe711e289321d71924b230a7d29
 #   aspnet:10.0.12 @ sha256:57460add89e2b3dd1950c41d8b7dc96eeb7a24d13d98e3656ce9997a8b746bd6
-FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.404@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb AS build
 WORKDIR /source
 
 # Restore is locked to the checked-in NuGet lock file (packages.lock.json) so a
@@ -30,7 +30,7 @@ RUN dotnet publish src/KubeMcp/KubeMcp.csproj \
     --output /app/publish \
     /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.13@sha256:d5633778c754e89a386882eddf8dbee6942447a8a4b8267c19cf1e1158d0b0ac AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.15@sha256:bfd912c83295ce66d4b706ebb8541b9f14259b0e76fbb88b2751f58ce2399d2e AS runtime
 WORKDIR /app
 
 ENV ASPNETCORE_HTTP_PORTS=8080 \
