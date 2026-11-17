@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using KubeMcp.Kubernetes;
@@ -126,13 +127,19 @@ public sealed class KubernetesApiTests
 
         Assert.Equal(bodyBytes, body.Length);
         Assert.All(body.ToArray(), value => Assert.Equal((byte)'x', value));
-        // The first, smaller buffer was abandoned during growth and cleared.
-        Assert.True(stream.FirstReadBuffer.Length < 4 * 1024 * 1024);
-        Assert.All(stream.FirstReadBuffer.ToArray(), value => Assert.Equal(0, value));
+        // Every smaller buffer abandoned during growth was cleared in full,
+        // including the prefix copied into its successor. The returned body
+        // is handed to the caller, which owns clearing it after sanitizing.
+        Assert.True(MemoryMarshal.TryGetArray(body, out var returned));
+        var abandoned = stream.ReadArrays.Where(array => array != returned.Array).ToList();
+        Assert.NotEmpty(abandoned);
+        Assert.All(abandoned, AssertCleared);
     }
 
-    [Fact]
-    public async Task SensitiveCappedReadClearsEveryBufferWhenOverflowingAfterGrowth()
+    [Theory]
+    [InlineData(null)] // default 64 KiB initial buffer
+    [InlineData(0L)] // declared-empty body that keeps growing from one byte
+    public async Task SensitiveCappedReadClearsEveryBufferWhenOverflowingAfterGrowth(long? contentLength)
     {
         // A non-power-of-two cap above the initial buffer forces several
         // expansions, the last one clamped to the cap.
@@ -145,12 +152,17 @@ public sealed class KubernetesApiTests
                 maxBodyBytes,
                 CancellationToken.None,
                 clearTemporaryBuffers: true,
-                contentLength: 0));
+                contentLength));
 
         Assert.Equal(maxBodyBytes + 1, stream.BytesRead);
-        Assert.All(stream.ReadBuffers, buffer =>
-            Assert.All(buffer.ToArray(), value => Assert.Equal(0, value)));
+        // Nothing is returned on overflow, so every backing array the stream
+        // wrote into, including copied prefixes and the final buffer, is cleared.
+        Assert.NotEmpty(stream.ReadArrays);
+        Assert.All(stream.ReadArrays, AssertCleared);
     }
+
+    private static void AssertCleared(byte[] array) =>
+        Assert.All(array, value => Assert.Equal(0, value));
 
     [Fact]
     public async Task ReadCappedUsesDeclaredContentLengthWithoutGrowing()
@@ -451,7 +463,8 @@ public sealed class KubernetesApiTests
 
         public int BytesRead { get; private set; }
         public Memory<byte> FirstReadBuffer { get; private set; }
-        public List<Memory<byte>> ReadBuffers { get; } = [];
+        // Full backing arrays, not just the slices passed to ReadAsync.
+        public HashSet<byte[]> ReadArrays { get; } = new(ReferenceEqualityComparer.Instance);
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
@@ -482,7 +495,11 @@ public sealed class KubernetesApiTests
                 FirstReadBuffer = buffer;
             }
 
-            ReadBuffers.Add(buffer);
+            if (MemoryMarshal.TryGetArray<byte>(buffer, out var segment) && segment.Array is not null)
+            {
+                ReadArrays.Add(segment.Array);
+            }
+
             var read = (int)Math.Min(buffer.Length, remaining);
             buffer.Span[..read].Fill((byte)'x');
             remaining -= read;
