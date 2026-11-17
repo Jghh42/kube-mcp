@@ -15,6 +15,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # The project targets .NET 10 (global.json and TargetFramework). Moving
+      # to a new .NET major is a deliberate migration, not an image bump.
+      - dependency-name: "dotnet/*"
+        update-types: ["version-update:semver-major"]
 
   # Full action SHAs are mandatory; automated update PRs avoid requiring
   # mutable major-version tags in the workflow itself.
