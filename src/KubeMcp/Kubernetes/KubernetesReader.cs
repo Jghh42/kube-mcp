@@ -97,19 +97,39 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         // Static namespace denial (blacklist) happens before any Kubernetes call.
         namespacePolicy.EnsureStaticallyAllowed(@namespace);
 
+        return await ExecuteAsync(
+            async token =>
+            {
+                // The optional label-selector check is the only Kubernetes call that may
+                // precede the requested namespaced GET/LIST.
+                await EnsureNamespaceAllowedAsync(@namespace, token).ConfigureAwait(false);
+                return name is null
+                    ? await ListAsync(descriptor, resource, @namespace, token).ConfigureAwait(false)
+                    : await GetAsync(descriptor, @namespace, name, token).ConfigureAwait(false);
+            },
+            isList: name is null,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<KubernetesReadResult> ListNamespacesAsync(
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(ListNamespacesCoreAsync, isList: true, cancellationToken);
+
+    /// <summary>
+    /// Applies the Kubernetes deadline, the final safe-output size guard, and the
+    /// fixed error translation shared by every read.
+    /// </summary>
+    private async Task<KubernetesReadResult> ExecuteAsync(
+        Func<CancellationToken, Task<JsonNode>> read,
+        bool isList,
+        CancellationToken cancellationToken)
+    {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(options.KubernetesRequestTimeoutSeconds));
 
         try
         {
-            // The optional label-selector check is the only Kubernetes call that may
-            // precede the requested namespaced GET/LIST.
-            await EnsureNamespaceAllowedAsync(@namespace, timeout.Token).ConfigureAwait(false);
-
-            JsonNode safeResult = name is null
-                ? await ListAsync(descriptor, resource, @namespace, timeout.Token).ConfigureAwait(false)
-                : await GetAsync(descriptor, @namespace, name, timeout.Token).ConfigureAwait(false);
-
+            var safeResult = await read(timeout.Token).ConfigureAwait(false);
             var json = safeResult.ToJsonString(SerializerOptions);
             if (Encoding.UTF8.GetByteCount(json) > options.MaxResponseBytes)
             {
@@ -120,7 +140,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
 
             return new KubernetesReadResult(
                 json,
-                name is null ? safeResult["count"]?.GetValue<int>() ?? 0 : 1);
+                isList ? safeResult["count"]?.GetValue<int>() ?? 0 : 1);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -149,61 +169,6 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         {
             // Unexpected boundary failure: map to a safe internal category without
             // surfacing the exception body (which could carry upstream details).
-            logger.LogWarning(
-                "Unexpected Kubernetes boundary failure: {ExceptionType}",
-                ex.GetType().Name);
-            throw new KubernetesReadException(
-                "The Kubernetes API request failed.",
-                KubernetesErrorCategory.Internal);
-        }
-    }
-
-    public async Task<KubernetesReadResult> ListNamespacesAsync(
-        CancellationToken cancellationToken)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(options.KubernetesRequestTimeoutSeconds));
-
-        try
-        {
-            var safeResult = await ListNamespacesCoreAsync(timeout.Token).ConfigureAwait(false);
-            var json = safeResult.ToJsonString(SerializerOptions);
-            if (Encoding.UTF8.GetByteCount(json) > options.MaxResponseBytes)
-            {
-                throw new KubernetesReadException(
-                    $"The Kubernetes response exceeded the configured {options.MaxResponseBytes}-byte limit.",
-                    KubernetesErrorCategory.ResponseTooLarge);
-            }
-
-            return new KubernetesReadResult(
-                json,
-                safeResult["count"]?.GetValue<int>() ?? 0);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
-        {
-            throw new KubernetesReadException(
-                "The Kubernetes request timed out.",
-                KubernetesErrorCategory.Timeout);
-        }
-        catch (OperationCanceledException ex)
-        {
-            logger.LogWarning(
-                "Unexpected Kubernetes cancellation: {ExceptionType}",
-                ex.GetType().Name);
-            throw new KubernetesReadException(
-                "The Kubernetes API request failed.",
-                KubernetesErrorCategory.Internal);
-        }
-        catch (KubernetesApiException ex)
-        {
-            throw Translate(ex);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException and not KubernetesReadException)
-        {
             logger.LogWarning(
                 "Unexpected Kubernetes boundary failure: {ExceptionType}",
                 ex.GetType().Name);

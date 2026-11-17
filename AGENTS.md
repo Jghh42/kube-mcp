@@ -37,9 +37,11 @@ Read [docs/security.md](docs/security.md) before changing authentication, author
 - `src/KubeMcp/` — application code and default settings
 - `tests/KubeMcp.Tests/` — xUnit unit and in-process integration tests
 - `tests/integration/` — disposable-kind end-to-end harness
+- `tests/helm/` — Helm template and OCI push checks
 - `deployment.yaml` — production reference manifest
 - `overlays/development/` — isolated Development-only unauthenticated patch
 - `overlays/cnpg/` and `overlays/traefik/` — optional CRD mappings and matching RBAC
+- `charts/kube-mcp/` — Helm chart with opt-in CRD presets (`files/crd-presets.yaml`) that render matching mappings and RBAC
 - `.github/workflows/container.yml` — build, test, scan, and publish pipeline
 
 Configuration belongs in `KubeMcpOptions`, its validator, settings/manifests, tests, and [docs/configuration.md](docs/configuration.md) as applicable.

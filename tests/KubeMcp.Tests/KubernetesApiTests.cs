@@ -113,6 +113,61 @@ public sealed class KubernetesApiTests
     }
 
     [Fact]
+    public async Task ReadCappedStartsSmallAndGrowsToBodySize()
+    {
+        const int bodyBytes = 200 * 1024;
+        using var stream = new RepeatingByteStream(bodyBytes);
+
+        var body = await KubernetesApi.ReadCappedAsync(
+            stream,
+            maxBodyBytes: 4 * 1024 * 1024,
+            CancellationToken.None,
+            clearTemporaryBuffers: true);
+
+        Assert.Equal(bodyBytes, body.Length);
+        Assert.All(body.ToArray(), value => Assert.Equal((byte)'x', value));
+        // The first, smaller buffer was abandoned during growth and cleared.
+        Assert.True(stream.FirstReadBuffer.Length < 4 * 1024 * 1024);
+        Assert.All(stream.FirstReadBuffer.ToArray(), value => Assert.Equal(0, value));
+    }
+
+    [Fact]
+    public async Task SensitiveCappedReadClearsEveryBufferWhenOverflowingAfterGrowth()
+    {
+        // A non-power-of-two cap above the initial buffer forces several
+        // expansions, the last one clamped to the cap.
+        const int maxBodyBytes = 300_000;
+        using var stream = new RepeatingByteStream(10 * maxBodyBytes);
+
+        await Assert.ThrowsAsync<KubernetesApiException>(() =>
+            KubernetesApi.ReadCappedAsync(
+                stream,
+                maxBodyBytes,
+                CancellationToken.None,
+                clearTemporaryBuffers: true,
+                contentLength: 0));
+
+        Assert.Equal(maxBodyBytes + 1, stream.BytesRead);
+        Assert.All(stream.ReadBuffers, buffer =>
+            Assert.All(buffer.ToArray(), value => Assert.Equal(0, value)));
+    }
+
+    [Fact]
+    public async Task ReadCappedUsesDeclaredContentLengthWithoutGrowing()
+    {
+        using var stream = new RepeatingByteStream(1000);
+
+        var body = await KubernetesApi.ReadCappedAsync(
+            stream,
+            maxBodyBytes: 4 * 1024 * 1024,
+            CancellationToken.None,
+            contentLength: 1000);
+
+        Assert.Equal(1000, body.Length);
+        Assert.Equal(1000, stream.FirstReadBuffer.Length);
+    }
+
+    [Fact]
     public void BuildGetUriUsesCorePathForEmptyGroup()
     {
         var uri = KubernetesApi.BuildGetUri(BaseUri, Descriptor("", "v1", "pods", "Pod"), "production", "web-1");
@@ -396,6 +451,7 @@ public sealed class KubernetesApiTests
 
         public int BytesRead { get; private set; }
         public Memory<byte> FirstReadBuffer { get; private set; }
+        public List<Memory<byte>> ReadBuffers { get; } = [];
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
@@ -426,6 +482,7 @@ public sealed class KubernetesApiTests
                 FirstReadBuffer = buffer;
             }
 
+            ReadBuffers.Add(buffer);
             var read = (int)Math.Min(buffer.Length, remaining);
             buffer.Span[..read].Fill((byte)'x');
             remaining -= read;

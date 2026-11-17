@@ -11,7 +11,7 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | `KubeMcp:AllowedResources` | see `appsettings.json` | `k8s_get` names mapped to Kubernetes group/version/resource/kind; namespace discovery is independent. |
 | `KubeMcp:NamespacePolicy:Mode` | `Blacklist` | `Blacklist` or `LabelSelector`. |
 | `KubeMcp:NamespacePolicy:DeniedNamespaces` | system namespaces | Names denied in blacklist mode. |
-| `KubeMcp:NamespacePolicy:LabelSelector` | none | Required selector in label-selector mode. |
+| `KubeMcp:NamespacePolicy:LabelSelector` | none | Required selector in label-selector mode. Its syntax is not validated at startup: a malformed selector makes every namespaced read and namespace discovery fail with `invalid_request`, so verify it first with `kubectl get namespaces -l '<selector>'`. |
 | `KubeMcp:MaxListItems` | `100` | Maximum objects returned by LIST. |
 | `KubeMcp:MaxResponseBytes` | `1048576` | Maximum inner tool-content JSON size, excluding the MCP/HTTP envelope. |
 | `KubeMcp:MaxUpstreamBodyBytes` | `4194304` | Per-page or single-object Kubernetes response limit before deserialization; must be at least `MaxResponseBytes`. |

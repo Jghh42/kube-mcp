@@ -2,16 +2,13 @@
 #
 # The Dockerfile frontend and base images are pinned by verified multi-arch
 # index digests (tags are kept for readability) so a rebuilt image cannot
-# silently change its parser, SDK, or runtime. The .NET images are both pinned
-# to explicit .NET 10 SDK/runtime versions so local, CI, and image builds stay
-# aligned. global.json's "latestPatch" roll-forward remains within SDK feature
-# band 4. The runtime image is 10.0.12 with patched OpenSSL packages; the
-# SDK image is 10.0.401 and is only used for building, never shipped. The
-# digests are the multi-arch manifest-list
-# digests published by MCR; the build resolves the linux/amd64 variant. Update
-# them (and the NuGet lock file) via Dependabot rather than editing tags by hand.
-#   sdk:10.0.401  @ sha256:35d40304542c8689331f8cab17c65926cdf48fe711e289321d71924b230a7d29
-#   aspnet:10.0.12 @ sha256:57460add89e2b3dd1950c41d8b7dc96eeb7a24d13d98e3656ce9997a8b746bd6
+# silently change its parser, SDK, or runtime. The .NET images are pinned to
+# explicit SDK/runtime versions so local, CI, and image builds stay aligned.
+# global.json's "latestPatch" roll-forward remains within SDK feature band 4.
+# The SDK image is only used for building, never shipped. The digests are the
+# multi-arch manifest-list digests published by MCR; the build resolves the
+# linux/amd64 variant. Update them (and the NuGet lock file) via Dependabot
+# rather than editing tags by hand.
 FROM mcr.microsoft.com/dotnet/sdk:10.0.404@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb AS build
 WORKDIR /source
 

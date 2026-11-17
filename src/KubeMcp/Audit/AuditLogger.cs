@@ -12,49 +12,27 @@ public sealed class AuditLogger(
 {
     private const int MaximumValueLength = 256;
     internal static readonly EventId KubernetesAccessEvent = new(1000, "KubernetesAccess");
-    internal static readonly EventId McpAccessDeniedEvent = new(1001, "McpAccessDenied");
 
     public void LogKubernetesAccess(KubernetesAuditEvent auditEvent)
     {
-        var common = CommonFields();
-        TryLog(() => logger.LogInformation(
-            KubernetesAccessEvent,
-            "Kubernetes audit: timestamp={Timestamp} client={ClientIdentity} authentication={AuthenticationMethod} operation={Operation} resource={Resource} namespace={Namespace} name={ResourceName} result={Result} objectCount={ObjectCount} category={Category} durationMs={DurationMs} requestId={RequestId}",
-            common.Timestamp,
-            common.Identity,
-            common.AuthenticationMethod,
-            Safe(auditEvent.Operation),
-            Safe(auditEvent.Resource),
-            Safe(auditEvent.Namespace),
-            Safe(auditEvent.Name ?? "-"),
-            Safe(auditEvent.Result),
-            auditEvent.ObjectCount,
-            Safe(auditEvent.Category),
-            Math.Round(auditEvent.Duration.TotalMilliseconds, 2),
-            common.RequestId));
-    }
-
-    public void LogMcpAccessDenied(McpAccessDeniedAuditEvent auditEvent)
-    {
-        var common = CommonFields();
-        TryLog(() => logger.LogInformation(
-            McpAccessDeniedEvent,
-            "MCP access-denial audit: timestamp={Timestamp} client={ClientIdentity} authentication={AuthenticationMethod} result={Result} category={Category} statusCode={StatusCode} durationMs={DurationMs} requestId={RequestId}",
-            common.Timestamp,
-            common.Identity,
-            common.AuthenticationMethod,
-            "denied",
-            Safe(auditEvent.Category),
-            auditEvent.StatusCode,
-            Math.Round(auditEvent.Duration.TotalMilliseconds, 2),
-            common.RequestId));
-    }
-
-    private static void TryLog(Action write)
-    {
         try
         {
-            write();
+            var context = httpContextAccessor.HttpContext;
+            logger.LogInformation(
+                KubernetesAccessEvent,
+                "Kubernetes audit: timestamp={Timestamp} client={ClientIdentity} authentication={AuthenticationMethod} operation={Operation} resource={Resource} namespace={Namespace} name={ResourceName} result={Result} objectCount={ObjectCount} category={Category} durationMs={DurationMs} requestId={RequestId}",
+                timeProvider.GetUtcNow(),
+                Safe(ResolveIdentity(context?.User)),
+                Safe(options.Value.Authentication.Mode.ToString()),
+                Safe(auditEvent.Operation),
+                Safe(auditEvent.Resource),
+                Safe(auditEvent.Namespace),
+                Safe(auditEvent.Name ?? "-"),
+                Safe(auditEvent.Result),
+                auditEvent.ObjectCount,
+                Safe(auditEvent.Category),
+                Math.Round(auditEvent.Duration.TotalMilliseconds, 2),
+                Safe(context?.TraceIdentifier ?? "unknown"));
         }
         catch
         {
@@ -62,49 +40,16 @@ public sealed class AuditLogger(
         }
     }
 
-    private CommonAuditFields CommonFields()
-    {
-        var context = httpContextAccessor.HttpContext;
-        return new CommonAuditFields(
-            timeProvider.GetUtcNow(),
-            Safe(ResolveIdentity(context?.User)),
-            Safe(options.Value.Authentication.Mode.ToString()),
-            Safe(context?.TraceIdentifier ?? "unknown"));
-    }
+    // The API-key handler is the only authentication scheme and always sets client_id.
+    private static string ResolveIdentity(ClaimsPrincipal? principal) =>
+        principal?.Identity?.IsAuthenticated != true
+            ? "anonymous"
+            : principal.FindFirst("client_id")?.Value is { Length: > 0 } clientId
+                ? clientId
+                : "unknown";
 
-    private static string ResolveIdentity(ClaimsPrincipal? principal)
-    {
-        if (principal?.Identity?.IsAuthenticated != true)
-        {
-            return "anonymous";
-        }
-
-        return FirstClaim(principal, "client_id")
-            ?? FirstClaim(principal, "azp")
-            ?? FirstClaim(principal, ClaimTypes.NameIdentifier)
-            ?? FirstClaim(principal, "sub")
-            ?? principal.Identity.Name
-            ?? "unknown";
-    }
-
-    private static string? FirstClaim(ClaimsPrincipal principal, string type)
-    {
-        var value = principal.FindFirst(type)?.Value;
-        return string.IsNullOrWhiteSpace(value) ? null : value;
-    }
-
-    private static string Safe(string value)
-    {
-        var sanitized = string.Concat(value.Select(character =>
+    // Truncate before sanitizing so oversized caller values are never fully copied.
+    private static string Safe(string value) =>
+        string.Concat(value[..Math.Min(value.Length, MaximumValueLength)].Select(character =>
             char.IsControl(character) ? ' ' : character));
-        return sanitized.Length <= MaximumValueLength
-            ? sanitized
-            : sanitized[..MaximumValueLength];
-    }
-
-    private sealed record CommonAuditFields(
-        DateTimeOffset Timestamp,
-        string Identity,
-        string AuthenticationMethod,
-        string RequestId);
 }

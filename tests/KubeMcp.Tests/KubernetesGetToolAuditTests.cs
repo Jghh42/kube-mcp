@@ -15,10 +15,10 @@ public sealed class KubernetesGetToolAuditTests
     {
         var reader = new StubReader(new KubernetesReadResult("{\"items\":[]}", 3));
         var audit = new CapturingAuditLogger();
-        var tool = new KubernetesGetTool(
+        var tool = new KubernetesTools(
             reader,
             audit,
-            NullLogger<KubernetesGetTool>.Instance);
+            NullLogger<KubernetesTools>.Instance);
 
         var response = await tool.GetAsync("pods", "production");
 
@@ -40,10 +40,10 @@ public sealed class KubernetesGetToolAuditTests
             "UPSTREAM-OR-DYNAMIC-DETAIL-MUST-NOT-LEAK",
             KubernetesErrorCategory.ResourceNotAllowed));
         var audit = new CapturingAuditLogger();
-        var tool = new KubernetesGetTool(
+        var tool = new KubernetesTools(
             reader,
             audit,
-            NullLogger<KubernetesGetTool>.Instance);
+            NullLogger<KubernetesTools>.Instance);
 
         var exception = await Assert.ThrowsAsync<McpException>(() =>
             tool.GetAsync("secrets", "production", "credentials"));
@@ -81,10 +81,10 @@ public sealed class KubernetesGetToolAuditTests
     {
         const string sensitiveBody = "{\"message\":\"upstream-secret-body\"}";
         var audit = new CapturingAuditLogger();
-        var tool = new KubernetesGetTool(
+        var tool = new KubernetesTools(
             new StubReader(new KubernetesReadException(sensitiveBody, errorCategory)),
             audit,
-            NullLogger<KubernetesGetTool>.Instance);
+            NullLogger<KubernetesTools>.Instance);
 
         var exception = await Assert.ThrowsAsync<McpException>(() =>
             tool.GetAsync("secrets", "production", "credentials"));
@@ -102,10 +102,10 @@ public sealed class KubernetesGetToolAuditTests
         using var callerCancellation = new CancellationTokenSource();
         callerCancellation.Cancel();
         var callerAudit = new CapturingAuditLogger();
-        var callerTool = new KubernetesGetTool(
+        var callerTool = new KubernetesTools(
             new StubReader(new OperationCanceledException(callerCancellation.Token)),
             callerAudit,
-            NullLogger<KubernetesGetTool>.Instance);
+            NullLogger<KubernetesTools>.Instance);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             callerTool.GetAsync("pods", "production", cancellationToken: callerCancellation.Token));
@@ -119,10 +119,10 @@ public sealed class KubernetesGetToolAuditTests
         var context = new DefaultHttpContext();
         context.Features.Set<IHttpRequestTimeoutFeature>(new TimeoutFeature(serverDeadline.Token));
         var serverAudit = new CapturingAuditLogger();
-        var serverTool = new KubernetesGetTool(
+        var serverTool = new KubernetesTools(
             new StubReader(new OperationCanceledException(serverDeadline.Token)),
             serverAudit,
-            NullLogger<KubernetesGetTool>.Instance,
+            NullLogger<KubernetesTools>.Instance,
             new HttpContextAccessor { HttpContext = context });
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -136,10 +136,10 @@ public sealed class KubernetesGetToolAuditTests
     [Fact]
     public async Task AuditFailureNeverReplacesSuccessfulResponse()
     {
-        var tool = new KubernetesGetTool(
+        var tool = new KubernetesTools(
             new StubReader(new KubernetesReadResult("{}", 1)),
             new ThrowingAuditLogger(),
-            NullLogger<KubernetesGetTool>.Instance);
+            NullLogger<KubernetesTools>.Instance);
 
         Assert.Equal("{}", await tool.GetAsync("pods", "production", "pod-1"));
     }
@@ -173,18 +173,11 @@ public sealed class KubernetesGetToolAuditTests
         public List<KubernetesAuditEvent> Events { get; } = [];
 
         public void LogKubernetesAccess(KubernetesAuditEvent auditEvent) => Events.Add(auditEvent);
-
-        public void LogMcpAccessDenied(McpAccessDeniedAuditEvent auditEvent)
-        {
-        }
     }
 
     private sealed class ThrowingAuditLogger : IAuditLogger
     {
         public void LogKubernetesAccess(KubernetesAuditEvent auditEvent) =>
-            throw new InvalidOperationException("audit-provider-secret");
-
-        public void LogMcpAccessDenied(McpAccessDeniedAuditEvent auditEvent) =>
             throw new InvalidOperationException("audit-provider-secret");
     }
 

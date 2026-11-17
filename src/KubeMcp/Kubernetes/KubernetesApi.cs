@@ -18,6 +18,8 @@ internal sealed class KubernetesApi : IKubernetesApi
 
     internal const int MaximumContinueTokenBytes = 8 * 1024;
 
+    private const int InitialBodyBufferBytes = 64 * 1024;
+
     private readonly k8s.Kubernetes client;
     private readonly bool ownsClient;
     private readonly string? tlsServerName;
@@ -323,7 +325,8 @@ internal sealed class KubernetesApi : IKubernetesApi
                 stream,
                 maxBodyBytes,
                 cancellationToken,
-                clearTemporaryBuffers).ConfigureAwait(false);
+                clearTemporaryBuffers,
+                response.Content.Headers.ContentLength).ConfigureAwait(false);
         }
         finally
         {
@@ -342,20 +345,52 @@ internal sealed class KubernetesApi : IKubernetesApi
         Stream stream,
         int maxBodyBytes,
         CancellationToken cancellationToken,
-        bool clearTemporaryBuffers = false)
+        bool clearTemporaryBuffers = false,
+        long? contentLength = null)
     {
-        // Use one fixed backing array rather than a growing MemoryStream. Besides
-        // keeping allocation within the configured cap, this ensures a sensitive
-        // response never leaves abandoned expansion buffers that cannot be zeroed.
-        var output = new byte[maxBodyBytes];
+        // Start from the declared length (or a small default) and double up to
+        // the cap, so small responses do not allocate the whole cap. Growth uses
+        // plain arrays rather than a MemoryStream so every abandoned buffer of a
+        // sensitive response is zeroed.
+        var output = new byte[(int)Math.Clamp(contentLength ?? InitialBodyBufferBytes, 1L, maxBodyBytes)];
         var sentinel = new byte[1];
         var completed = false;
 
         try
         {
             var total = 0;
-            while (total < output.Length)
+            while (true)
             {
+                if (total == output.Length)
+                {
+                    // Probe for one more byte before growing, so an exact-length
+                    // body never allocates a larger buffer.
+                    var extra = await stream
+                        .ReadAsync(sentinel, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (extra == 0)
+                    {
+                        completed = true;
+                        return new ReadOnlyMemory<byte>(output, 0, total);
+                    }
+
+                    if (output.Length == maxBodyBytes)
+                    {
+                        throw ResponseTooLargeException();
+                    }
+
+                    var larger = new byte[(int)Math.Min(output.Length * 2L, maxBodyBytes)];
+                    output.AsSpan(0, total).CopyTo(larger);
+                    if (clearTemporaryBuffers)
+                    {
+                        CryptographicOperations.ZeroMemory(output);
+                    }
+
+                    output = larger;
+                    output[total++] = sentinel[0];
+                    continue;
+                }
+
                 var read = await stream
                     .ReadAsync(output.AsMemory(total), cancellationToken)
                     .ConfigureAwait(false);
@@ -367,17 +402,6 @@ internal sealed class KubernetesApi : IKubernetesApi
 
                 total += read;
             }
-
-            var extra = await stream
-                .ReadAsync(sentinel, cancellationToken)
-                .ConfigureAwait(false);
-            if (extra != 0)
-            {
-                throw ResponseTooLargeException();
-            }
-
-            completed = true;
-            return new ReadOnlyMemory<byte>(output, 0, total);
         }
         finally
         {
