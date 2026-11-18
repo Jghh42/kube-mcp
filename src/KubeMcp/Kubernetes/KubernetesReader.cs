@@ -134,7 +134,13 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         try
         {
             var safeResult = await read(timeout.Token).ConfigureAwait(false);
-            ApplyCredentialScan(safeResult, timeout.Token);
+            if (!isList)
+            {
+                // LIST and namespace summaries carry only names, types, key
+                // names, and ages, so only detailed GET output is scanned.
+                ApplyCredentialScan(safeResult, timeout.Token);
+            }
+
             var json = safeResult.ToJsonString(SerializerOptions);
             if (Encoding.UTF8.GetByteCount(json) > options.MaxResponseBytes)
             {
@@ -184,7 +190,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     }
 
     /// <summary>
-    /// Scans the final safe tree before the output-size guard, so a redaction
+    /// Scans the final safe GET tree before the output-size guard, so a redaction
     /// marker that grows the output is still bounded.
     /// </summary>
     private void ApplyCredentialScan(JsonNode safeResult, CancellationToken cancellationToken)
@@ -212,11 +218,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
                 $"{match.RuleId} {SafeLogValue(match.Path)}")) +
                 (matches.Count > MaxLoggedCredentialMatches ? $"; +{matches.Count - MaxLoggedCredentialMatches} more" : ""));
 
-        // Replace each matching field once, naming the first matching rule.
-        foreach (var match in matches.DistinctBy(match => match.Node))
-        {
-            match.Node.ReplaceWith(KnownFormatSecretScanner.RedactionMarker(match.RuleId));
-        }
+        KnownFormatSecretScanner.Redact(matches);
     }
 
     private static string SafeLogValue(string value) =>

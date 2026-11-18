@@ -15,9 +15,12 @@ The question this POC answers is whether layer 2 is precise, cheap, and useful e
 
 ## What the POC does
 
-`KubernetesReader.ExecuteAsync` scans the final safe `JsonNode` tree of every read (k8s_get GET and LIST, and namespace discovery) after Secret sanitization and LIST summarization, and before the final output-size guard. The scanner reads only JSON **string values** and reports each match as a JSONPath, for example `$.spec.template.spec.containers[0].env[1].value`. A string that is itself a JSON document, such as the last-applied annotation, is parsed and scanned as a tree. Matches inside it are attributed to, and redact, the outer string.
+`KubernetesReader.ExecuteAsync` scans the final safe `JsonNode` tree of every detailed `k8s_get` GET, after Secret sanitization and before the final output-size guard. LIST summaries and namespace discovery are not scanned: they carry only names, kinds, types, key names, and ages. The scanner reads only JSON **string values** and reports each match as a JSONPath, for example `$.spec.template.spec.containers[0].env[1].value`. A string that is itself a JSON document, such as the last-applied annotation, is parsed and scanned as a tree. Its matches are reported at the outer string's path, redacted inside the parsed tree, and the tree is then re-serialized into the outer string.
 
-Each matching string value is replaced in full with `[redacted:<rule-id>]`. A regex timeout fails closed: the whole result is withheld with `credential_scan_failed`. The per-match timeout is 250 ms, and the existing Kubernetes request deadline bounds the whole scan.
+Redaction depends on the kind of rule:
+
+- **Exact-format rules** replace only the matched text with `[redacted:<rule-id>]` and keep the rest of the value. For example, `postgres://app:[redacted:url-credentials]@db/app`, or a PEM block from `BEGIN` through `END` inside a larger config file. Every occurrence in a value is redacted.
+- **Generic rules** (`generic-assignment`, `generic-keyed-field`, `bearer-token`) replace the whole value, because their boundaries are approximate. The exception is a generic match whose credential text is already covered by exact-format matches, such as `GITHUB_TOKEN=ghp_…`: only the exact text is redacted. A regex timeout fails closed: the whole result is withheld with `credential_scan_failed`. The per-match timeout is 250 ms, and the existing Kubernetes request deadline bounds the whole scan.
 
 Configuration, with every rule on by default:
 
@@ -35,6 +38,8 @@ No dependency, tool, middleware, or service was added. All patterns use `[Genera
 2. The scanner and **all rules, including the generic ones, are enabled by default**, and individual rules can be disabled through configuration.
 3. Match paths may be logged for tuning.
 4. A held-out run on the owner's homelab cluster was approved (results below).
+5. LIST summaries and namespace discovery are not scanned.
+6. Exact-format rules redact only the matched text; generic rules redact the whole value.
 
 ## Rules and sources
 
@@ -42,7 +47,7 @@ The format rules are a curated port of [Gitleaks](https://github.com/gitleaks/gi
 
 | Rule | Detects | Source |
 | --- | --- | --- |
-| `private-key` | PEM/OpenSSH/PGP `PRIVATE KEY` header followed by a base64 body (raw or JSON-escaped newlines) | Gitleaks `private-key`, tightened |
+| `private-key` | A PEM/OpenSSH/PGP `PRIVATE KEY` block from the header through the `END` line (raw or JSON-escaped newlines) | Gitleaks `private-key`, tightened |
 | `private-key-base64` | Base64 that decodes to a PEM private key (kubeconfig `client-key-data`, CRD fields); certificates and CSRs are rejected by decoding | local |
 | `aws-access-key-id` | `AKIA`/`ASIA`/`ABIA`/`ACCA`/`A3T…` key ids, excluding `…EXAMPLE` | Gitleaks `aws-access-token` |
 | `aws-secret-access-key` | 40-char secret after an `aws…secret` assignment, or under an `…secret_access_key` field | local heuristic |
@@ -119,17 +124,17 @@ Spurious matches elsewhere in the positive host objects: 0.
 
 Hard negatives still flagged at the default 3.0: `$.token` (generic-keyed-field), `$.secret` (generic-keyed-field), `$.accessKey` (generic-keyed-field).
 
-### Redact vs withhold: response bytes kept on a true positive
+### Redaction: response bytes kept on a true positive (withholding would keep 0%)
 
-| Placement | Cases | Redact: median bytes kept | Redact: min bytes kept | Withhold |
-| --- | ---: | ---: | ---: | ---: |
-| env | 41 | 99% | 67% | 0% |
-| configmap-data | 41 | 96% | 30% | 0% |
-| annotation | 41 | 99% | 67% | 0% |
-| crd-spec | 41 | 98% | 55% | 0% |
-| container-arg | 41 | 99% | 67% | 0% |
-| last-applied-json | 41 | 78% | 29% | 0% |
-| label | 11 | 100% | 99% | 0% |
+| Placement | Cases | Median bytes kept | Min bytes kept |
+| --- | ---: | ---: | ---: |
+| env | 41 | 100% | 67% |
+| configmap-data | 41 | 98% | 31% |
+| annotation | 41 | 100% | 67% |
+| crd-spec | 41 | 99% | 55% |
+| container-arg | 41 | 100% | 67% |
+| last-applied-json | 41 | 98% | 36% |
+| label | 11 | 100% | 99% |
 
 ### Known gaps (evasion corpus)
 
@@ -155,12 +160,11 @@ Hard negatives still flagged at the default 3.0: `$.token` (generic-keyed-field)
 
 | Output | Size | Strings | Serialize (baseline) | Scan | Scan throughput |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Typical Deployment GET | 4.3 KiB | 95 | 0.03 ms | 0.30 ms | 14 MiB/s |
-| CNPG Cluster GET | 2.5 KiB | 54 | 0.02 ms | 0.19 ms | 13 MiB/s |
-| LIST summary, 100 items | 7.9 KiB | 401 | 0.06 ms | 0.90 ms | 9 MiB/s |
-| ConfigMap, one ~1 MiB config text | 1032.1 KiB | 2 | 3.19 ms | 11.72 ms | 86 MiB/s |
-| ConfigMap, 5,000 small keys | 663.9 KiB | 5001 | 2.57 ms | 15.59 ms | 42 MiB/s |
-| HelmRelease, ~1 MiB nested values | 1000.4 KiB | 31021 | 11.81 ms | 34.03 ms | 29 MiB/s |
+| Typical Deployment GET | 4.3 KiB | 95 | 0.03 ms | 0.24 ms | 18 MiB/s |
+| CNPG Cluster GET | 2.5 KiB | 54 | 0.02 ms | 0.15 ms | 16 MiB/s |
+| ConfigMap, one ~1 MiB config text | 1032.1 KiB | 2 | 4.04 ms | 17.67 ms | 57 MiB/s |
+| ConfigMap, 5,000 small keys | 663.9 KiB | 5001 | 2.53 ms | 13.98 ms | 46 MiB/s |
+| HelmRelease, ~1 MiB nested values | 1000.4 KiB | 31021 | 12.17 ms | 32.11 ms | 30 MiB/s |
 
 ### Pathological 1 MiB inputs (single string value; per-match timeout 250 ms)
 
@@ -169,14 +173,14 @@ Hard negatives still flagged at the default 3.0: `$.token` (generic-keyed-field)
 | 1 MiB of 'a' | 15 ms | no match |
 | repeated 'password=' (keyword, no value) | 56 ms | no match |
 | repeated 'password=aaaaaaaa ' (rejected values) | 42 ms | no match |
-| repeated '-----BEGIN ' (no PRIVATE KEY) | 17 ms | no match |
-| repeated PEM header without body | 29 ms | no match |
+| repeated '-----BEGIN ' (no PRIVATE KEY) | 19 ms | no match |
+| repeated PEM header without body | 30 ms | no match |
 | repeated 'a://b:' (URL without '@') | 5 ms | no match |
-| repeated 'eyAAAAAAAAAAAAAAAAA.' (JWT-like) | 166 ms | no match |
-| 'LS0tLS1CRUdJTi' + 1 MiB base64 | 23 ms | no match |
-| repeated 'aws_secret' (AWS keyword chain) | 147 ms | no match |
+| repeated 'eyAAAAAAAAAAAAAAAAA.' (JWT-like) | 170 ms | no match |
+| 'LS0tLS1CRUdJTi' + 1 MiB base64 | 24 ms | no match |
+| repeated 'aws_secret' (AWS keyword chain) | 143 ms | no match |
 | repeated 'Bearer ' (no token) | 34 ms | no match |
-| repeated 'xoxb-1234567890-' (Slack prefix) | 7 ms | match: slack-token |
+| repeated 'xoxb-1234567890-' (Slack prefix) | 19 ms | 13107 matches: slack-token |
 
 These times are per-string totals across all candidate matches. Every pattern uses bounded quantifiers, and no single match call came near the 250 ms timeout. `RegexTimeoutFailsClosed` injects a catastrophic `^(a+)+$` rule to show that a timeout withholds the result with `credential_scan_failed`. The Slack row matches because the garbage is Slack-shaped.
 
@@ -197,9 +201,10 @@ The fixes are the digest-key, `namespace/name`, and env-reference exclusions, pl
 
 Tool outputs were fetched from the deployed kube-mcp: every LIST and every listed object's GET, across 13 policy-admitted namespaces and 46 mapped resources. The deployed version fingerprints only Secret data, so env values, ConfigMaps, and last-applied annotations were raw. The outputs were scanned locally with `SecretScannerHeldOutEvaluation` (`KUBE_MCP_SCANNER_CORPUS_DIR=<dir>`) and never committed. Values were inspected only as masked shapes.
 
-| Outputs | String values | Matches | Scan p50 / p95 / max | Largest output |
-| ---: | ---: | ---: | --- | ---: |
-| 994 (526 GETs, 468 LISTs) | 32,383 | **0** | 0.06 / 0.66 / 8.2 ms | 157 KiB |
+| Scope | Outputs | String values | Matches | Scan p50 / p95 / max |
+| --- | ---: | ---: | ---: | --- |
+| GET only (what is scanned now) | 526 | 28,352 | **0** | 0.10 / 1.08 / 7.3 ms |
+| GET and LIST (first run, before LISTs were skipped) | 994 | 32,383 | **0** | 0.06 / 0.66 / 8.2 ms |
 
 The objects included 154 Events, 54 ConfigMaps, 53 Pods, 38 Secrets, 32 Kustomizations, 16 Deployments, 16 CNPG Backups, 8 HelmReleases, and cert-manager, Gateway API, and Traefik objects.
 
@@ -241,12 +246,7 @@ Layer 1 is the stronger control for env and ConfigMap values because it does not
 
 ## Redact vs withhold
 
-The two modes share the same detector, so neither changes what is detected. They differ in what a match costs:
-
-- **Redact** kept a median of 96–100% of response bytes per placement on true positives. Whole-field replacement of a large config blob or last-applied annotation can drop most of the object: the minimum kept was 29%. A false positive costs one field, and the marker tells the agent why the value is missing.
-- **Withhold** keeps 0%. Every false positive becomes an outage of that object for the agent. Its one security advantage is incidental: it also hides *undetected* credentials that happen to share an object with a detected one.
-
-**Decision: redact, and fail closed (withhold) only on scan errors and timeouts.** The scanner is a best-effort backstop behind Secret sanitization, not a boundary. Its false-positive cost should stay small enough that the generic rules can remain enabled, and protecting co-located secrets is layer 1's job, not something to get by coincidence. Replace the whole field rather than a substring, because generic-rule match boundaries are approximate. Substring redaction could be considered later, only for exact-format rules such as PEM blocks and provider tokens, to keep the rest of large config files.
+The decision was to redact. The redaction table above measures the cost: on true positives the median response keeps 98–100% of its bytes per placement. The minimum, 31%, is a large config value redacted whole by a generic rule. Withholding would keep 0%, turning every false positive into an outage of that object for the agent. Its one security advantage is incidental: it also hides *undetected* credentials that happen to share an object with a detected one, which is layer 1's job. Scan errors and timeouts still fail closed and withhold the result.
 
 ## What production would require
 
@@ -258,8 +258,3 @@ The two modes share the same detector, so neither changes what is detected. They
 - **Coordination with layer 1:** if layer 1 introduces another safe-value shape, extend `IsKubeMcpSafeValue`.
 - **Documentation and end-to-end coverage:** a kind e2e case with the scanner enabled, and security/configuration documentation beyond this POC's minimal entries.
 - **Allowlists only if needed.** Per-rule disabling exists. Add path or key allowlists only if real false positives require them; the simplicity mandate applies.
-
-## Open questions
-
-1. Should namespace discovery and summary LISTs skip scanning? Today they are scanned, at negligible cost and with no expected matches.
-2. Should exact-format rules redact only the matched substring, so the rest of a large config file survives? Today the whole field is replaced.

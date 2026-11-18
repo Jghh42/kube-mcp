@@ -104,6 +104,65 @@ public sealed class KnownFormatSecretScannerTests
             paths);
     }
 
+    public static TheoryData<string, string> RedactionCases()
+    {
+        var token = "gh" + "p_" + "Q7v9xLr2mZp4TkV9b2Qx7LmN4pR8sT1wYz3c";
+        var password = "Xk2mQ9vL7pR4tW8z";
+        var pemBody = string.Concat(Enumerable.Repeat("MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7", 3));
+        var pem = "-----BEGIN " + "PRIVATE KEY-----\n" + pemBody + "\n" + pemBody + "\n-----END " + "PRIVATE KEY-----";
+        return new TheoryData<string, string>
+        {
+            { "LOG=info\nGITHUB_TOKEN=" + token + "\nX=1", "LOG=info\nGITHUB_TOKEN=[redacted:github-token]\nX=1" },
+            { "a " + token + " b " + token, "a [redacted:github-token] b [redacted:github-token]" },
+            { "postgres://app:" + password + "@db:5432/app", "postgres://app:[redacted:url-credentials]@db:5432/app" },
+            { "tls:\n  key: |\n" + pem + "\n  cert: ok", "tls:\n  key: |\n[redacted:private-key]\n  cert: ok" },
+            { "server: db\npassword: " + password + "\n", "[redacted:generic-assignment]" },
+        };
+    }
+
+    [Theory]
+    [MemberData(nameof(RedactionCases))]
+    public void ExactFormatsRedactOnlyTheMatchedTextAndGenericRulesTheWholeValue(string value, string expected)
+    {
+        var root = new JsonObject { ["data"] = new JsonObject { ["config"] = value } };
+
+        KnownFormatSecretScanner.Redact(KnownFormatSecretScanner.Scan(root, CancellationToken.None));
+
+        Assert.Equal(expected, root["data"]!["config"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void EmbeddedJsonIsRedactedAsATreeAndReserialized()
+    {
+        var token = "gh" + "p_" + "Q7v9xLr2mZp4TkV9b2Qx7LmN4pR8sT1wYz3c";
+        var applied = new JsonObject
+        {
+            ["kind"] = "ConfigMap",
+            ["data"] = new JsonObject
+            {
+                ["API_TOKEN"] = "V9b2Qx7LmN4pR8sT1wYz3cKd",
+                ["script"] = "curl -H 'X-Token: none' && echo " + token,
+                ["LOG_LEVEL"] = "info"
+            }
+        };
+        var root = new JsonObject
+        {
+            ["metadata"] = new JsonObject
+            {
+                ["annotations"] = new JsonObject { ["kubectl.kubernetes.io/last-applied-configuration"] = applied.ToJsonString() }
+            }
+        };
+
+        var matches = KnownFormatSecretScanner.Scan(root, CancellationToken.None);
+        KnownFormatSecretScanner.Redact(matches);
+
+        Assert.All(matches, match => Assert.Equal("$.metadata.annotations['kubectl.kubernetes.io/last-applied-configuration']", match.Path));
+        var redacted = JsonNode.Parse(root["metadata"]!["annotations"]!["kubectl.kubernetes.io/last-applied-configuration"]!.GetValue<string>())!;
+        Assert.Equal("[redacted:generic-keyed-field]", redacted["data"]!["API_TOKEN"]!.GetValue<string>());
+        Assert.Equal("curl -H 'X-Token: none' && echo [redacted:github-token]", redacted["data"]!["script"]!.GetValue<string>());
+        Assert.Equal("info", redacted["data"]!["LOG_LEVEL"]!.GetValue<string>());
+    }
+
     [Fact]
     public void RegexTimeoutFailsClosed()
     {
@@ -237,6 +296,29 @@ public sealed class CredentialScannerReaderTests
     }
 
     [Fact]
+    public async Task ListSummariesAreNotScanned()
+    {
+        var logger = new ListLogger();
+        using var host = Host(GitHubToken, logger: logger);
+        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(KubernetesJson.ListBody(
+            [new JsonObject
+            {
+                ["apiVersion"] = "v1",
+                ["kind"] = "Secret",
+                ["metadata"] = new JsonObject { ["name"] = "tokens", ["namespace"] = "prod" },
+                ["data"] = new JsonObject { [GitHubToken] = "AA==" }
+            }.ToJsonString()],
+            null,
+            "v1",
+            "SecretList"));
+
+        var result = await host.Reader.ReadAsync("secrets", "prod", null, CancellationToken.None);
+
+        Assert.Contains(GitHubToken, result.Json);
+        Assert.Empty(logger.Messages);
+    }
+
+    [Fact]
     public async Task SanitizedSecretGetWithKnownFormatValuesIsUnchanged()
     {
         using var host = Host(GitHubToken);
@@ -351,27 +433,10 @@ public sealed class SecretScannerHeldOutEvaluation
         File.WriteAllText(Path.Combine(directory, "scan-report.md"), builder.ToString());
     }
 
-    // Shape only: letters become a/A, digits 9; matches inside embedded JSON
-    // documents are re-scanned to name the inner leaf.
-    private static string Describe(KnownFormatSecretScanner.ScanMatch match)
-    {
-        var value = match.Node.GetValue<string>();
-        if (value.TrimStart().StartsWith('{') || value.TrimStart().StartsWith('['))
-        {
-            try
-            {
-                var inner = KnownFormatSecretScanner.Scan(JsonNode.Parse(value), CancellationToken.None)
-                    .Where(innerMatch => innerMatch.RuleId == match.RuleId)
-                    .Select(innerMatch => $"embedded `{innerMatch.Path}` {Mask(innerMatch.Node.GetValue<string>())}");
-                return string.Join("<br>", inner);
-            }
-            catch (JsonException)
-            {
-            }
-        }
-
-        return Mask(value);
-    }
+    // Shape only: letters become a/A, digits 9. For a match inside an embedded
+    // JSON document, the inner path names the leaf.
+    private static string Describe(KnownFormatSecretScanner.ScanMatch match) =>
+        (match.Embedding is null ? "" : $"embedded `{match.Node.GetPath()}` ") + Mask(match.Node.GetValue<string>());
 
     private static string Mask(string value)
     {
@@ -524,24 +589,21 @@ internal static class SecretScannerEvaluation
 
     private static void AppendRedactionCostTable(StringBuilder builder, SecretScannerCorpus corpus)
     {
-        builder.AppendLine("### Redact vs withhold: response bytes kept on a true positive");
+        builder.AppendLine("### Redaction: response bytes kept on a true positive (withholding would keep 0%)");
         builder.AppendLine();
-        builder.AppendLine("| Placement | Cases | Redact: median bytes kept | Redact: min bytes kept | Withhold |");
-        builder.AppendLine("| --- | ---: | ---: | ---: | ---: |");
+        builder.AppendLine("| Placement | Cases | Median bytes kept | Min bytes kept |");
+        builder.AppendLine("| --- | ---: | ---: | ---: |");
         foreach (var group in corpus.Positives.GroupBy(positive => positive.Placement))
         {
             var kept = group.Select(positive =>
             {
                 var clone = positive.Root.DeepClone();
                 var original = Encoding.UTF8.GetByteCount(clone.ToJsonString());
-                foreach (var match in Scan(clone).DistinctBy(match => match.Node))
-                {
-                    match.Node.ReplaceWith(KnownFormatSecretScanner.RedactionMarker(match.RuleId));
-                }
+                KnownFormatSecretScanner.Redact(Scan(clone));
 
                 return (double)Encoding.UTF8.GetByteCount(clone.ToJsonString()) / original;
             }).Order().ToList();
-            builder.AppendLine($"| {group.Key} | {kept.Count} | {kept[kept.Count / 2]:P0} | {kept[0]:P0} | 0% |");
+            builder.AppendLine($"| {group.Key} | {kept.Count} | {kept[kept.Count / 2]:P0} | {kept[0]:P0} |");
         }
 
         builder.AppendLine();
@@ -595,7 +657,9 @@ internal static class SecretScannerEvaluation
             try
             {
                 var matches = Scan(root);
-                outcome = matches.Count == 0 ? "no match" : "match: " + string.Join(", ", matches.Select(match => match.RuleId));
+                outcome = matches.Count == 0
+                    ? "no match"
+                    : $"{matches.Count} matches: " + string.Join(", ", matches.Select(match => match.RuleId).Distinct());
             }
             catch (KubernetesReadException)
             {
@@ -635,14 +699,6 @@ internal static class SecretScannerEvaluation
         const int target = 1000 * 1024;
         yield return ("Typical Deployment GET", corpus.Negatives[0].Root);
         yield return ("CNPG Cluster GET", corpus.Negatives.Single(negative => negative.Name.StartsWith("cluster/", StringComparison.Ordinal)).Root);
-
-        var list = new JsonArray();
-        for (var i = 0; i < 100; i++)
-        {
-            list.Add(new JsonObject { ["name"] = $"app-{i}-7d9f8b6c5d-x2v7q", ["namespace"] = "media", ["kind"] = "Pod", ["age"] = "12d" });
-        }
-
-        yield return ("LIST summary, 100 items", new JsonObject { ["operation"] = "LIST", ["items"] = list, ["count"] = 100, ["limited"] = false });
 
         var text = new StringBuilder();
         for (var i = 0; text.Length < target; i++)

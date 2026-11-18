@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -26,23 +27,43 @@ internal static partial class KnownFormatSecretScanner
     private const int MatchTimeoutMilliseconds = 250;
     private const int MaxGenericValueLength = 256;
 
-    internal readonly record struct ScanMatch(JsonNode Node, string RuleId)
+    /// <summary>
+    /// A credential at <paramref name="Index"/>/<paramref name="Length"/> of the
+    /// string <paramref name="Node"/>. Exact-format matches redact only that text;
+    /// generic (<paramref name="WholeValue"/>) matches redact the whole value.
+    /// </summary>
+    /// <param name="Path">The path of the outermost string value in the tool output.</param>
+    internal readonly record struct ScanMatch(
+        JsonNode Node,
+        string RuleId,
+        int Index,
+        int Length,
+        bool WholeValue,
+        EmbeddedDocument? Embedding,
+        string Path);
+
+    /// <summary>A JSON document parsed from the string value <see cref="Owner"/>.</summary>
+    internal sealed record EmbeddedDocument(JsonNode Owner, JsonNode Root, EmbeddedDocument? Parent)
     {
-        public string Path => Node.GetPath();
+        public int Depth => Parent is null ? 0 : Parent.Depth + 1;
     }
 
     /// <param name="Accept">
     /// Validates the <c>value</c> group (or whole match); the second argument is the
     /// Shannon-entropy threshold that only the generic rules apply.
     /// </param>
+    /// <param name="WholeValue">
+    /// Generic rules have approximate boundaries, so they redact the whole value.
+    /// </param>
     internal sealed record ValueRule(
         string Id,
         Regex Pattern,
-        Func<string, double, bool> Accept);
+        Func<string, double, bool> Accept,
+        bool WholeValue = false);
 
     internal static readonly ValueRule[] ValueRules =
     [
-        // gitleaks: private-key (header plus the start of a base64 body).
+        // gitleaks: private-key (header through the END line or end of body).
         new("private-key", PrivateKeyRegex(), static (_, _) => true),
         new("private-key-base64", Base64PemRegex(), static (value, _) => IsBase64PrivateKey(value)),
         // gitleaks: aws-access-token
@@ -69,17 +90,17 @@ internal static partial class KnownFormatSecretScanner
             static (value, _) => value.Length >= 3 && !IsPlaceholder(value)),
         // gitleaks: age-secret-key
         new("age-secret-key", AgeSecretKeyRegex(), static (_, _) => true),
-        new("bearer-token", BearerTokenRegex(), IsNonTrivialGenericValue),
+        new("bearer-token", BearerTokenRegex(), IsNonTrivialGenericValue, WholeValue: true),
         // gitleaks: generic-api-key (simplified: keyword must end the key token).
-        new("generic-assignment", GenericAssignmentRegex(), IsNonTrivialGenericValue),
+        new("generic-assignment", GenericAssignmentRegex(), IsNonTrivialGenericValue, WholeValue: true),
     ];
 
     internal static IEnumerable<string> RuleIds =>
         ValueRules.Select(rule => rule.Id).Append(KeyedFieldRuleId).Distinct(StringComparer.Ordinal);
 
     /// <summary>
-    /// Returns at most one match per rule per string value. A regex timeout fails
-    /// closed with a fixed safe category.
+    /// Returns every exact-format match and at most one generic match per rule per
+    /// string value. A regex timeout fails closed with a fixed safe category.
     /// </summary>
     internal static List<ScanMatch> Scan(
         JsonNode? root,
@@ -97,7 +118,7 @@ internal static partial class KnownFormatSecretScanner
             matches);
         try
         {
-            Visit(root, keyContext: null, owner: null, context, cancellationToken);
+            Visit(root, keyContext: null, embedding: null, context, cancellationToken);
         }
         catch (RegexMatchTimeoutException)
         {
@@ -109,14 +130,10 @@ internal static partial class KnownFormatSecretScanner
         return matches;
     }
 
-    /// <param name="owner">
-    /// The outer string value when visiting a JSON document embedded in a string;
-    /// matches are reported against, and redact, that outer value.
-    /// </param>
     private static void Visit(
         JsonNode? node,
         string? keyContext,
-        JsonNode? owner,
+        EmbeddedDocument? embedding,
         ScanContext context,
         CancellationToken cancellationToken)
     {
@@ -129,7 +146,7 @@ internal static partial class KnownFormatSecretScanner
                     var childKey = name == "value" && StringValue(jsonObject["name"]) is { } siblingName
                         ? siblingName
                         : name;
-                    Visit(child, childKey, owner, context, cancellationToken);
+                    Visit(child, childKey, embedding, context, cancellationToken);
                 }
 
                 break;
@@ -141,7 +158,7 @@ internal static partial class KnownFormatSecretScanner
                     var childKey = previous is { Length: > 1 } flag && flag[0] == '-' && !flag.Contains('=')
                         ? flag.TrimStart('-')
                         : null;
-                    Visit(child, childKey, owner, context, cancellationToken);
+                    Visit(child, childKey, embedding, context, cancellationToken);
                     previous = StringValue(child);
                 }
 
@@ -152,11 +169,11 @@ internal static partial class KnownFormatSecretScanner
                 {
                     // For example kubectl.kubernetes.io/last-applied-configuration:
                     // scan it as a tree so keys and escaped newlines are decoded.
-                    Visit(embedded, keyContext: null, owner ?? node, context, cancellationToken);
+                    Visit(embedded, keyContext: null, new EmbeddedDocument(node, embedded, embedding), context, cancellationToken);
                 }
                 else
                 {
-                    ScanString(owner ?? node, value, keyContext, context, cancellationToken);
+                    ScanString(node, value, keyContext, embedding, context, cancellationToken);
                 }
 
                 break;
@@ -167,6 +184,7 @@ internal static partial class KnownFormatSecretScanner
         JsonNode node,
         string value,
         string? keyContext,
+        EmbeddedDocument? embedding,
         ScanContext context,
         CancellationToken cancellationToken)
     {
@@ -183,10 +201,15 @@ internal static partial class KnownFormatSecretScanner
                 // deadline bounds the number of rejected candidates.
                 cancellationToken.ThrowIfCancellationRequested();
                 var group = match.Groups["value"];
-                if (rule.Accept(group.Success ? group.Value : match.Value, context.MinEntropy))
+                var credential = group.Success ? group : match;
+                if (rule.Accept(credential.Value, context.MinEntropy))
                 {
-                    context.Matches.Add(new ScanMatch(node, rule.Id));
-                    break;
+                    context.Matches.Add(new ScanMatch(
+                        node, rule.Id, credential.Index, credential.Length, rule.WholeValue, embedding, OutermostPath(node, embedding)));
+                    if (rule.WholeValue)
+                    {
+                        break;
+                    }
                 }
             }
         }
@@ -198,7 +221,7 @@ internal static partial class KnownFormatSecretScanner
 
         if (context.AwsKeyedRule && AwsSecretKeyNameRegex().IsMatch(keyContext) && AwsSecretValueRegex().IsMatch(value))
         {
-            context.Matches.Add(new ScanMatch(node, AwsSecretRuleId));
+            context.Matches.Add(new ScanMatch(node, AwsSecretRuleId, 0, value.Length, false, embedding, OutermostPath(node, embedding)));
         }
 
         if (context.KeyedFieldRule &&
@@ -206,7 +229,96 @@ internal static partial class KnownFormatSecretScanner
             !DigestKeyNameRegex().IsMatch(keyContext) &&
             IsNonTrivialGenericValue(value, context.MinEntropy))
         {
-            context.Matches.Add(new ScanMatch(node, KeyedFieldRuleId));
+            context.Matches.Add(new ScanMatch(node, KeyedFieldRuleId, 0, value.Length, true, embedding, OutermostPath(node, embedding)));
+        }
+    }
+
+    /// <summary>
+    /// Redacts matches in place. Exact-format matches replace only the matched text.
+    /// A generic match replaces the whole value unless exact-format matches already
+    /// cover its credential text. Embedded JSON documents are redacted as trees and
+    /// re-serialized into their owning string.
+    /// </summary>
+    internal static void Redact(IReadOnlyList<ScanMatch> matches)
+    {
+        foreach (var group in matches.GroupBy(match => match.Node))
+        {
+            var value = group.Key.GetValue<string>();
+            var exact = group.Where(match => !match.WholeValue).OrderBy(match => match.Index).ToList();
+            var whole = group.FirstOrDefault(match => match.WholeValue && !IsCovered(match, exact));
+            if (whole.Node is not null)
+            {
+                group.Key.ReplaceWith(RedactionMarker(whole.RuleId));
+                continue;
+            }
+
+            var redacted = new StringBuilder(value.Length);
+            var position = 0;
+            foreach (var match in exact)
+            {
+                var end = match.Index + match.Length;
+                if (end <= position)
+                {
+                    continue;
+                }
+
+                if (match.Index >= position)
+                {
+                    redacted.Append(value, position, match.Index - position).Append(RedactionMarker(match.RuleId));
+                }
+
+                position = end;
+            }
+
+            group.Key.ReplaceWith(redacted.Append(value, position, value.Length - position).ToString());
+        }
+
+        // Innermost documents first, so outer documents serialize redacted inner text.
+        var documents = matches
+            .SelectMany(match => Ancestors(match.Embedding))
+            .Distinct()
+            .OrderByDescending(document => document.Depth);
+        foreach (var document in documents)
+        {
+            document.Owner.ReplaceWith(document.Root.ToJsonString(EmbeddedSerializerOptions));
+        }
+    }
+
+    private static readonly JsonSerializerOptions EmbeddedSerializerOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    private static bool IsCovered(ScanMatch match, List<ScanMatch> exact)
+    {
+        // Exact spans are sorted; extend a covered prefix across adjacent spans.
+        var covered = match.Index;
+        foreach (var span in exact)
+        {
+            if (span.Index <= covered && span.Index + span.Length > covered)
+            {
+                covered = span.Index + span.Length;
+            }
+        }
+
+        return covered >= match.Index + match.Length;
+    }
+
+    private static string OutermostPath(JsonNode node, EmbeddedDocument? embedding)
+    {
+        for (; embedding is not null; embedding = embedding.Parent)
+        {
+            node = embedding.Owner;
+        }
+
+        return node.GetPath();
+    }
+
+    private static IEnumerable<EmbeddedDocument> Ancestors(EmbeddedDocument? document)
+    {
+        for (; document is not null; document = document.Parent)
+        {
+            yield return document;
         }
     }
 
@@ -349,9 +461,11 @@ internal static partial class KnownFormatSecretScanner
 
     // Newlines may appear literally or JSON-escaped (for example inside the
     // kubectl last-applied-configuration annotation).
+    // The body class excludes '-', so it stops at the END line in linear time.
     [GeneratedRegex(
         @"-----BEGIN[ A-Z0-9]{0,40}PRIVATE KEY(?: BLOCK)?-----(?:\s|\\[rn]){1,4}" +
-        @"(?:[A-Za-z-]{1,40}:[^\r\n\\]{1,200}(?:\s|\\[rn]){1,4}){0,4}[A-Za-z0-9+/=]{32}",
+        @"(?:[A-Za-z-]{1,40}:[^\r\n\\]{1,200}(?:\s|\\[rn]){1,4}){0,4}[A-Za-z0-9+/=]{32}[A-Za-z0-9+/=\s\\]{0,65536}" +
+        @"(?:-----END[ A-Z0-9]{0,40}PRIVATE KEY(?: BLOCK)?-----)?",
         Options, MatchTimeoutMilliseconds)]
     private static partial Regex PrivateKeyRegex();
 

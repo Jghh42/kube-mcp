@@ -35,7 +35,7 @@ Raw Kubernetes Secret values are never returned:
 - LIST uses a dedicated safe summary with the Secret name, type, key names, and age; it returns neither values nor fingerprints.
 - GET replaces each value with a keyed HMAC-SHA256 fingerprint.
 
-As a last resort, a deterministic [credential scanner](adr/0002-known-format-credential-scanner-poc.md) checks every tool output's string values for known credential formats and replaces matching values with `[redacted:<rule-id>]`. It recognizes formats only, so it cannot catch arbitrary passwords. If the scan cannot complete, the result is withheld.
+As a last resort, a deterministic [credential scanner](adr/0002-known-format-credential-scanner-poc.md) checks the string values of detailed GET output for known credential formats. It replaces exact-format matches with `[redacted:<rule-id>]`, and replaces the whole value for generic keyword-based matches. It recognizes formats only, so it cannot catch arbitrary passwords. If the scan cannot complete, the result is withheld.
 
 The HMAC key remains on the server. Keep it stable only when fingerprints need to be comparable across restarts. Logs and audit records never contain Secret values or fingerprints.
 
