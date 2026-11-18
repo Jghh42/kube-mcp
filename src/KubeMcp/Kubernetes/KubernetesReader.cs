@@ -26,6 +26,8 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     private const string ListCount = "],\"count\":";
     private const string ListLimited = ",\"limited\":";
     private const string ListSuffix = "}";
+    private const int MaxLoggedCredentialMatches = 20;
+    private const int MaxLoggedPathLength = 256;
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -52,6 +54,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     private readonly NamespaceAccessPolicy namespacePolicy;
     private readonly KubeMcpOptions options;
     private readonly ILogger<KubernetesReader> logger;
+    private readonly HashSet<string> disabledCredentialRules;
 
     public KubernetesReader(
         SecretSanitizer secretSanitizer,
@@ -68,6 +71,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         this.namespacePolicy = namespacePolicy;
         this.options = options.Value;
         this.logger = logger ?? NullLogger<KubernetesReader>.Instance;
+        disabledCredentialRules = this.options.CredentialScanner.DisabledRules.ToHashSet(StringComparer.Ordinal);
 
         var factory = clientFactory ?? new KubernetesClientFactory(this.options);
         api = factory.Create();
@@ -130,6 +134,13 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         try
         {
             var safeResult = await read(timeout.Token).ConfigureAwait(false);
+            if (!isList)
+            {
+                // LIST and namespace summaries carry only names, types, key
+                // names, and ages, so only detailed GET output is scanned.
+                ApplyCredentialScan(safeResult, timeout.Token);
+            }
+
             var json = safeResult.ToJsonString(SerializerOptions);
             if (Encoding.UTF8.GetByteCount(json) > options.MaxResponseBytes)
             {
@@ -177,6 +188,43 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
                 KubernetesErrorCategory.Internal);
         }
     }
+
+    /// <summary>
+    /// Scans the final safe GET tree before the output-size guard, so a redaction
+    /// marker that grows the output is still bounded.
+    /// </summary>
+    private void ApplyCredentialScan(JsonNode safeResult, CancellationToken cancellationToken)
+    {
+        if (!options.CredentialScanner.Enabled)
+        {
+            return;
+        }
+
+        var matches = KnownFormatSecretScanner.Scan(
+            safeResult,
+            cancellationToken,
+            disabledRules: disabledCredentialRules);
+        if (matches.Count == 0)
+        {
+            return;
+        }
+
+        // Rule ids and JSONPaths support rule tuning; values are never logged.
+        // Credential-like map keys are wildcarded, and paths are bounded and sanitized.
+        logger.LogWarning(
+            "Credential scanner redacted {MatchCount} value(s): {Matches}",
+            matches.Count,
+            string.Join("; ", matches.Take(MaxLoggedCredentialMatches).Select(match =>
+                $"{match.RuleId} {SafeLogValue(KnownFormatSecretScanner.LogPath(match))}")) +
+                (matches.Count > MaxLoggedCredentialMatches ? $"; +{matches.Count - MaxLoggedCredentialMatches} more" : ""));
+
+        KnownFormatSecretScanner.Redact(matches);
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    private static string SafeLogValue(string value) =>
+        string.Concat(value[..Math.Min(value.Length, MaxLoggedPathLength)].Select(character =>
+            char.IsControl(character) ? ' ' : character));
 
     private async Task<JsonNode> GetAsync(
         KubernetesResourceDescriptor descriptor,

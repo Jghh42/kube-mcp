@@ -43,6 +43,9 @@ public enum KubernetesErrorCategory
     /// <summary>The upstream response exceeded the configured body/output size limit.</summary>
     ResponseTooLarge,
 
+    /// <summary>The credential scan did not complete, so the output was withheld.</summary>
+    CredentialScanFailed,
+
     /// <summary>An unhandled internal failure that did not fit another category.</summary>
     Internal,
 }

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using KubeMcp.Security;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
@@ -95,6 +96,22 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         {
             return ValidateOptionsResult.Fail(
                 $"{KubeMcpOptions.SectionName}:OverallMcpRequestTimeoutSeconds must be greater than KubernetesRequestTimeoutSeconds so the end-to-end deadline leaves time for MCP error serialization and audit publication.");
+        }
+
+        if (options.CredentialScanner is null)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{KubeMcpOptions.SectionName}:CredentialScanner is required.");
+        }
+
+        var knownRules = KnownFormatSecretScanner.RuleIds.ToHashSet(StringComparer.Ordinal);
+        foreach (var rule in options.CredentialScanner.DisabledRules ?? [])
+        {
+            if (rule is null || !knownRules.Contains(rule))
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{KubeMcpOptions.SectionName}:CredentialScanner:DisabledRules contains unknown rule \"{rule}\".");
+            }
         }
 
         return ValidateAuthentication(options.Authentication);
