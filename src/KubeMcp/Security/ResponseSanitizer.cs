@@ -2,13 +2,25 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using KubeMcp.Configuration;
 using KubeMcp.Kubernetes;
+using Microsoft.Extensions.Options;
 
 namespace KubeMcp.Security;
 
-public sealed class SecretSanitizer(SecretFingerprinter fingerprinter)
+public sealed class ResponseSanitizer(
+    SecretFingerprinter fingerprinter,
+    IOptions<KubeMcpOptions> options)
 {
-    internal JsonObject SanitizeGet(JsonElement secret)
+    private const string LastAppliedConfigurationAnnotation =
+        "kubectl.kubernetes.io/last-applied-configuration";
+
+    private readonly HashSet<string> plaintextEnvVars =
+        new(options.Value.PlaintextEnvVars ?? [], StringComparer.Ordinal);
+    private readonly HashSet<string> plaintextConfigMaps =
+        new(options.Value.PlaintextConfigMaps ?? [], StringComparer.Ordinal);
+
+    internal JsonObject SanitizeSecretGet(JsonElement secret)
     {
         var result = new JsonObject
         {
@@ -37,7 +49,31 @@ public sealed class SecretSanitizer(SecretFingerprinter fingerprinter)
         return result;
     }
 
-    internal JsonObject SanitizeListItem(JsonElement secret)
+    /// <summary>
+    /// Sanitizes a detailed non-Secret GET in place. The last-applied annotation
+    /// is dropped from every <c>annotations</c> object because it repeats a
+    /// previous object unsanitized. Every literal value in an <c>env</c> array
+    /// and ConfigMap <c>data</c>/<c>binaryData</c> values are fingerprinted
+    /// unless allowlisted.
+    /// </summary>
+    internal void SanitizeObjectGet(
+        JsonObject item,
+        KubernetesResourceDescriptor descriptor,
+        string @namespace,
+        string name)
+    {
+        if (descriptor.IsConfigMap)
+        {
+            // Validate every ConfigMap; only fingerprint those not allowlisted.
+            var fingerprint = !plaintextConfigMaps.Contains($"{@namespace}/{name}");
+            SanitizeConfigMapValues(item, "data", isBase64: false, fingerprint);
+            SanitizeConfigMapValues(item, "binaryData", isBase64: true, fingerprint);
+        }
+
+        SanitizeNestedFields(item);
+    }
+
+    internal JsonObject SanitizeSecretListItem(JsonElement secret)
     {
         var type = StringProperty(secret, "type");
         _ = BooleanProperty(secret, "immutable");
@@ -59,7 +95,7 @@ public sealed class SecretSanitizer(SecretFingerprinter fingerprinter)
         };
     }
 
-    internal void ValidateListItem(JsonElement secret)
+    internal void ValidateSecretListItem(JsonElement secret)
     {
         _ = StringProperty(secret, "type");
         _ = BooleanProperty(secret, "immutable");
@@ -129,6 +165,111 @@ public sealed class SecretSanitizer(SecretFingerprinter fingerprinter)
             {
                 CryptographicOperations.ZeroMemory(bytes);
             }
+        }
+    }
+
+    private void SanitizeConfigMapValues(
+        JsonObject configMap,
+        string propertyName,
+        bool isBase64,
+        bool fingerprint)
+    {
+        var values = configMap[propertyName];
+        if (values is null)
+        {
+            return;
+        }
+
+        if (values is not JsonObject entries)
+        {
+            throw InvalidConfigMapShapeException();
+        }
+
+        var fingerprints = new JsonObject();
+        foreach (var (key, value) in entries)
+        {
+            if (value is not JsonValue text || !text.TryGetValue<string>(out var content))
+            {
+                throw InvalidConfigMapShapeException();
+            }
+
+            byte[] bytes;
+            try
+            {
+                bytes = isBase64 ? Convert.FromBase64String(content) : Encoding.UTF8.GetBytes(content);
+            }
+            catch (FormatException)
+            {
+                throw InvalidConfigMapShapeException();
+            }
+
+            if (fingerprint)
+            {
+                fingerprints[key] = fingerprinter.Fingerprint(bytes);
+            }
+        }
+
+        if (fingerprint)
+        {
+            configMap[propertyName] = fingerprints;
+        }
+    }
+
+    // Walks the whole object so every pod template (including CronJob nesting,
+    // init/ephemeral containers, template metadata, and CRD fields that reuse
+    // EnvVar) is covered without per-kind paths.
+    private void SanitizeNestedFields(JsonNode? node)
+    {
+        switch (node)
+        {
+            case JsonObject properties:
+                foreach (var (propertyName, value) in properties)
+                {
+                    if (propertyName == "env" && value is JsonArray variables)
+                    {
+                        FingerprintEnvArray(variables);
+                    }
+                    else if (propertyName == "annotations" && value is JsonObject annotations)
+                    {
+                        annotations.Remove(LastAppliedConfigurationAnnotation);
+                    }
+
+                    SanitizeNestedFields(value);
+                }
+
+                break;
+            case JsonArray elements:
+                foreach (var element in elements)
+                {
+                    SanitizeNestedFields(element);
+                }
+
+                break;
+        }
+    }
+
+    private void FingerprintEnvArray(JsonArray variables)
+    {
+        foreach (var variable in variables)
+        {
+            if (variable is not JsonObject entry || entry["value"] is not { } value)
+            {
+                continue;
+            }
+
+            if (entry["name"] is JsonValue name &&
+                name.TryGetValue<string>(out var variableName) &&
+                plaintextEnvVars.Contains(variableName))
+            {
+                continue;
+            }
+
+            // A non-string value is not a valid EnvVar; fingerprint its JSON
+            // text rather than pass it through.
+            var text = value is JsonValue scalar && scalar.TryGetValue<string>(out var content)
+                ? content
+                : value.ToJsonString();
+            entry["value"] = fingerprinter.Fingerprint(Encoding.UTF8.GetBytes(text));
         }
     }
 
@@ -262,4 +403,7 @@ public sealed class SecretSanitizer(SecretFingerprinter fingerprinter)
 
     private static KubernetesReadException InvalidSecretShapeException() =>
         new("A Secret field had an invalid type.");
+
+    private static KubernetesReadException InvalidConfigMapShapeException() =>
+        new("A ConfigMap field had an invalid type.");
 }

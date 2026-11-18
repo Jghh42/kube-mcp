@@ -58,6 +58,23 @@ if grep -F 'kind: ClusterRole' "$tmp_dir/external-rbac.yaml" >/dev/null; then
   exit 1
 fi
 
+helm template plaintext "$chart" \
+  --namespace kube-mcp \
+  --set-string image.digest="$digest" \
+  --set-string 'plaintextEnvVars[0]=LOG_LEVEL' \
+  --set-string 'plaintextEnvVars[1]=TZ' \
+  --set-string 'plaintextEnvVars[2]=$(TOKEN)' \
+  --set-string 'plaintextConfigMaps[0]=team-a/kube-root-ca.crt' >"$tmp_dir/plaintext.yaml"
+grep -A1 -F 'name: "KubeMcp__PlaintextEnvVars__0"' "$tmp_dir/plaintext.yaml" | grep -F 'value: "LOG_LEVEL"' >/dev/null
+grep -A1 -F 'name: "KubeMcp__PlaintextEnvVars__1"' "$tmp_dir/plaintext.yaml" | grep -F 'value: "TZ"' >/dev/null
+grep -A1 -F 'name: "KubeMcp__PlaintextEnvVars__2"' "$tmp_dir/plaintext.yaml" | grep -F 'value: "$$(TOKEN)"' >/dev/null
+grep -A1 -F 'name: "KubeMcp__PlaintextConfigMaps__0"' "$tmp_dir/plaintext.yaml" |
+  grep -F 'value: "team-a/kube-root-ca.crt"' >/dev/null
+if grep -F 'KubeMcp__Plaintext' "$tmp_dir/production.yaml" >/dev/null; then
+  echo 'Default rendering unexpectedly contains a plaintext allowlist entry' >&2
+  exit 1
+fi
+
 helm template development "$chart" \
   --namespace development \
   --set dotnetEnvironment=Development \
@@ -89,6 +106,31 @@ expect_failure 'extraEnv must not override chart-managed variable allowedhosts' 
   --set dotnetEnvironment=Development \
   --set-string 'extraEnv[0].name=allowedhosts' \
   --set-string 'extraEnv[0].value=unsafe'
+expect_failure "at '/plaintextEnvVars/0'" \
+  --set dotnetEnvironment=Development \
+  --set-string 'plaintextEnvVars[0]=API_KEY=value'
+expect_failure "at '/plaintextConfigMaps/0'" \
+  --set dotnetEnvironment=Development \
+  --set-string 'plaintextConfigMaps[0]=*/kube-root-ca.crt'
+expect_failure 'extraEnv must not override chart-managed variable kubemcp__plaintextenvvars__0' \
+  --set dotnetEnvironment=Development \
+  --set-string 'extraEnv[0].name=kubemcp__plaintextenvvars__0' \
+  --set-string 'extraEnv[0].value=LOG_LEVEL'
+expect_failure 'extraEnv must not override chart-managed variable KubeMcp__PlaintextConfigMaps__0' \
+  --set dotnetEnvironment=Development \
+  --set-string 'extraEnv[0].name=KubeMcp__PlaintextConfigMaps__0' \
+  --set-string 'extraEnv[0].value=team-a/app-settings'
+expect_failure 'plaintextConfigMaps entry "team-a/' \
+  --set dotnetEnvironment=Development \
+  --set-string "plaintextConfigMaps[0]=team-a/$(printf 'a%.0s' {1..63}).$(printf 'b%.0s' {1..63}).$(printf 'c%.0s' {1..63}).$(printf 'd%.0s' {1..63})"
+expect_failure 'extraEnv must not override chart-managed variable KubeMcp:PlaintextEnvVars:0' \
+  --set dotnetEnvironment=Development \
+  --set-string 'extraEnv[0].name=KubeMcp:PlaintextEnvVars:0' \
+  --set-string 'extraEnv[0].value=PASSWORD'
+expect_failure 'extraEnv must not override chart-managed variable KubeMcp:Authentication:Mode' \
+  --set dotnetEnvironment=Development \
+  --set-string 'extraEnv[0].name=KubeMcp:Authentication:Mode' \
+  --set-string 'extraEnv[0].value=None'
 expect_failure "at '/crds/cnpg': got string, want boolean" \
   --set dotnetEnvironment=Development \
   --set-string crds.cnpg=true

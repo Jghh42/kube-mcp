@@ -17,6 +17,13 @@ public sealed class KindIntegrationTests
     private const string SecretValue = "correct-horse-battery-staple";
     private const string SecretUsername = "integration-user";
     private const string UpstreamSecretPrefix = "UPSTREAM-SECRET-BOUNDARY!!!";
+    private const string EnvValue = "env-value-must-not-leak";
+    private const string ConfigValue = "config-value-must-not-leak";
+
+    // managedFields still names the annotation as "f:kubectl.kubernetes.io/..."
+    // without its value; only the annotation key itself must be absent.
+    private const string LastAppliedAnnotationKey =
+        "\"kubectl.kubernetes.io/last-applied-configuration\"";
 
     [IntegrationTest]
     [Trait("Category", "Integration")]
@@ -143,6 +150,7 @@ public sealed class KindIntegrationTests
             AssertGenericListItem(item, "kube-mcp", "kube-mcp", "Service");
         }
 
+        // stage-ten is allowlisted by the harness; fingerprinted-config is not.
         var configMapGet = await CallAsync(client, "configmaps", "stage-ten");
         Assert.NotEqual(true, configMapGet.IsError);
         using (var json = ParseText(configMapGet))
@@ -150,6 +158,46 @@ public sealed class KindIntegrationTests
             Assert.Equal(
                 "integration",
                 json.RootElement.GetProperty("data").GetProperty("test").GetString());
+        }
+
+        var fingerprintedConfigMap = await CallAsync(client, "configmaps", "fingerprinted-config");
+        var fingerprintedConfigMapText = Text(fingerprintedConfigMap);
+        Assert.False(fingerprintedConfigMap.IsError == true, fingerprintedConfigMapText);
+        Assert.DoesNotContain(ConfigValue, fingerprintedConfigMapText);
+        Assert.DoesNotContain(LastAppliedAnnotationKey, fingerprintedConfigMapText);
+        using (var json = JsonDocument.Parse(fingerprintedConfigMapText))
+        {
+            Assert.StartsWith(
+                "hmac-sha256:",
+                json.RootElement.GetProperty("data").GetProperty("token").GetString());
+        }
+
+        var deploymentGet = await CallAsync(client, "deployments", "env-fixture");
+        var deploymentText = Text(deploymentGet);
+        Assert.False(deploymentGet.IsError == true, deploymentText);
+        Assert.DoesNotContain(EnvValue, deploymentText);
+        Assert.DoesNotContain(LastAppliedAnnotationKey, deploymentText);
+        using (var json = JsonDocument.Parse(deploymentText))
+        {
+            var podSpec = json.RootElement.GetProperty("spec").GetProperty("template").GetProperty("spec");
+            AssertFingerprintedEnv(podSpec.GetProperty("containers")[0]);
+            AssertFingerprintedEnv(podSpec.GetProperty("initContainers")[0]);
+            var fromSecret = Assert.Single(
+                podSpec.GetProperty("containers")[0].GetProperty("env").EnumerateArray(),
+                variable => variable.GetProperty("name").GetString() == "FROM_SECRET");
+            Assert.False(fromSecret.TryGetProperty("value", out _));
+        }
+
+        var cronJobGet = await CallAsync(client, "cronjobs", "env-fixture");
+        var cronJobText = Text(cronJobGet);
+        Assert.False(cronJobGet.IsError == true, cronJobText);
+        Assert.DoesNotContain(EnvValue, cronJobText);
+        Assert.DoesNotContain(LastAppliedAnnotationKey, cronJobText);
+        using (var json = JsonDocument.Parse(cronJobText))
+        {
+            AssertFingerprintedEnv(json.RootElement
+                .GetProperty("spec").GetProperty("jobTemplate").GetProperty("spec")
+                .GetProperty("template").GetProperty("spec").GetProperty("containers")[0]);
         }
 
         var secretList = await CallAsync(client, "secrets");
@@ -311,6 +359,20 @@ public sealed class KindIntegrationTests
         }
 
         return client.CallToolAsync("k8s_get", arguments, cancellationToken: CancellationToken.None);
+    }
+
+    private static void AssertFingerprintedEnv(JsonElement container)
+    {
+        var env = container.GetProperty("env").EnumerateArray()
+            .Where(variable => variable.TryGetProperty("value", out _))
+            .ToDictionary(
+                variable => variable.GetProperty("name").GetString()!,
+                variable => variable.GetProperty("value").GetString());
+        Assert.StartsWith("hmac-sha256:", env["API_TOKEN"]);
+        if (env.TryGetValue("LOG_LEVEL", out var logLevel))
+        {
+            Assert.Equal("debug", logLevel);
+        }
     }
 
     private static void AssertNamespaceListItem(JsonElement item)

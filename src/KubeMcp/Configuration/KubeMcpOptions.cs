@@ -17,6 +17,20 @@ public sealed class KubeMcpOptions
 
     public KubeMcpAuthenticationOptions Authentication { get; init; } = new();
 
+    /// <summary>
+    /// Exact, case-sensitive environment variable names whose literal
+    /// <c>env[].value</c> GET returns in plaintext. Every other literal value is
+    /// replaced with its HMAC fingerprint.
+    /// </summary>
+    public string[] PlaintextEnvVars { get; init; } = [];
+
+    /// <summary>
+    /// Exact <c>namespace/name</c> ConfigMaps whose <c>data</c> and
+    /// <c>binaryData</c> GET returns in plaintext. Every other ConfigMap value is
+    /// replaced with its HMAC fingerprint.
+    /// </summary>
+    public string[] PlaintextConfigMaps { get; init; } = [];
+
     [Range(1, 1000)]
     public int MaxListItems { get; init; } = 100;
 

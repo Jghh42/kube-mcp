@@ -5,16 +5,16 @@ using KubeMcp.Security;
 
 namespace KubeMcp.Tests;
 
-public sealed class SecretSanitizerTests : IDisposable
+public sealed class ResponseSanitizerTests : IDisposable
 {
     private const string RawValue = "correct-horse-battery-staple";
     private const string DangerousAnnotation = "embedded-secret-value";
     private readonly SecretFingerprinter fingerprinter = new(Enumerable.Range(0, 32).Select(value => (byte)value).ToArray());
-    private readonly SecretSanitizer sanitizer;
+    private readonly ResponseSanitizer sanitizer;
 
-    public SecretSanitizerTests()
+    public ResponseSanitizerTests()
     {
-        sanitizer = new SecretSanitizer(fingerprinter);
+        sanitizer = new ResponseSanitizer(fingerprinter, Microsoft.Extensions.Options.Options.Create(new KubeMcp.Configuration.KubeMcpOptions()));
     }
 
     [Fact]
@@ -42,7 +42,7 @@ public sealed class SecretSanitizerTests : IDisposable
             }
             """);
 
-        var result = sanitizer.SanitizeGet(secret).ToJsonString();
+        var result = sanitizer.SanitizeSecretGet(secret).ToJsonString();
         using var json = JsonDocument.Parse(result);
         var data = json.RootElement.GetProperty("data");
 
@@ -82,7 +82,7 @@ public sealed class SecretSanitizerTests : IDisposable
             }
             """);
 
-        var result = sanitizer.SanitizeListItem(secret).ToJsonString();
+        var result = sanitizer.SanitizeSecretListItem(secret).ToJsonString();
 
         Assert.Contains("database", result);
         Assert.Contains("password", result);
@@ -105,7 +105,7 @@ public sealed class SecretSanitizerTests : IDisposable
             }
             """);
 
-        var exception = Assert.Throws<KubernetesReadException>(() => sanitizer.SanitizeGet(secret));
+        var exception = Assert.Throws<KubernetesReadException>(() => sanitizer.SanitizeSecretGet(secret));
 
         Assert.DoesNotContain("not base64!", exception.Message);
     }

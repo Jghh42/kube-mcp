@@ -39,7 +39,8 @@ The harness creates ephemeral HMAC and API keys, loads the API key through a Kub
 - exactly two exposed MCP tools (`k8s_get` and argument-free `k8s_list_namespaces`)
 - ordinary detailed GET and generic compact LIST responses
 - Secret LIST key-name sanitization and GET fingerprinting
-- absence of raw Secret data in responses and application logs
+- container env and ConfigMap value fingerprinting, plaintext allowlist hits, and removal of `kubectl apply` last-applied annotations
+- absence of raw Secret data and fingerprinted env/ConfigMap fixture values in responses and application logs
 - application resource-policy and Kubernetes RBAC denials
 - blacklist and label-selector namespace discovery, including newly created, labelled, unlabelled, and default-denied namespaces
 - the exact namespace snapshot envelope and name/optional-age projection without metadata leakage

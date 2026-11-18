@@ -124,6 +124,12 @@ spec:
             # application; multiple values are semicolon-separated.
             - name: AllowedHosts
               value: "k-mcp.example.internal;kube-mcp;kube-mcp.kube-mcp;kube-mcp.kube-mcp.svc;kube-mcp.kube-mcp.svc.cluster.local;localhost;127.0.0.1;[::1]"
+            # GET fingerprints every literal env value and ConfigMap value. To
+            # return selected values in plaintext, add exact entries such as:
+            # - name: KubeMcp__PlaintextEnvVars__0
+            #   value: LOG_LEVEL
+            # - name: KubeMcp__PlaintextConfigMaps__0
+            #   value: team-a/app-settings
           ports:
             - name: http
               containerPort: 8080
