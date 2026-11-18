@@ -51,9 +51,10 @@ public sealed class ResponseSanitizer(
 
     /// <summary>
     /// Sanitizes a detailed non-Secret GET in place. The last-applied annotation
-    /// is dropped because it repeats the previous spec unsanitized. Every literal
-    /// value in an <c>env</c> array, wherever it appears, and ConfigMap
-    /// <c>data</c>/<c>binaryData</c> values are fingerprinted unless allowlisted.
+    /// is dropped from every <c>annotations</c> object because it repeats a
+    /// previous object unsanitized. Every literal value in an <c>env</c> array
+    /// and ConfigMap <c>data</c>/<c>binaryData</c> values are fingerprinted
+    /// unless allowlisted.
     /// </summary>
     internal void SanitizeObjectGet(
         JsonObject item,
@@ -61,19 +62,15 @@ public sealed class ResponseSanitizer(
         string @namespace,
         string name)
     {
-        if (item["metadata"] is JsonObject metadata &&
-            metadata["annotations"] is JsonObject annotations)
+        if (descriptor.IsConfigMap)
         {
-            annotations.Remove(LastAppliedConfigurationAnnotation);
+            // Validate every ConfigMap; only fingerprint those not allowlisted.
+            var fingerprint = !plaintextConfigMaps.Contains($"{@namespace}/{name}");
+            SanitizeConfigMapValues(item, "data", isBase64: false, fingerprint);
+            SanitizeConfigMapValues(item, "binaryData", isBase64: true, fingerprint);
         }
 
-        if (descriptor.IsConfigMap && !plaintextConfigMaps.Contains($"{@namespace}/{name}"))
-        {
-            FingerprintConfigMapValues(item, "data", isBase64: false);
-            FingerprintConfigMapValues(item, "binaryData", isBase64: true);
-        }
-
-        FingerprintEnvValues(item);
+        SanitizeNestedFields(item);
     }
 
     internal JsonObject SanitizeSecretListItem(JsonElement secret)
@@ -171,10 +168,11 @@ public sealed class ResponseSanitizer(
         }
     }
 
-    private void FingerprintConfigMapValues(
+    private void SanitizeConfigMapValues(
         JsonObject configMap,
         string propertyName,
-        bool isBase64)
+        bool isBase64,
+        bool fingerprint)
     {
         var values = configMap[propertyName];
         if (values is null)
@@ -205,16 +203,22 @@ public sealed class ResponseSanitizer(
                 throw InvalidConfigMapShapeException();
             }
 
-            fingerprints[key] = fingerprinter.Fingerprint(bytes);
+            if (fingerprint)
+            {
+                fingerprints[key] = fingerprinter.Fingerprint(bytes);
+            }
         }
 
-        configMap[propertyName] = fingerprints;
+        if (fingerprint)
+        {
+            configMap[propertyName] = fingerprints;
+        }
     }
 
     // Walks the whole object so every pod template (including CronJob nesting,
-    // init/ephemeral containers, and CRD fields that reuse EnvVar) is covered
-    // without per-kind paths.
-    private void FingerprintEnvValues(JsonNode? node)
+    // init/ephemeral containers, template metadata, and CRD fields that reuse
+    // EnvVar) is covered without per-kind paths.
+    private void SanitizeNestedFields(JsonNode? node)
     {
         switch (node)
         {
@@ -225,17 +229,19 @@ public sealed class ResponseSanitizer(
                     {
                         FingerprintEnvArray(variables);
                     }
-                    else
+                    else if (propertyName == "annotations" && value is JsonObject annotations)
                     {
-                        FingerprintEnvValues(value);
+                        annotations.Remove(LastAppliedConfigurationAnnotation);
                     }
+
+                    SanitizeNestedFields(value);
                 }
 
                 break;
             case JsonArray elements:
                 foreach (var element in elements)
                 {
-                    FingerprintEnvValues(element);
+                    SanitizeNestedFields(element);
                 }
 
                 break;

@@ -47,7 +47,7 @@ plaintextConfigMaps:
   - team-a/app-settings
 ```
 
-Entries are validated by the chart schema and again at application startup. The chart renders them as indexed `KubeMcp__PlaintextEnvVars__N` and `KubeMcp__PlaintextConfigMaps__N` variables and rejects `extraEnv` entries that set those names. See the [configuration reference](../../docs/configuration.md#plaintext-allowlists).
+Entries are validated by the chart schema and again at application startup. The chart renders them as indexed `KubeMcp__PlaintextEnvVars__N` and `KubeMcp__PlaintextConfigMaps__N` variables and rejects `extraEnv` entries that set those names, in either `__` or `:` form. See the [configuration reference](../../docs/configuration.md#plaintext-allowlists).
 
 ## Optional CRDs
 

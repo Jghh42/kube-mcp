@@ -80,6 +80,50 @@ public sealed class ValueFingerprintingTests
     }
 
     [Fact]
+    public async Task GetRemovesLastAppliedFromNestedTemplateMetadata()
+    {
+        using var host = Host("deployments", "apps", "Deployment");
+        var body = WorkloadBody("apps", "Deployment", "spec.template.spec", new JsonObject());
+        body["spec"]!["template"]!["metadata"] = new JsonObject
+        {
+            ["annotations"] = new JsonObject
+            {
+                [KubernetesJson.LastAppliedAnnotation] = $$"""{"env":"{{RawEnvValue}}"}""",
+                ["example.com/kept"] = "visible"
+            }
+        };
+        host.Api.GetHandler = (_, _, _, _, _) => Task.FromResult(body.ToJsonString());
+
+        var result = await host.Reader.ReadAsync("deployments", "prod", "app", CancellationToken.None);
+
+        Assert.DoesNotContain(RawEnvValue, result.Json);
+        Assert.DoesNotContain("last-applied", result.Json);
+        Assert.Equal(
+            "visible",
+            JsonNode.Parse(result.Json)!["spec"]!["template"]!["metadata"]!["annotations"]!["example.com/kept"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task GetFingerprintsEnvArraysNestedInsideEnvEntries()
+    {
+        using var host = Host("clusters.postgresql.cnpg.io", "postgresql.cnpg.io", "Cluster", resource: "clusters", version: "v1");
+        var body = WorkloadBody("postgresql.cnpg.io", "Cluster", "spec", new JsonObject
+        {
+            ["env"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "OUTER",
+                ["env"] = new JsonArray(new JsonObject { ["name"] = "TOKEN", ["value"] = RawEnvValue })
+            })
+        });
+        host.Api.GetHandler = (_, _, _, _, _) => Task.FromResult(body.ToJsonString());
+
+        var result = await host.Reader.ReadAsync("clusters.postgresql.cnpg.io", "prod", "app", CancellationToken.None);
+
+        Assert.DoesNotContain(RawEnvValue, result.Json);
+        Assert.Contains(Fingerprint(RawEnvValue), result.Json);
+    }
+
+    [Fact]
     public async Task GetFingerprintsNonStringEnvValues()
     {
         using var host = Host("pods", "", "Pod");
@@ -217,7 +261,20 @@ public sealed class ValueFingerprintingTests
     [InlineData("""{"binaryData":{"blob":null}}""")]
     public async Task MalformedConfigMapValuesMapToMalformedCategory(string fields)
     {
-        using var host = Host("configmaps", "", "ConfigMap");
+        await AssertMalformedConfigMapAsync(fields, plaintextConfigMaps: null);
+    }
+
+    [Theory]
+    [InlineData("""{"data":{"key":42}}""")]
+    [InlineData("""{"binaryData":{"blob":"not base64!"}}""")]
+    public async Task MalformedAllowlistedConfigMapValuesMapToMalformedCategory(string fields)
+    {
+        await AssertMalformedConfigMapAsync(fields, plaintextConfigMaps: ["prod/app-config"]);
+    }
+
+    private static async Task AssertMalformedConfigMapAsync(string fields, string[]? plaintextConfigMaps)
+    {
+        using var host = Host("configmaps", "", "ConfigMap", plaintextConfigMaps: plaintextConfigMaps);
         var body = ConfigMapBody(null, null);
         foreach (var (name, value) in JsonNode.Parse(fields)!.AsObject())
         {
@@ -265,6 +322,7 @@ public sealed class ValueFingerprintingTests
     [InlineData("API_KEY=leaked-value")]
     [InlineData("TAB\tNAME")]
     [InlineData("NON_ASCII_É")]
+    [InlineData("LOG_LEVEL\n")]
     [InlineData(null)]
     public void ValidatorRejectsMalformedEnvVarNamesWithoutEchoingThem(string? entry)
     {
@@ -288,6 +346,8 @@ public sealed class ValueFingerprintingTests
     [InlineData("team-a/app_settings")]
     [InlineData("team-a/app..settings")]
     [InlineData(" team-a/app-settings")]
+    [InlineData("team-a/app-settings\n")]
+    [InlineData("team-a\n/app-settings")]
     [InlineData(null)]
     public void ValidatorRejectsMalformedConfigMapReferences(string? entry)
     {

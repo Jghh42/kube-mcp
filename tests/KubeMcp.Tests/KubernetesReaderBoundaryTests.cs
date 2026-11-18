@@ -329,6 +329,19 @@ public sealed class KubernetesBoundaryOptionsTests
     }
 
     [Fact]
+    public void DeniedNamespacesRejectTrailingNewline()
+    {
+        var options = ReaderTestOptions.Options(
+            namespacePolicy: new NamespacePolicyOptions { DeniedNamespaces = ["kube-system\n"] });
+
+        var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Development"))
+            .Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains("DeniedNamespaces", result.FailureMessage);
+    }
+
+    [Fact]
     public void OverallMcpTimeoutMustBeValidatedAndExceedKubernetesTimeout()
     {
         var baseline = ReaderTestOptions.Options();

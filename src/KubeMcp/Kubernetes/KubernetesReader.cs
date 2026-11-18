@@ -281,6 +281,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
                 throw MalformedResponseException();
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return result;
         }
         finally

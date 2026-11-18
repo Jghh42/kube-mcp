@@ -272,12 +272,13 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         value.Length <= 63 &&
         Dns1035LabelRegex().IsMatch(value);
 
-    [GeneratedRegex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")]
+    // \z rather than $: .NET's $ also matches before a trailing newline.
+    [GeneratedRegex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?\\z")]
     private static partial Regex DnsLabelRegex();
 
-    [GeneratedRegex("^[a-z]([-a-z0-9]*[a-z0-9])?$")]
+    [GeneratedRegex("^[a-z]([-a-z0-9]*[a-z0-9])?\\z")]
     private static partial Regex Dns1035LabelRegex();
 
-    [GeneratedRegex("^[!-<>-~]+$")]
+    [GeneratedRegex("^[!-<>-~]+\\z")]
     private static partial Regex EnvVarNameRegex();
 }
