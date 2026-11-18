@@ -13,7 +13,7 @@ k8s_list_namespaces()
 
 Omitting `name` from `k8s_get` performs a namespaced LIST; supplying it performs a namespaced GET. Argument-free `k8s_list_namespaces` is the sole cluster-scoped operation and performs only core-v1 Namespace LIST. Namespace GET, watch, mutation, caller-provided selectors or continuation tokens, generic cluster-scoped reads, exec, proxy, shell, and tunnelling are unavailable.
 
-Non-Secret namespaced LIST responses use one generic compact summary containing only name, namespace, kind, and age when creation metadata is available. Namespace discovery returns exactly operation/resource/items/count/limited, with only name and optional age per item. It is a bounded snapshot: blacklist-denied namespaces are silently filtered, while label-selector mode sends the configured selector server-side on every page. Filtered entries alone do not make the snapshot limited. Every fetched namespace is identity-validated, including filtered and output-omitted objects. GET responses remain detailed. Response size, page count, item count, continuation-token, upstream-body, and timeout bounds apply to both LIST paths.
+Non-Secret namespaced LIST responses use one generic compact summary containing only name, namespace, kind, and age when creation metadata is available. Namespace discovery returns exactly operation/resource/items/count/limited, with only name and optional age per item. It is a bounded snapshot: blacklist-denied namespaces are silently filtered, while label-selector mode sends the configured selector server-side on every page. Filtered entries alone do not make the snapshot limited. Every fetched namespace is identity-validated, including filtered and output-omitted objects. GET responses remain detailed, apart from the [environment and ConfigMap value fingerprinting](#environment-and-configmap-values) below. Response size, page count, item count, continuation-token, upstream-body, and timeout bounds apply to both LIST paths.
 
 ## Defence in depth
 
@@ -38,6 +38,18 @@ Raw Kubernetes Secret values are never returned:
 As a last resort, a deterministic [credential scanner](adr/0002-known-format-credential-scanner-poc.md) checks the string values of detailed GET output for known credential formats. It replaces exact-format matches with `[redacted:<rule-id>]`, and replaces the whole value for generic keyword-based matches. It recognizes formats only, so it cannot catch arbitrary passwords. If the scan cannot complete, the result is withheld.
 
 The HMAC key remains on the server. Keep it stable only when fingerprints need to be comparable across restarts. Logs and audit records never contain Secret values or fingerprints.
+
+## Environment and ConfigMap values
+
+Credentials are often placed outside Secrets, so detailed non-Secret GETs apply the same keyed fingerprint by default:
+
+- Every literal `value` in an `env` array is fingerprinted, wherever the array appears. This covers `containers`, `initContainers`, and `ephemeralContainers` in Pods and in every pod template (Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, CronJob `jobTemplate`s, ReplicationControllers), and mapped custom resources that reuse the EnvVar shape. `valueFrom` references are returned unchanged because they name a source rather than carry a value. A non-string `value` is fingerprinted from its JSON text.
+- ConfigMap `data` and `binaryData` keep their keys; each value is fingerprinted (`binaryData` after base64 decoding). Invalid ConfigMap value types or base64 fail closed as `upstream_malformed_response`.
+- The `kubectl.kubernetes.io/last-applied-configuration` annotation is removed from every non-Secret GET because it repeats the previously applied object, including env values, ConfigMap data, and, for applied Secrets, Secret data. Other annotations are returned. Secret GETs already return only fixed identity metadata and Secret LISTs return no annotations, so this annotation never reached clients through Secrets.
+
+Fingerprints are computed over the same UTF-8 or decoded bytes as Secret fingerprints, so a client can see that an env value, a ConfigMap value, and a Secret value are equal, or that a value changed, without seeing it. Non-Secret LIST summaries contain no specs, data, or annotations, so they need no fingerprinting.
+
+Operators can return selected values in plaintext with two exact, case-sensitive allowlists: [`PlaintextEnvVars`](configuration.md#plaintext-allowlists) names and `namespace/name` [`PlaintextConfigMaps`](configuration.md#plaintext-allowlists). Both default to empty. Allowlisted ConfigMaps still have the last-applied annotation removed. Only list values that are safe to send to the client and its model provider. Fingerprinting is limited to these fields: command arguments, other annotations, and custom-resource fields remain visible to authorized clients.
 
 ## Edge traffic controls
 

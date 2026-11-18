@@ -74,6 +74,28 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
                 $"{KubeMcpOptions.SectionName}:NamespacePolicy:LabelSelector must not exceed 1024 characters.");
         }
 
+        var plaintextEnvVars = options.PlaintextEnvVars ?? [];
+        for (var index = 0; index < plaintextEnvVars.Length; index++)
+        {
+            // Report the index rather than the entry, in case a value was pasted
+            // into the allowlist by mistake.
+            if (!IsEnvVarName(plaintextEnvVars[index]))
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{KubeMcpOptions.SectionName}:PlaintextEnvVars:{index} must be an exact environment variable name.");
+            }
+        }
+
+        var plaintextConfigMaps = options.PlaintextConfigMaps ?? [];
+        for (var index = 0; index < plaintextConfigMaps.Length; index++)
+        {
+            if (!IsConfigMapReference(plaintextConfigMaps[index]))
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{KubeMcpOptions.SectionName}:PlaintextConfigMaps:{index} must be an exact namespace/name ConfigMap reference.");
+            }
+        }
+
         if (options.MaxUpstreamBodyBytes < options.MaxResponseBytes)
         {
             return ValidateOptionsResult.Fail(
@@ -222,6 +244,21 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
         return null;
     }
 
+    // Kubernetes accepts any printable ASCII except '=' in environment variable
+    // names; whitespace is also rejected here.
+    private static bool IsEnvVarName(string? value) =>
+        !string.IsNullOrEmpty(value) &&
+        EnvVarNameRegex().IsMatch(value);
+
+    private static bool IsConfigMapReference(string? value)
+    {
+        var parts = value?.Split('/') ?? [];
+        return parts.Length == 2 &&
+               IsDnsLabel(parts[0]) &&
+               parts[1].Length <= 253 &&
+               parts[1].Split('.').All(IsDnsLabel);
+    }
+
     private static bool IsDnsLabel(string value) =>
         !string.IsNullOrWhiteSpace(value) &&
         value.Length <= 63 &&
@@ -240,4 +277,7 @@ public sealed partial class KubeMcpOptionsValidator : IValidateOptions<KubeMcpOp
 
     [GeneratedRegex("^[a-z]([-a-z0-9]*[a-z0-9])?$")]
     private static partial Regex Dns1035LabelRegex();
+
+    [GeneratedRegex("^[!-<>-~]+$")]
+    private static partial Regex EnvVarNameRegex();
 }

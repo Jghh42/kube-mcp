@@ -305,7 +305,10 @@ public sealed class CredentialScannerReaderTests
                     ["configmaps"] = ReaderTestOptions.R("", "v1", "configmaps", "ConfigMap"),
                     ["secrets"] = ReaderTestOptions.R("", "v1", "secrets", "Secret")
                 },
-                credentialScanner: scanner),
+                credentialScanner: scanner,
+                // Plaintext, so the scanner rather than ConfigMap fingerprinting
+                // sees the value.
+                plaintextConfigMaps: ["prod/app"]),
             logger: logger);
         host.Api.GetHandler = (descriptor, _, name, _, _) => Task.FromResult(descriptor.IsSecret
             ? KubernetesJson.SecretGetBody(name, configMapValue)

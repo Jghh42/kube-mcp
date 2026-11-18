@@ -271,7 +271,17 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            return ToJsonObject(item);
+            var result = ToJsonObject(item);
+            try
+            {
+                secretSanitizer.SanitizeObjectGet(result, descriptor, @namespace, name);
+            }
+            catch (Exception ex) when (ex is KubernetesReadException or InvalidOperationException)
+            {
+                throw MalformedResponseException();
+            }
+
+            return result;
         }
         finally
         {

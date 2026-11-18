@@ -14,7 +14,7 @@ public sealed class SecretSanitizerTests : IDisposable
 
     public SecretSanitizerTests()
     {
-        sanitizer = new SecretSanitizer(fingerprinter);
+        sanitizer = new SecretSanitizer(fingerprinter, Microsoft.Extensions.Options.Options.Create(new KubeMcp.Configuration.KubeMcpOptions()));
     }
 
     [Fact]

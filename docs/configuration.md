@@ -12,6 +12,8 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | `KubeMcp:NamespacePolicy:Mode` | `Blacklist` | `Blacklist` or `LabelSelector`. |
 | `KubeMcp:NamespacePolicy:DeniedNamespaces` | system namespaces | Names denied in blacklist mode. |
 | `KubeMcp:NamespacePolicy:LabelSelector` | none | Required selector in label-selector mode. Its syntax is not validated at startup: a malformed selector makes every namespaced read and namespace discovery fail with `invalid_request`, so verify it first with `kubectl get namespaces -l '<selector>'`. |
+| `KubeMcp:PlaintextEnvVars` | empty | Exact, case-sensitive environment variable names whose literal `env[].value` GET returns in plaintext. See [plaintext allowlists](#plaintext-allowlists). |
+| `KubeMcp:PlaintextConfigMaps` | empty | Exact `namespace/name` ConfigMaps whose `data` and `binaryData` GET returns in plaintext. |
 | `KubeMcp:MaxListItems` | `100` | Maximum objects returned by LIST. |
 | `KubeMcp:MaxResponseBytes` | `1048576` | Maximum inner tool-content JSON size, excluding the MCP/HTTP envelope. |
 | `KubeMcp:MaxUpstreamBodyBytes` | `4194304` | Per-page or single-object Kubernetes response limit before deserialization; must be at least `MaxResponseBytes`. |
@@ -59,6 +61,23 @@ Label-selector mode allows only matching namespaces. Namespace discovery sends t
 KubeMcp__NamespacePolicy__Mode=LabelSelector
 KubeMcp__NamespacePolicy__LabelSelector=platform.example.com/group in (production,staging)
 ```
+
+## Plaintext allowlists
+
+Detailed GETs replace every literal container environment value and every ConfigMap value with an HMAC fingerprint; see the [security model](security.md#environment-and-configmap-values). Two allowlists return selected values in plaintext:
+
+```text
+KubeMcp__PlaintextEnvVars__0=LOG_LEVEL
+KubeMcp__PlaintextEnvVars__1=TZ
+KubeMcp__PlaintextConfigMaps__0=team-a/app-settings
+KubeMcp__PlaintextConfigMaps__1=team-a/kube-root-ca.crt
+```
+
+- `PlaintextEnvVars` entries are exact, case-sensitive names: printable ASCII without whitespace or `=`. `LOG_LEVEL` does not match `log_level` or `LOG_LEVEL_DEBUG`. The name applies in every namespace and workload, so list only names whose values are never sensitive.
+- `PlaintextConfigMaps` entries are exact `namespace/name` references: a lowercase DNS-label namespace and DNS-subdomain name. There are no wildcards; allowlisting the public `kube-root-ca.crt` therefore needs one entry per namespace. It is not allowlisted by default: its fingerprint still shows whether namespaces carry the same CA.
+- Startup fails on a malformed entry, reporting only its index so a value pasted by mistake is not logged.
+
+Both lists default to empty, so nothing is shown in plaintext until an operator opts in. Like other ASP.NET Core arrays, entries from different configuration sources merge by index: `KubeMcp__PlaintextEnvVars__0` replaces entry `0` from a settings file and leaves later entries in place. Set each list in one source, with contiguous indexes starting at `0`. Helm users set `plaintextEnvVars` and `plaintextConfigMaps` instead; the chart renders the indexed variables and rejects `extraEnv` overrides.
 
 ## Authentication
 

@@ -562,7 +562,7 @@ internal sealed partial class SecretScannerCorpus
     private NegativeCase[] BuildNegatives()
     {
         var fingerprinter = new SecretFingerprinter(Enumerable.Range(0, 32).Select(value => (byte)value).ToArray());
-        var sanitizer = new SecretSanitizer(fingerprinter);
+        var sanitizer = new SecretSanitizer(fingerprinter, Microsoft.Extensions.Options.Options.Create(new KubeMcp.Configuration.KubeMcpOptions()));
 
         // Raw Secrets full of real-looking credentials; only the sanitized output is scanned.
         var rawSecret = JsonSerializer.Serialize(new

@@ -16,4 +16,7 @@ public sealed record KubernetesResourceDescriptor(
 
     public bool IsSecret => string.IsNullOrEmpty(Group) &&
                             Resource.Equals("secrets", StringComparison.OrdinalIgnoreCase);
+
+    public bool IsConfigMap => string.IsNullOrEmpty(Group) &&
+                               Resource.Equals("configmaps", StringComparison.OrdinalIgnoreCase);
 }

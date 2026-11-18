@@ -137,7 +137,7 @@ internal sealed class ReaderHost : IDisposable
         Api = api ?? new FakeKubernetesApi();
 
         var fingerprinter = new SecretFingerprinter(Microsoft.Extensions.Options.Options.Create(options));
-        var sanitizer = new SecretSanitizer(fingerprinter);
+        var sanitizer = new SecretSanitizer(fingerprinter, Microsoft.Extensions.Options.Options.Create(options));
         var summarizer = new KubernetesListSummarizer(sanitizer, Time);
         var allowlist = new ResourceAllowlist(Microsoft.Extensions.Options.Options.Create(options));
         var namespacePolicy = new NamespaceAccessPolicy(Microsoft.Extensions.Options.Options.Create(options));
@@ -181,7 +181,9 @@ internal static class ReaderTestOptions
         int maxListPages = 20,
         int secretListPageSize = 10,
         int kubernetesRequestTimeoutSeconds = 15,
-        CredentialScannerOptions? credentialScanner = null) => new()
+        CredentialScannerOptions? credentialScanner = null,
+        string[]? plaintextEnvVars = null,
+        string[]? plaintextConfigMaps = null) => new()
         {
             SecretHmacKey = HmacKey,
             AllowedResources = resources ?? new() { ["pods"] = R("", "v1", "pods", "Pod") },
@@ -193,12 +195,16 @@ internal static class ReaderTestOptions
             MaxListPages = maxListPages,
             SecretListPageSize = secretListPageSize,
             KubernetesRequestTimeoutSeconds = kubernetesRequestTimeoutSeconds,
-            CredentialScanner = credentialScanner ?? new()
+            CredentialScanner = credentialScanner ?? new(),
+            PlaintextEnvVars = plaintextEnvVars ?? [],
+            PlaintextConfigMaps = plaintextConfigMaps ?? []
         };
 }
 
 internal static class KubernetesJson
 {
+    public const string LastAppliedAnnotation = "kubectl.kubernetes.io/last-applied-configuration";
+
     public static string PodItem(
         string name,
         string node = "node-1",
@@ -776,17 +782,42 @@ public sealed class KubernetesReaderSecretTests
     }
 
     [Fact]
-    public async Task NonSecretGetReturnsFullObjectWithoutSanitization()
+    public async Task SecretGetOmitsLastAppliedConfiguration()
     {
-        var options = ReaderTestOptions.Options(resources: new() { ["configmaps"] = ReaderTestOptions.R("", "v1", "configmaps", "ConfigMap") });
+        var options = ReaderTestOptions.Options(resources: new() { ["secrets"] = ReaderTestOptions.R("", "v1", "secrets", "Secret") });
         using var host = new ReaderHost(options);
-        host.Api.GetHandler = (_, _, _, _, _) => Task.FromResult(KubernetesJson.ConfigMapGetBody("cm", "the-value"));
+        const string plaintext = "applied-secret-value";
+        var body = JsonNode.Parse(KubernetesJson.SecretGetBody("db", plaintext))!.AsObject();
+        body["metadata"]!["annotations"]![KubernetesJson.LastAppliedAnnotation] =
+            $$$"""{"stringData":{"password":"{{{plaintext}}}"}}""";
+        host.Api.GetHandler = (_, _, _, _, _) => Task.FromResult(body.ToJsonString());
 
-        var result = await host.Reader.ReadAsync("configmaps", "prod", "cm", CancellationToken.None);
+        var result = await host.Reader.ReadAsync("secrets", "prod", "db", CancellationToken.None);
 
-        Assert.Contains("the-value", result.Json);
-        using var document = JsonDocument.Parse(result.Json);
-        Assert.Equal("the-value", document.RootElement.GetProperty("data").GetProperty("key").GetString());
+        Assert.DoesNotContain(plaintext, result.Json);
+        Assert.DoesNotContain(Convert.ToBase64String(Encoding.UTF8.GetBytes(plaintext)), result.Json);
+        Assert.DoesNotContain("last-applied", result.Json);
+    }
+
+    [Fact]
+    public async Task SecretListOmitsLastAppliedConfiguration()
+    {
+        var options = ReaderTestOptions.Options(resources: new() { ["secrets"] = ReaderTestOptions.R("", "v1", "secrets", "Secret") });
+        using var host = new ReaderHost(options);
+        const string plaintext = "applied-secret-value";
+        var item = JsonNode.Parse(KubernetesJson.SecretListItem("db", plaintext))!.AsObject();
+        item["metadata"]!["annotations"] = new JsonObject
+        {
+            [KubernetesJson.LastAppliedAnnotation] = $$$"""{"stringData":{"password":"{{{plaintext}}}"}}"""
+        };
+        host.Api.ListHandler = (_, _, _, _, _, _) => Task.FromResult(
+            KubernetesJson.ListBody([item.ToJsonString()], null, kind: "SecretList"));
+
+        var result = await host.Reader.ReadAsync("secrets", "prod", null, CancellationToken.None);
+
+        Assert.Contains("password", result.Json);
+        Assert.DoesNotContain(plaintext, result.Json);
+        Assert.DoesNotContain("last-applied", result.Json);
     }
 }
 
@@ -922,9 +953,12 @@ public sealed class KubernetesReaderErrorTests
     [Fact]
     public async Task GetResponseExceedingSafeOutputBudgetThrowsResponseTooLarge()
     {
+        // Allowlisted so the plaintext value, not its fixed-size fingerprint,
+        // reaches the safe-output check.
         var options = ReaderTestOptions.Options(
             resources: new() { ["configmaps"] = ReaderTestOptions.R("", "v1", "configmaps", "ConfigMap") },
-            maxResponseBytes: 1024);
+            maxResponseBytes: 1024,
+            plaintextConfigMaps: ["prod/big"]);
         using var host = new ReaderHost(options);
         host.Api.GetHandler = (_, _, _, _, _) => Task.FromResult(
             KubernetesJson.ConfigMapGetBody("big", new string('x', 2048)));

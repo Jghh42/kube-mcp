@@ -14,7 +14,7 @@ public sealed class KubernetesListSummarizerTests : IDisposable
     public KubernetesListSummarizerTests()
     {
         summarizer = new KubernetesListSummarizer(
-            new SecretSanitizer(fingerprinter),
+            new SecretSanitizer(fingerprinter, Microsoft.Extensions.Options.Options.Create(new KubeMcp.Configuration.KubeMcpOptions())),
             new FixedTimeProvider(Now));
     }
 

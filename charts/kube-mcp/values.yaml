@@ -44,6 +44,14 @@ secretHmacKeySecret:
   name: kube-mcp-hmac
   key: key
 
+# GET responses replace every literal container env value and every ConfigMap
+# data/binaryData value with an HMAC fingerprint. These allowlists return
+# values in plaintext instead. Entries are exact and case-sensitive.
+# Environment variable names, for example LOG_LEVEL.
+plaintextEnvVars: []
+# ConfigMaps as namespace/name, for example team-a/app-settings.
+plaintextConfigMaps: []
+
 # Additional hostnames presented directly to ASP.NET Core. Service DNS names
 # and local port-forward hosts are added automatically by the chart.
 allowedHosts:

@@ -17,6 +17,8 @@ secret_username=integration-user
 secret_username_base64=$(printf '%s' "$secret_username" | base64 | tr -d '\n')
 upstream_secret_prefix='UPSTREAM-SECRET-BOUNDARY!!!'
 upstream_secret_prefix_base64=$(printf '%s' "$upstream_secret_prefix" | base64 | tr -d '\n')
+env_value=env-value-must-not-leak
+config_value=config-value-must-not-leak
 
 for command in kind kubectl curl docker openssl python3 dotnet; do
   command -v "$command" >/dev/null || {
@@ -132,7 +134,7 @@ assert_no_sensitive_logs() {
   for forbidden in "$api_key" "$hmac_key" 'hmac-sha256:' "$secret_value" \
     "$secret_value_base64" "$secret_username" "$secret_username_base64" \
     "$upstream_secret_prefix" "$upstream_secret_prefix_base64" \
-    'annotation-must-not-leak'; do
+    'annotation-must-not-leak' "$env_value" "$config_value"; do
     if grep -Fq "$forbidden" <<<"$logs"; then
       echo "sensitive integration fixture data leaked into application logs" >&2
       return 1
@@ -223,8 +225,12 @@ kubectl create secret generic kube-mcp-api-key --namespace "$kube_namespace" \
 kubectl apply --filename "$deployment_manifest" >/dev/null
 
 # Map Roles in application policy but omit them from RBAC to prove the two gates
-# remain independent.
+# remain independent. The plaintext allowlists cover LOG_LEVEL, stage-ten, and
+# the safe-output boundary fixture; every other value must be fingerprinted.
 kubectl set env deployment/kube-mcp --namespace "$kube_namespace" \
+  KubeMcp__PlaintextEnvVars__0=LOG_LEVEL \
+  KubeMcp__PlaintextConfigMaps__0="$fixture_namespace/stage-ten" \
+  KubeMcp__PlaintextConfigMaps__1="$fixture_namespace/boundary-safe-output" \
   KubeMcp__AllowedResources__roles.rbac.authorization.k8s.io__Group=rbac.authorization.k8s.io \
   KubeMcp__AllowedResources__roles.rbac.authorization.k8s.io__Version=v1 \
   KubeMcp__AllowedResources__roles.rbac.authorization.k8s.io__Resource=roles \
@@ -256,6 +262,71 @@ metadata:
   namespace: $fixture_namespace
 data:
   test: integration
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fingerprinted-config
+  namespace: $fixture_namespace
+data:
+  token: $config_value
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: env-fixture
+  namespace: $fixture_namespace
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: env-fixture
+  template:
+    metadata:
+      labels:
+        app: env-fixture
+    spec:
+      initContainers:
+        - name: init
+          image: registry.k8s.io/pause:3.10
+          env:
+            - name: API_TOKEN
+              value: $env_value
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.10
+          env:
+            - name: API_TOKEN
+              value: $env_value
+            - name: LOG_LEVEL
+              value: debug
+            - name: FROM_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: integration-secret
+                  key: password
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: env-fixture
+  namespace: $fixture_namespace
+spec:
+  schedule: "0 0 1 1 *"
+  suspend: true
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: app
+              image: registry.k8s.io/pause:3.10
+              env:
+                - name: API_TOKEN
+                  value: $env_value
+                - name: LOG_LEVEL
+                  value: debug
 ---
 apiVersion: v1
 kind: ConfigMap

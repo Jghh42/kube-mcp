@@ -13,6 +13,7 @@ k8s_list_namespaces()
 - Supply `name` to get one resource.
 - Use argument-free `k8s_list_namespaces` for a bounded snapshot of namespaces admitted by server policy; later reads recheck policy and RBAC.
 - Kubernetes Secrets are sanitized; raw values are never returned.
+- Container environment values and ConfigMap values are fingerprinted unless explicitly allowlisted.
 - Resource policy, namespace policy, and Kubernetes RBAC independently restrict access.
 - Production uses a static bearer API key loaded from a Kubernetes Secret.
 
