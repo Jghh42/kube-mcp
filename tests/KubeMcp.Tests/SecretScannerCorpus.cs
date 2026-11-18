@@ -10,9 +10,10 @@ using KubeMcp.Security;
 
 namespace KubeMcp.Tests;
 
-internal sealed record PlantedSample(string Rule, string Key, string Value);
+/// <param name="Secrets">Credential substrings that must not survive redaction.</param>
+internal sealed record PlantedSample(string Rule, string Key, string Value, string[] Secrets);
 
-internal sealed record PositiveCase(string Rule, string Placement, JsonNode Root, string Path);
+internal sealed record PositiveCase(string Rule, string Placement, JsonNode Root, string Path, string[] Secrets);
 
 internal sealed record NegativeCase(string Name, JsonNode Root);
 
@@ -163,81 +164,111 @@ internal sealed partial class SecretScannerCorpus
     // Positives: each sample is planted in every applicable placement.
     // ------------------------------------------------------------------
 
+    private static PlantedSample Sample(string rule, string key, string value, params string[] secrets) =>
+        new(rule, key, value, secrets.Length == 0 ? [value] : secrets);
+
+    // Every base64 body line of a PEM block.
+    private static string[] PemLines(string pem) =>
+        pem.Split('\n').Where(line => line.Length >= 16 && !line.StartsWith("-----", StringComparison.Ordinal)).ToArray();
+
     private IEnumerable<PlantedSample> PlantedSamples()
     {
-        yield return new("private-key", "tls.key", rsaPrivateKeyPem);
-        yield return new("private-key", "id_ed25519", OpenSshPrivateKey());
-        yield return new("private-key", "signing.key", ecPrivateKeyPem);
-        yield return new("private-key", "key.pem", encryptedPrivateKeyPem);
+        yield return Sample("private-key", "tls.key", rsaPrivateKeyPem, PemLines(rsaPrivateKeyPem));
+        var openSsh = OpenSshPrivateKey();
+        yield return Sample("private-key", "id_ed25519", openSsh, PemLines(openSsh));
+        yield return Sample("private-key", "signing.key", ecPrivateKeyPem, PemLines(ecPrivateKeyPem));
+        yield return Sample("private-key", "key.pem", encryptedPrivateKeyPem, PemLines(encryptedPrivateKeyPem));
+        var rewrapped = "-----BEGIN " + "PRIVATE KEY-----\n" +
+            string.Join('\n', string.Concat(PemLines(ecPrivateKeyPem)).Chunk(16).Select(chunk => new string(chunk))) +
+            "\n-----END " + "PRIVATE KEY-----\n";
+        yield return Sample("private-key", "wrapped.key", rewrapped, PemLines(rewrapped));
 
-        yield return new("private-key-base64", "client-key-data", B64(rsaPrivateKeyPem));
-        yield return new("private-key-base64", "kubeconfig",
+        yield return Sample("private-key-base64", "client-key-data", B64(rsaPrivateKeyPem));
+        var clientKeyData = B64(ecPrivateKeyPem);
+        yield return Sample("private-key-base64", "kubeconfig",
             "apiVersion: v1\nkind: Config\nclusters:\n- name: home\n  cluster:\n    server: https://10.0.0.10:6443\n" +
             "    certificate-authority-data: " + B64(caCertificatePem) + "\nusers:\n- name: admin\n  user:\n" +
             "    client-certificate-data: " + B64(intermediateCertificatePem) + "\n" +
-            "    client-key-data: " + B64(ecPrivateKeyPem) + "\n");
+            "    client-key-data: " + clientKeyData + "\n",
+            clientKeyData);
 
-        yield return new("aws-access-key-id", "AWS_ACCESS_KEY_ID", "AKIA" + Chars(Base32Aws, 16));
-        yield return new("aws-access-key-id", "credentials",
-            "[default]\naws_access_key_id = ASIA" + Chars(Base32Aws, 16) + "\nregion = eu-west-1\n");
+        yield return Sample("aws-access-key-id", "AWS_ACCESS_KEY_ID", "AKIA" + Chars(Base32Aws, 16));
+        var stsKeyId = "ASIA" + Chars(Base32Aws, 16);
+        yield return Sample("aws-access-key-id", "credentials",
+            "[default]\naws_access_key_id = " + stsKeyId + "\nregion = eu-west-1\n", stsKeyId);
 
-        yield return new("aws-secret-access-key", "AWS_SECRET_ACCESS_KEY", AwsSecret());
-        yield return new("aws-secret-access-key", "credentials",
-            "[default]\naws_access_key_id = AKIA" + Chars(Base32Aws, 16) +
-            "\naws_secret_access_key = " + AwsSecret() + "\n");
-        yield return new("aws-secret-access-key", "secretAccessKey", AwsSecret());
+        yield return Sample("aws-secret-access-key", "AWS_SECRET_ACCESS_KEY", AwsSecret());
+        var (keyId, secretKey) = ("AKIA" + Chars(Base32Aws, 16), AwsSecret());
+        yield return Sample("aws-secret-access-key", "credentials",
+            "[default]\naws_access_key_id = " + keyId + "\naws_secret_access_key = " + secretKey + "\n", keyId, secretKey);
+        yield return Sample("aws-secret-access-key", "secretAccessKey", AwsSecret());
 
-        yield return new("github-token", "GITHUB_TOKEN", GitHub("p"));
-        yield return new("github-token", ".npmrc",
-            "@home-ops:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=" + GitHub("o") + "\n");
-        yield return new("github-token", "GH_APP_TOKEN", GitHub("s"));
-        yield return new("github-fine-grained-pat", "GITHUB_PAT",
+        yield return Sample("github-token", "GITHUB_TOKEN", GitHub("p"));
+        var oauthToken = GitHub("o");
+        yield return Sample("github-token", ".npmrc",
+            "@home-ops:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=" + oauthToken + "\n", oauthToken);
+        yield return Sample("github-token", "GH_APP_TOKEN", GitHub("s"));
+        yield return Sample("github-fine-grained-pat", "GITHUB_PAT",
             "github_" + "pat_" + Chars(Alnum, 22) + "_" + Chars(Alnum, 59));
 
-        yield return new("gitlab-pat", "GITLAB_TOKEN", "gl" + "pat-" + Chars(Alnum + "-_", 20));
-        yield return new("slack-token", "SLACK_BOT_TOKEN",
+        yield return Sample("gitlab-pat", "GITLAB_TOKEN", "gl" + "pat-" + Chars(Alnum + "-_", 20));
+        yield return Sample("slack-token", "SLACK_BOT_TOKEN",
             "xo" + "xb-" + Chars(Digits, 12) + "-" + Chars(Digits, 13) + "-" + Chars(Alnum, 24));
-        yield return new("slack-token", "SLACK_APP_TOKEN",
+        yield return Sample("slack-token", "SLACK_APP_TOKEN",
             "xa" + "pp-1-A" + Chars(Upper + Digits, 10) + "-" + Chars(Digits, 13) + "-" + Hex(64));
-        yield return new("slack-webhook-url", "SLACK_WEBHOOK_URL",
+        yield return Sample("slack-webhook-url", "SLACK_WEBHOOK_URL",
             "https://hooks.slack.com/services/T" + Chars(Upper + Digits, 8) + "/B" +
             Chars(Upper + Digits, 10) + "/" + Chars(Alnum, 24));
-        yield return new("stripe-secret-key", "STRIPE_SECRET_KEY", "sk" + "_live_" + Chars(Alnum, 24));
-        yield return new("stripe-secret-key", "STRIPE_RESTRICTED_KEY", "rk" + "_live_" + Chars(Alnum, 24));
-        yield return new("google-api-key", "GOOGLE_API_KEY", "AI" + "za" + Chars(Alnum + "-_", 35));
+        yield return Sample("stripe-secret-key", "STRIPE_SECRET_KEY", "sk" + "_live_" + Chars(Alnum, 24));
+        yield return Sample("stripe-secret-key", "STRIPE_RESTRICTED_KEY", "rk" + "_live_" + Chars(Alnum, 24));
+        yield return Sample("google-api-key", "GOOGLE_API_KEY", "AI" + "za" + Chars(Alnum + "-_", 35));
 
-        yield return new("jwt", "token", ServiceAccountJwt());
-        yield return new("jwt", "ID_TOKEN", Jwt("HS256", new { sub = "admin", role = "admin", iat = 1763464000 }));
+        yield return Sample("jwt", "token", ServiceAccountJwt());
+        yield return Sample("jwt", "ID_TOKEN", Jwt("HS256", new { sub = "admin", role = "admin", iat = 1763464000 }));
 
-        yield return new("url-credentials", "DATABASE_URL",
-            "postgres://app:" + Chars(Alnum, 24) + "@postgres16-rw.database.svc:5432/app?sslmode=require");
-        yield return new("url-credentials", "REDIS_URL", "redis://:hunter2@redis-master.cache.svc:6379/0");
-        yield return new("url-credentials", "url", "https://flux:" + UrlPassword(20) + "@gitea.home.arpa/infra/fleet.git");
+        var databasePassword = Chars(Alnum, 24);
+        yield return Sample("url-credentials", "DATABASE_URL",
+            "postgres://app:" + databasePassword + "@postgres16-rw.database.svc:5432/app?sslmode=require", ":" + databasePassword + "@");
+        yield return Sample("url-credentials", "REDIS_URL", "redis://:hunter2@redis-master.cache.svc:6379/0", "hunter2");
+        var gitPassword = UrlPassword(20);
+        yield return Sample("url-credentials", "url", "https://flux:" + gitPassword + "@gitea.home.arpa/infra/fleet.git", gitPassword);
 
-        yield return new("age-secret-key", "SOPS_AGE_KEY", AgeSecretKey());
-        yield return new("age-secret-key", "age.agekey",
-            "# created: 2026-03-01T10:00:00Z\n# public key: age1" + Chars(Bech32.ToLowerInvariant(), 58) +
-            "\n" + AgeSecretKey() + "\n");
+        yield return Sample("age-secret-key", "SOPS_AGE_KEY", AgeSecretKey());
+        var ageKey = AgeSecretKey();
+        yield return Sample("age-secret-key", "age.agekey",
+            "# created: 2026-03-01T10:00:00Z\n# public key: age1" + Chars(Bech32.ToLowerInvariant(), 58) + "\n" + ageKey + "\n", ageKey);
 
-        yield return new("bearer-token", "config", "Authorization: Bearer " + Chars(Alnum, 40));
-        yield return new("bearer-token", "script",
-            "curl -fsS -H 'Authorization: Bearer " + Base64Bytes(24) + "' https://healthchecks.home.arpa/ping");
+        var bearer = Chars(Alnum, 40);
+        yield return Sample("bearer-token", "config", "Authorization: Bearer " + bearer, bearer);
+        var curlBearer = Base64Bytes(24);
+        yield return Sample("bearer-token", "script",
+            "curl -fsS -H 'Authorization: Bearer " + curlBearer + "' https://healthchecks.home.arpa/ping", curlBearer);
 
-        yield return new("generic-assignment", "config.yaml",
-            "database:\n  host: postgres16-rw.database.svc\n  user: app\n  password: " + MixedPassword(20) + "\n");
-        yield return new("generic-assignment", "app.env", "DB_HOST=postgres\nDB_PASSWORD=" + MixedPassword(16) + "\n");
-        yield return new("generic-assignment", "connectionString",
-            "Server=mssql.database.svc;Database=app;User Id=sa;Password=" + MixedPassword(18) + ";TrustServerCertificate=true");
-        yield return new("generic-assignment", "grafana.ini",
-            "[security]\nadmin_user = admin\nadmin_password = " + MixedPassword(14) + "\n");
-        yield return new("generic-assignment", "prometheus.yml",
-            "scrape_configs:\n- job_name: unifi\n  authorization:\n    type: Bearer\n    credentials: " + Hex(32) + "\n");
+        var yamlPassword = MixedPassword(20);
+        yield return Sample("generic-assignment", "config.yaml",
+            "database:\n  host: postgres16-rw.database.svc\n  user: app\n  password: " + yamlPassword + "\n", yamlPassword);
+        var envPassword = MixedPassword(16);
+        yield return Sample("generic-assignment", "app.env", "DB_HOST=postgres\nDB_PASSWORD=" + envPassword + "\n", envPassword);
+        var sqlPassword = MixedPassword(18);
+        yield return Sample("generic-assignment", "connectionString",
+            "Server=mssql.database.svc;Database=app;User Id=sa;Password=" + sqlPassword + ";TrustServerCertificate=true", sqlPassword);
+        var grafanaPassword = MixedPassword(14);
+        yield return Sample("generic-assignment", "grafana.ini",
+            "[security]\nadmin_user = admin\nadmin_password = " + grafanaPassword + "\n", grafanaPassword);
+        var scrapeCredential = Hex(32);
+        yield return Sample("generic-assignment", "prometheus.yml",
+            "scrape_configs:\n- job_name: unifi\n  authorization:\n    type: Bearer\n    credentials: " + scrapeCredential + "\n", scrapeCredential);
+        // A known-format token followed by an unrelated password in the same file.
+        var envToken = GitHub("p");
+        var trailingPassword = MixedPassword(16);
+        yield return Sample("generic-assignment", ".env",
+            "GITHUB_TOKEN=" + envToken + "\nDB_PASSWORD=" + trailingPassword + "\n", envToken, trailingPassword);
 
-        yield return new("generic-keyed-field", "API_TOKEN", Chars(Alnum, 24));
-        yield return new("generic-keyed-field", "admin-password", MixedPassword(16));
-        yield return new("generic-keyed-field", "clientSecret", Base64Bytes(32));
-        yield return new("generic-keyed-field", "api-key", Hex(32));
-        yield return new("generic-keyed-field", "password", Uid());
+        yield return Sample("generic-keyed-field", "API_TOKEN", Chars(Alnum, 24));
+        yield return Sample("generic-keyed-field", "admin-password", MixedPassword(16));
+        yield return Sample("generic-keyed-field", "clientSecret", Base64Bytes(32));
+        yield return Sample("generic-keyed-field", "api-key", Hex(32));
+        yield return Sample("generic-keyed-field", "password", Uid());
     }
 
     private IEnumerable<PositiveCase> Place(PlantedSample sample)
@@ -248,28 +279,28 @@ internal sealed partial class SecretScannerCorpus
             var root = Deployment();
             var planted = JsonValue.Create(sample.Value);
             Container(root)["env"]!.AsArray().Insert(1, new JsonObject { ["name"] = envName, ["value"] = planted });
-            yield return new(sample.Rule, "env", root, planted.GetPath());
+            yield return new(sample.Rule, "env", root, planted.GetPath(), sample.Secrets);
         }
 
         {
             var root = AppConfigMap();
             var planted = JsonValue.Create(sample.Value);
             root["data"]![sample.Key] = planted;
-            yield return new(sample.Rule, "configmap-data", root, planted.GetPath());
+            yield return new(sample.Rule, "configmap-data", root, planted.GetPath(), sample.Secrets);
         }
 
         {
             var root = Deployment();
             var planted = JsonValue.Create(sample.Value);
             root["metadata"]!["annotations"]!["example.com/" + sample.Key] = planted;
-            yield return new(sample.Rule, "annotation", root, planted.GetPath());
+            yield return new(sample.Rule, "annotation", root, planted.GetPath(), sample.Secrets);
         }
 
         {
             var root = GrafanaHelmRelease();
             var planted = JsonValue.Create(sample.Value);
             root["spec"]!["values"]![sample.Key] = planted;
-            yield return new(sample.Rule, "crd-spec", root, planted.GetPath());
+            yield return new(sample.Rule, "crd-spec", root, planted.GetPath(), sample.Secrets);
         }
 
         {
@@ -278,7 +309,7 @@ internal sealed partial class SecretScannerCorpus
             var args = Container(root)["args"]!.AsArray();
             args.Add("--" + sample.Key.ToLowerInvariant().Replace('_', '-'));
             args.Add(planted);
-            yield return new(sample.Rule, "container-arg", root, planted.GetPath());
+            yield return new(sample.Rule, "container-arg", root, planted.GetPath(), sample.Secrets);
         }
 
         if (sample.Value.Length <= 63 && LabelValue(sample.Value))
@@ -286,7 +317,7 @@ internal sealed partial class SecretScannerCorpus
             var root = Deployment();
             var planted = JsonValue.Create(sample.Value);
             root["metadata"]!["labels"]!["example.com/" + sample.Key.ToLowerInvariant()] = planted;
-            yield return new(sample.Rule, "label", root, planted.GetPath());
+            yield return new(sample.Rule, "label", root, planted.GetPath(), sample.Secrets);
         }
 
         {
@@ -304,7 +335,7 @@ internal sealed partial class SecretScannerCorpus
             {
                 ["kubectl.kubernetes.io/last-applied-configuration"] = planted
             };
-            yield return new(sample.Rule, "last-applied-json", root, planted.GetPath());
+            yield return new(sample.Rule, "last-applied-json", root, planted.GetPath(), sample.Secrets);
         }
     }
 

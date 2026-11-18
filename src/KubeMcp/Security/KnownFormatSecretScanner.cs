@@ -32,7 +32,7 @@ internal static partial class KnownFormatSecretScanner
     /// string <paramref name="Node"/>. Exact-format matches redact only that text;
     /// generic (<paramref name="WholeValue"/>) matches redact the whole value.
     /// </summary>
-    /// <param name="Path">The path of the outermost string value in the tool output.</param>
+    /// <param name="Outer">The outermost string value in the tool output.</param>
     internal readonly record struct ScanMatch(
         JsonNode Node,
         string RuleId,
@@ -40,7 +40,11 @@ internal static partial class KnownFormatSecretScanner
         int Length,
         bool WholeValue,
         EmbeddedDocument? Embedding,
-        string Path);
+        JsonNode Outer)
+    {
+        /// <summary>Unsanitized path; valid only before <see cref="Redact"/>.</summary>
+        public string Path => Outer.GetPath();
+    }
 
     /// <summary>A JSON document parsed from the string value <see cref="Owner"/>.</summary>
     internal sealed record EmbeddedDocument(JsonNode Owner, JsonNode Root, EmbeddedDocument? Parent)
@@ -64,7 +68,7 @@ internal static partial class KnownFormatSecretScanner
     internal static readonly ValueRule[] ValueRules =
     [
         // gitleaks: private-key (header through the END line or end of body).
-        new("private-key", PrivateKeyRegex(), static (_, _) => true),
+        new("private-key", PrivateKeyRegex(), static (value, _) => HasPemBody(value)),
         new("private-key-base64", Base64PemRegex(), static (value, _) => IsBase64PrivateKey(value)),
         // gitleaks: aws-access-token
         new("aws-access-key-id", AwsAccessKeyIdRegex(),
@@ -99,8 +103,8 @@ internal static partial class KnownFormatSecretScanner
         ValueRules.Select(rule => rule.Id).Append(KeyedFieldRuleId).Distinct(StringComparer.Ordinal);
 
     /// <summary>
-    /// Returns every exact-format match and at most one generic match per rule per
-    /// string value. A regex timeout fails closed with a fixed safe category.
+    /// Returns every accepted match. A regex timeout, or an embedded JSON document
+    /// beyond the depth budget, fails closed with a fixed safe category.
     /// </summary>
     internal static List<ScanMatch> Scan(
         JsonNode? root,
@@ -204,12 +208,11 @@ internal static partial class KnownFormatSecretScanner
                 var credential = group.Success ? group : match;
                 if (rule.Accept(credential.Value, context.MinEntropy))
                 {
+                    // A bounded pattern that stopped before the token ended (no `end`
+                    // capture) has uncertain extent, so the whole value is redacted.
+                    var incomplete = rule.Pattern.GroupNumberFromName("end") >= 0 && !match.Groups["end"].Success;
                     context.Matches.Add(new ScanMatch(
-                        node, rule.Id, credential.Index, credential.Length, rule.WholeValue, embedding, OutermostPath(node, embedding)));
-                    if (rule.WholeValue)
-                    {
-                        break;
-                    }
+                        node, rule.Id, credential.Index, credential.Length, rule.WholeValue || incomplete, embedding, Outermost(node, embedding)));
                 }
             }
         }
@@ -221,7 +224,7 @@ internal static partial class KnownFormatSecretScanner
 
         if (context.AwsKeyedRule && AwsSecretKeyNameRegex().IsMatch(keyContext) && AwsSecretValueRegex().IsMatch(value))
         {
-            context.Matches.Add(new ScanMatch(node, AwsSecretRuleId, 0, value.Length, false, embedding, OutermostPath(node, embedding)));
+            context.Matches.Add(new ScanMatch(node, AwsSecretRuleId, 0, value.Length, false, embedding, Outermost(node, embedding)));
         }
 
         if (context.KeyedFieldRule &&
@@ -229,7 +232,7 @@ internal static partial class KnownFormatSecretScanner
             !DigestKeyNameRegex().IsMatch(keyContext) &&
             IsNonTrivialGenericValue(value, context.MinEntropy))
         {
-            context.Matches.Add(new ScanMatch(node, KeyedFieldRuleId, 0, value.Length, true, embedding, OutermostPath(node, embedding)));
+            context.Matches.Add(new ScanMatch(node, KeyedFieldRuleId, 0, value.Length, true, embedding, Outermost(node, embedding)));
         }
     }
 
@@ -304,14 +307,46 @@ internal static partial class KnownFormatSecretScanner
         return covered >= match.Index + match.Length;
     }
 
-    private static string OutermostPath(JsonNode node, EmbeddedDocument? embedding)
+    private static JsonNode Outermost(JsonNode node, EmbeddedDocument? embedding)
     {
         for (; embedding is not null; embedding = embedding.Parent)
         {
             node = embedding.Owner;
         }
 
-        return node.GetPath();
+        return node;
+    }
+
+    /// <summary>
+    /// JSONPath of the outermost value for logging; call before <see cref="Redact"/>.
+    /// Object keys that look like credentials or fingerprints, or that are long or
+    /// unusual, are replaced with <c>*</c> because map keys can hold arbitrary data.
+    /// </summary>
+    internal static string LogPath(ScanMatch match)
+    {
+        var segments = new List<string>();
+        for (var node = match.Outer; node.Parent is { } parent; node = parent)
+        {
+            segments.Add(parent is JsonArray
+                ? $"[{node.GetElementIndex()}]"
+                : SafeKey(node.GetPropertyName()));
+        }
+
+        segments.Reverse();
+        return "$" + string.Concat(segments);
+    }
+
+    private static string SafeKey(string key)
+    {
+        if (key.Length > 63 ||
+            key.Any(c => char.IsControl(c) || c is '\'' or '\\') ||
+            IsKubeMcpSafeValue(key) ||
+            ValueRules.Any(rule => !rule.WholeValue && rule.Pattern.IsMatch(key)))
+        {
+            return "[*]";
+        }
+
+        return SimpleKeyRegex().IsMatch(key) ? "." + key : $"['{key}']";
     }
 
     private static IEnumerable<EmbeddedDocument> Ancestors(EmbeddedDocument? document)
@@ -322,6 +357,17 @@ internal static partial class KnownFormatSecretScanner
         }
     }
 
+    private static readonly JsonDocumentOptions EmbeddedDocumentOptions = new()
+    {
+        MaxDepth = 64,
+        AllowDuplicateProperties = false
+    };
+
+    /// <summary>
+    /// Parses a string that is a JSON document. Text that is not JSON, or JSON with
+    /// duplicate property names, is scanned as raw text instead. A valid document
+    /// deeper than the depth budget fails closed rather than falling back.
+    /// </summary>
     private static JsonNode? ParseEmbeddedJson(string value)
     {
         var trimmed = value.AsSpan().Trim();
@@ -332,11 +378,32 @@ internal static partial class KnownFormatSecretScanner
 
         try
         {
-            return JsonNode.Parse(value);
+            return JsonNode.Parse(value, documentOptions: EmbeddedDocumentOptions);
         }
         catch (JsonException)
         {
+        }
+
+        try
+        {
+            using var unbounded = JsonDocument.Parse(value, new JsonDocumentOptions { MaxDepth = 4096 });
+        }
+        catch (JsonException)
+        {
+            // Not JSON (for example a template); scan as text.
             return null;
+        }
+
+        try
+        {
+            using var withinDepth = JsonDocument.Parse(value, new JsonDocumentOptions { MaxDepth = EmbeddedDocumentOptions.MaxDepth });
+            return null; // Valid apart from duplicate property names; scan as text.
+        }
+        catch (JsonException)
+        {
+            throw new KubernetesReadException(
+                "An embedded JSON document exceeded the credential scan depth.",
+                KubernetesErrorCategory.CredentialScanFailed);
         }
     }
 
@@ -433,6 +500,19 @@ internal static partial class KnownFormatSecretScanner
             Encoding.ASCII.GetString(buffer, 0, written).Contains("PRIVATE KEY-----", StringComparison.Ordinal);
     }
 
+    private static bool HasPemBody(string block)
+    {
+        var bodyStart = block.IndexOf("-----", 10, StringComparison.Ordinal) + 5;
+        var bodyEnd = block.IndexOf("-----END", bodyStart, StringComparison.Ordinal);
+        var base64Characters = 0;
+        foreach (var c in block.AsSpan(bodyStart, (bodyEnd < 0 ? block.Length : bodyEnd) - bodyStart))
+        {
+            base64Characters += char.IsAsciiLetterOrDigit(c) || c is '+' or '/' ? 1 : 0;
+        }
+
+        return base64Characters >= 32;
+    }
+
     private static bool HasJwtHeader(string token)
     {
         var header = token[..token.IndexOf('.')];
@@ -461,11 +541,12 @@ internal static partial class KnownFormatSecretScanner
 
     // Newlines may appear literally or JSON-escaped (for example inside the
     // kubectl last-applied-configuration annotation).
-    // The body class excludes '-', so it stops at the END line in linear time.
+    // The body class excludes '-', so it stops at the END line in linear time and
+    // accepts any line width. Without an END line the block is incomplete.
     [GeneratedRegex(
-        @"-----BEGIN[ A-Z0-9]{0,40}PRIVATE KEY(?: BLOCK)?-----(?:\s|\\[rn]){1,4}" +
-        @"(?:[A-Za-z-]{1,40}:[^\r\n\\]{1,200}(?:\s|\\[rn]){1,4}){0,4}[A-Za-z0-9+/=]{32}[A-Za-z0-9+/=\s\\]{0,65536}" +
-        @"(?:-----END[ A-Z0-9]{0,40}PRIVATE KEY(?: BLOCK)?-----)?",
+        @"-----BEGIN[ A-Z0-9]{0,40}PRIVATE KEY(?: BLOCK)?-----" +
+        @"(?:(?:\s|\\[rn]){1,4}[A-Za-z-]{1,40}:[^\r\n\\]{1,200}){0,4}[A-Za-z0-9+/=\s\\]{16,65536}" +
+        @"(?<end>-----END[ A-Z0-9]{0,40}PRIVATE KEY(?: BLOCK)?-----)?",
         Options, MatchTimeoutMilliseconds)]
     private static partial Regex PrivateKeyRegex();
 
@@ -488,16 +569,17 @@ internal static partial class KnownFormatSecretScanner
     [GeneratedRegex(@"\bgithub_pat_\w{82}\b", Options, MatchTimeoutMilliseconds)]
     private static partial Regex GitHubFineGrainedPatRegex();
 
-    [GeneratedRegex(@"\bglpat-[\w.-]{20,64}", Options, MatchTimeoutMilliseconds)]
+    [GeneratedRegex(@"\bglpat-[\w.-]{20,64}(?:(?<end>)(?![\w.-]))?", Options, MatchTimeoutMilliseconds)]
     private static partial Regex GitLabPatRegex();
 
     [GeneratedRegex(
-        @"\b(?:xox[abposr]-(?:[0-9]{10,13}-){1,3}[A-Za-z0-9-]{8,64}|xapp-\d-[A-Z0-9]{9,12}-\d{10,14}-[a-f0-9]{32,80})",
+        @"\b(?:xox[abposr]-(?:[0-9]{10,13}-){1,3}[A-Za-z0-9-]{8,64}|xapp-\d-[A-Z0-9]{9,12}-\d{10,14}-[a-f0-9]{32,80})" +
+        @"(?:(?<end>)(?![A-Za-z0-9-]))?",
         Options, MatchTimeoutMilliseconds)]
     private static partial Regex SlackTokenRegex();
 
     [GeneratedRegex(
-        @"https?://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9+/]{43,56}",
+        @"https?://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9+/]{43,56}(?:(?<end>)(?![A-Za-z0-9+/]))?",
         Options, MatchTimeoutMilliseconds)]
     private static partial Regex SlackWebhookRegex();
 
@@ -508,7 +590,7 @@ internal static partial class KnownFormatSecretScanner
     private static partial Regex GoogleApiKeyRegex();
 
     [GeneratedRegex(
-        @"\bey[A-Za-z0-9_-]{15,1024}\.ey[A-Za-z0-9_-]{15,8192}\.[A-Za-z0-9_-]{0,1024}",
+        @"\bey[A-Za-z0-9_-]{15,1024}\.[A-Za-z0-9_-]{2,16384}\.[A-Za-z0-9_-]{0,4096}(?:(?<end>)(?![A-Za-z0-9_-]))?",
         Options, MatchTimeoutMilliseconds)]
     private static partial Regex JwtRegex();
 
@@ -569,6 +651,9 @@ internal static partial class KnownFormatSecretScanner
 
     [GeneratedRegex(@"^[a-z0-9]+(?:[-./][a-z0-9]+)+$", Options, MatchTimeoutMilliseconds)]
     private static partial Regex KubernetesNameShapeRegex();
+
+    [GeneratedRegex(@"^[A-Za-z_$][A-Za-z0-9_$]*$", Options, MatchTimeoutMilliseconds)]
+    private static partial Regex SimpleKeyRegex();
 
     [GeneratedRegex(@"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", Options, MatchTimeoutMilliseconds)]
     private static partial Regex UuidRegex();

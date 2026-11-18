@@ -210,15 +210,16 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         }
 
         // Rule ids and JSONPaths support rule tuning; values are never logged.
-        // Paths can carry object key names, so they are bounded and sanitized.
+        // Credential-like map keys are wildcarded, and paths are bounded and sanitized.
         logger.LogWarning(
             "Credential scanner redacted {MatchCount} value(s): {Matches}",
             matches.Count,
             string.Join("; ", matches.Take(MaxLoggedCredentialMatches).Select(match =>
-                $"{match.RuleId} {SafeLogValue(match.Path)}")) +
+                $"{match.RuleId} {SafeLogValue(KnownFormatSecretScanner.LogPath(match))}")) +
                 (matches.Count > MaxLoggedCredentialMatches ? $"; +{matches.Count - MaxLoggedCredentialMatches} more" : ""));
 
         KnownFormatSecretScanner.Redact(matches);
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
     private static string SafeLogValue(string value) =>

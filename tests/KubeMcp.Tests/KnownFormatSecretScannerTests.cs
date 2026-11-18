@@ -44,11 +44,40 @@ public sealed class KnownFormatSecretScannerTests
     {
         var positive = Corpus.Positives[index];
         Assert.Equal(description, $"{positive.Rule} in {positive.Placement}");
+        var root = positive.Root.DeepClone();
 
-        var matches = KnownFormatSecretScanner.Scan(positive.Root, CancellationToken.None);
+        var matches = KnownFormatSecretScanner.Scan(root, CancellationToken.None);
 
-        Assert.Contains(matches, match => match.Path == positive.Path);
+        Assert.Contains(matches, match => match.Path == positive.Path && match.RuleId == positive.Rule);
         Assert.All(matches, match => Assert.Equal(positive.Path, match.Path));
+        KnownFormatSecretScanner.Redact(matches);
+        var remaining = DecodedStrings(root).ToList();
+        Assert.All(positive.Secrets, secret => Assert.DoesNotContain(remaining, value => value.Contains(secret, StringComparison.Ordinal)));
+    }
+
+    // Every string value, plus the strings of any JSON document embedded in one.
+    private static IEnumerable<string> DecodedStrings(JsonNode? node)
+    {
+        switch (node)
+        {
+            case JsonObject jsonObject:
+                return jsonObject.SelectMany(property => DecodedStrings(property.Value));
+            case JsonArray jsonArray:
+                return jsonArray.SelectMany(DecodedStrings);
+            case JsonValue value when value.GetValueKind() == JsonValueKind.String:
+                var text = value.GetValue<string>();
+                try
+                {
+                    return text.TrimStart().StartsWith('{') ? DecodedStrings(JsonNode.Parse(text)).Append(text) : [text];
+                }
+                catch (JsonException)
+                {
+                    return [text];
+                }
+
+            default:
+                return [];
+        }
     }
 
     [Theory]
@@ -117,6 +146,12 @@ public sealed class KnownFormatSecretScannerTests
             { "postgres://app:" + password + "@db:5432/app", "postgres://app:[redacted:url-credentials]@db:5432/app" },
             { "tls:\n  key: |\n" + pem + "\n  cert: ok", "tls:\n  key: |\n[redacted:private-key]\n  cert: ok" },
             { "server: db\npassword: " + password + "\n", "[redacted:generic-assignment]" },
+            // A covered generic candidate must not hide a later uncovered one.
+            { "GITHUB_TOKEN=" + token + "\nDB_PASSWORD=" + password, "[redacted:generic-assignment]" },
+            // Incomplete or over-long candidates redact the whole value.
+            { "key: |\n-----BEGIN " + "PRIVATE KEY-----\n" + pemBody + "\nmode=fast", "[redacted:private-key]" },
+            { "id=" + Jwt("e30", new string('s', 5000)), "[redacted:jwt]" },
+            { "id=" + Jwt("e30", "c2lnbmF0dXJl") + " ok", "id=[redacted:jwt] ok" },
         };
     }
 
@@ -129,6 +164,49 @@ public sealed class KnownFormatSecretScannerTests
         KnownFormatSecretScanner.Redact(KnownFormatSecretScanner.Scan(root, CancellationToken.None));
 
         Assert.Equal(expected, root["data"]!["config"]!.GetValue<string>());
+    }
+
+    private static string Jwt(string payload, string signature) =>
+        Convert.ToBase64String("{\"alg\":\"RS256\",\"typ\":\"JWT\"}"u8).TrimEnd('=') + "." + payload + "." + signature;
+
+    [Fact]
+    public void EmbeddedJsonBeyondTheDepthBudgetFailsClosed()
+    {
+        var root = new JsonObject { ["blob"] = new string('[', 100) + new string(']', 100) };
+
+        var exception = Assert.Throws<KubernetesReadException>(() => KnownFormatSecretScanner.Scan(root, CancellationToken.None));
+
+        Assert.Equal(KubernetesErrorCategory.CredentialScanFailed, exception.Category);
+    }
+
+    [Fact]
+    public void EmbeddedJsonWithDuplicateKeysIsScannedAsText()
+    {
+        var token = "gh" + "p_" + "Q7v9xLr2mZp4TkV9b2Qx7LmN4pR8sT1wYz3c";
+        var root = new JsonObject { ["blob"] = "{\"x\":0,\"x\":\"" + token + "\"}" };
+
+        var matches = KnownFormatSecretScanner.Scan(root, CancellationToken.None);
+        KnownFormatSecretScanner.Redact(matches);
+
+        Assert.Equal("{\"x\":0,\"x\":\"[redacted:github-token]\"}", root["blob"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void LogPathWildcardsCredentialLikeMapKeys()
+    {
+        var token = "gh" + "p_" + "Q7v9xLr2mZp4TkV9b2Qx7LmN4pR8sT1wYz3c";
+        var fingerprint = "hmac-sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+        var root = JsonNode.Parse("{\"spec\":{\"tokens\":{}},\"metadata\":{\"annotations\":{}}}")!;
+        root["spec"]!["tokens"]![token] = "API_TOKEN=" + token;
+        root["spec"]!["tokens"]![fingerprint] = token;
+        root["metadata"]!["annotations"]!["example.com/api-token"] = token;
+
+        var paths = KnownFormatSecretScanner.Scan(root, CancellationToken.None)
+            .Select(KnownFormatSecretScanner.LogPath)
+            .Distinct()
+            .ToArray();
+
+        Assert.Equal(["$.spec.tokens[*]", "$.metadata.annotations['example.com/api-token']"], paths);
     }
 
     [Fact]
@@ -154,9 +232,9 @@ public sealed class KnownFormatSecretScannerTests
         };
 
         var matches = KnownFormatSecretScanner.Scan(root, CancellationToken.None);
+        Assert.All(matches, match => Assert.Equal("$.metadata.annotations['kubectl.kubernetes.io/last-applied-configuration']", match.Path));
         KnownFormatSecretScanner.Redact(matches);
 
-        Assert.All(matches, match => Assert.Equal("$.metadata.annotations['kubectl.kubernetes.io/last-applied-configuration']", match.Path));
         var redacted = JsonNode.Parse(root["metadata"]!["annotations"]!["kubectl.kubernetes.io/last-applied-configuration"]!.GetValue<string>())!;
         Assert.Equal("[redacted:generic-keyed-field]", redacted["data"]!["API_TOKEN"]!.GetValue<string>());
         Assert.Equal("curl -H 'X-Token: none' && echo [redacted:github-token]", redacted["data"]!["script"]!.GetValue<string>());
@@ -290,9 +368,9 @@ public sealed class CredentialScannerReaderTests
         await host.Reader.ReadAsync("configmaps", "prod", "app", CancellationToken.None);
 
         var message = Assert.Single(logger.Messages);
-        Assert.Contains("github-token $.data['line", message);
+        Assert.Contains("github-token $.data[*]", message);
         Assert.DoesNotContain("\n", message);
-        Assert.DoesNotContain(new string('k', 300), message);
+        Assert.DoesNotContain("kkkk", message);
     }
 
     [Fact]
@@ -360,20 +438,23 @@ public sealed class CredentialScannerReaderTests
 }
 
 /// <summary>
-/// Produces the evaluation tables for the POC write-up. Run with
-/// <c>KUBE_MCP_SCANNER_REPORT=/path/report.md</c> to write the markdown to a file.
+/// Produces the evaluation tables for the POC write-up when
+/// <c>KUBE_MCP_SCANNER_REPORT=/path/report.md</c> is set.
 /// </summary>
 public sealed class SecretScannerEvaluationReport(ITestOutputHelper output)
 {
     [Fact]
     public void WriteEvaluationReport()
     {
+        // Opt-in: the report measures latency and has no assertions.
+        if (Environment.GetEnvironmentVariable("KUBE_MCP_SCANNER_REPORT") is not { Length: > 0 } path)
+        {
+            return;
+        }
+
         var report = SecretScannerEvaluation.BuildReport();
         output.WriteLine(report);
-        if (Environment.GetEnvironmentVariable("KUBE_MCP_SCANNER_REPORT") is { Length: > 0 } path)
-        {
-            File.WriteAllText(path, report);
-        }
+        File.WriteAllText(path, report);
     }
 }
 
