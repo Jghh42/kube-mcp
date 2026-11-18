@@ -6,7 +6,7 @@ using KubeMcp.Security;
 namespace KubeMcp.Kubernetes;
 
 public sealed class KubernetesListSummarizer(
-    SecretSanitizer secretSanitizer,
+    ResponseSanitizer responseSanitizer,
     TimeProvider timeProvider)
 {
     internal JsonObject Summarize(
@@ -25,7 +25,7 @@ public sealed class KubernetesListSummarizer(
 
     internal JsonObject SummarizeSecret(JsonElement item)
     {
-        var result = secretSanitizer.SanitizeListItem(item);
+        var result = responseSanitizer.SanitizeSecretListItem(item);
         AddAge(result, MetadataString(item, "creationTimestamp"));
         return result;
     }

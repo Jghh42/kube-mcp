@@ -137,7 +137,7 @@ internal sealed class ReaderHost : IDisposable
         Api = api ?? new FakeKubernetesApi();
 
         var fingerprinter = new SecretFingerprinter(Microsoft.Extensions.Options.Options.Create(options));
-        var sanitizer = new SecretSanitizer(fingerprinter, Microsoft.Extensions.Options.Options.Create(options));
+        var sanitizer = new ResponseSanitizer(fingerprinter, Microsoft.Extensions.Options.Options.Create(options));
         var summarizer = new KubernetesListSummarizer(sanitizer, Time);
         var allowlist = new ResourceAllowlist(Microsoft.Extensions.Options.Options.Create(options));
         var namespacePolicy = new NamespaceAccessPolicy(Microsoft.Extensions.Options.Options.Create(options));

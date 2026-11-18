@@ -204,7 +204,7 @@ public sealed class ValueFingerprintingTests
         host.Api.GetHandler = (_, _, _, _, _) => Task.FromResult(body.ToJsonString());
 
         var result = await host.Reader.ReadAsync("pods", "prod", "app", CancellationToken.None);
-        var secret = new SecretFingerprinterFixture().Sanitizer.SanitizeGet(
+        var secret = new SecretFingerprinterFixture().Sanitizer.SanitizeSecretGet(
             JsonDocument.Parse(KubernetesJson.SecretGetBody("db", RawEnvValue)).RootElement);
 
         Assert.Contains(secret["data"]!["password"]!.GetValue<string>(), result.Json);
@@ -445,7 +445,7 @@ public sealed class ValueFingerprintingTests
     {
         public SecretFingerprinter Fingerprinter { get; } = new(Convert.FromBase64String(ReaderTestOptions.HmacKey));
 
-        public SecretSanitizer Sanitizer => new(
+        public ResponseSanitizer Sanitizer => new(
             Fingerprinter,
             Microsoft.Extensions.Options.Options.Create(new KubeMcpOptions()));
     }

@@ -562,7 +562,7 @@ internal sealed partial class SecretScannerCorpus
     private NegativeCase[] BuildNegatives()
     {
         var fingerprinter = new SecretFingerprinter(Enumerable.Range(0, 32).Select(value => (byte)value).ToArray());
-        var sanitizer = new SecretSanitizer(fingerprinter, Microsoft.Extensions.Options.Options.Create(new KubeMcp.Configuration.KubeMcpOptions()));
+        var sanitizer = new ResponseSanitizer(fingerprinter, Microsoft.Extensions.Options.Options.Create(new KubeMcp.Configuration.KubeMcpOptions()));
 
         // Raw Secrets full of real-looking credentials; only the sanitized output is scanned.
         var rawSecret = JsonSerializer.Serialize(new
@@ -617,8 +617,8 @@ internal sealed partial class SecretScannerCorpus
             new("deployment/sonarr (Helm, digests, managedFields, secretKeyRefs)", Deployment()),
             new("configmap/app-config (placeholders, file refs)", AppConfigMap()),
             new("helmrelease/grafana (existingSecret, $__file refs, digests)", GrafanaHelmRelease()),
-            new("secret GET sanitized (HMAC fingerprints)", sanitizer.SanitizeGet(rawSecretDocument.RootElement)),
-            new("secret GET sanitized (helm.sh/release.v1)", sanitizer.SanitizeGet(helmReleaseSecretDocument.RootElement)),
+            new("secret GET sanitized (HMAC fingerprints)", sanitizer.SanitizeSecretGet(rawSecretDocument.RootElement)),
+            new("secret GET sanitized (helm.sh/release.v1)", sanitizer.SanitizeSecretGet(helmReleaseSecretDocument.RootElement)),
             new("secret LIST summary", Parse(Fill("""
                 {"operation":"LIST","resource":"secrets","canonicalResource":"secrets","namespace":"media","items":[
                   {"name":"sonarr-secret","type":"Opaque","keys":["AWS_SECRET_ACCESS_KEY","DATABASE_URL","SONARR__AUTH__APIKEY","token","tls.key"]},

@@ -25,7 +25,7 @@ builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
 builder.Services.AddRequestTimeouts();
 builder.Services.AddSingleton<IConfigureOptions<RequestTimeoutOptions>, McpRequestTimeoutOptionsSetup>();
 builder.Services.AddSingleton<SecretFingerprinter>();
-builder.Services.AddSingleton<SecretSanitizer>();
+builder.Services.AddSingleton<ResponseSanitizer>();
 builder.Services.AddSingleton<KubernetesListSummarizer>();
 builder.Services.AddSingleton<ResourceAllowlist>();
 builder.Services.AddSingleton<NamespaceAccessPolicy>();

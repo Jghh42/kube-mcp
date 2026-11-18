@@ -48,7 +48,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         ListSuffix);
 
     private readonly IKubernetesApi api;
-    private readonly SecretSanitizer secretSanitizer;
+    private readonly ResponseSanitizer responseSanitizer;
     private readonly KubernetesListSummarizer listSummarizer;
     private readonly ResourceAllowlist resourceAllowlist;
     private readonly NamespaceAccessPolicy namespacePolicy;
@@ -57,7 +57,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     private readonly HashSet<string> disabledCredentialRules;
 
     public KubernetesReader(
-        SecretSanitizer secretSanitizer,
+        ResponseSanitizer responseSanitizer,
         KubernetesListSummarizer listSummarizer,
         ResourceAllowlist resourceAllowlist,
         NamespaceAccessPolicy namespacePolicy,
@@ -65,7 +65,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         IKubernetesClientFactory? clientFactory = null,
         ILogger<KubernetesReader>? logger = null)
     {
-        this.secretSanitizer = secretSanitizer;
+        this.responseSanitizer = responseSanitizer;
         this.listSummarizer = listSummarizer;
         this.resourceAllowlist = resourceAllowlist;
         this.namespacePolicy = namespacePolicy;
@@ -249,7 +249,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
                 {
                     // Sanitize directly from the document so raw Secret fields are
                     // not cloned into a second JsonElement backing buffer.
-                    return secretSanitizer.SanitizeGet(document.RootElement);
+                    return responseSanitizer.SanitizeSecretGet(document.RootElement);
                 }
                 catch (Exception ex) when (ex is KubernetesReadException or InvalidOperationException)
                 {
@@ -274,7 +274,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
             var result = ToJsonObject(item);
             try
             {
-                secretSanitizer.SanitizeObjectGet(result, descriptor, @namespace, name);
+                responseSanitizer.SanitizeObjectGet(result, descriptor, @namespace, name);
             }
             catch (Exception ex) when (ex is KubernetesReadException or InvalidOperationException)
             {
@@ -655,7 +655,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     {
         try
         {
-            secretSanitizer.ValidateListItem(item);
+            responseSanitizer.ValidateSecretListItem(item);
         }
         catch (Exception ex) when (ex is KubernetesReadException or InvalidOperationException)
         {

@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 
 namespace KubeMcp.Security;
 
-public sealed class SecretSanitizer(
+public sealed class ResponseSanitizer(
     SecretFingerprinter fingerprinter,
     IOptions<KubeMcpOptions> options)
 {
@@ -20,7 +20,7 @@ public sealed class SecretSanitizer(
     private readonly HashSet<string> plaintextConfigMaps =
         new(options.Value.PlaintextConfigMaps ?? [], StringComparer.Ordinal);
 
-    internal JsonObject SanitizeGet(JsonElement secret)
+    internal JsonObject SanitizeSecretGet(JsonElement secret)
     {
         var result = new JsonObject
         {
@@ -76,7 +76,7 @@ public sealed class SecretSanitizer(
         FingerprintEnvValues(item);
     }
 
-    internal JsonObject SanitizeListItem(JsonElement secret)
+    internal JsonObject SanitizeSecretListItem(JsonElement secret)
     {
         var type = StringProperty(secret, "type");
         _ = BooleanProperty(secret, "immutable");
@@ -98,7 +98,7 @@ public sealed class SecretSanitizer(
         };
     }
 
-    internal void ValidateListItem(JsonElement secret)
+    internal void ValidateSecretListItem(JsonElement secret)
     {
         _ = StringProperty(secret, "type");
         _ = BooleanProperty(secret, "immutable");
