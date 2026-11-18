@@ -69,6 +69,8 @@ public sealed class KubernetesGetToolAuditTests
         { KubernetesErrorCategory.MalformedResponse, "upstream_malformed_response", "The Kubernetes API returned a malformed response." },
         { KubernetesErrorCategory.ResponseTooLarge, "response_too_large", "The Kubernetes response exceeded the configured size limit." },
         { KubernetesErrorCategory.Timeout, "upstream_timeout", "The Kubernetes request timed out." },
+        { KubernetesErrorCategory.CredentialDetected, "credential_detected", "The Kubernetes response was withheld because it appears to contain a credential." },
+        { KubernetesErrorCategory.CredentialScanFailed, "credential_scan_failed", "The Kubernetes response was withheld because credential scanning did not complete." },
         { KubernetesErrorCategory.Internal, "internal_error", "The Kubernetes API request failed." }
     };
 

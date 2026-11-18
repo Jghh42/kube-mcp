@@ -58,6 +58,7 @@ Policy and validation failures, and Kubernetes failures, are converted to fixed 
 - `upstream_malformed_response`
 - `response_too_large`
 - `upstream_timeout`
+- `credential_detected` and `credential_scan_failed` (only when the proof-of-concept [credential scanner](adr/0002-known-format-credential-scanner-poc.md) is enabled)
 - `internal_error`
 
 Overall server deadlines use `server_timeout`; caller disconnects use `client_cancelled`. Upstream response bodies and arbitrary exception messages do not cross the Kubernetes boundary.

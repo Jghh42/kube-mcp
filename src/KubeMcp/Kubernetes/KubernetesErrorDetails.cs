@@ -42,6 +42,12 @@ public static class KubernetesErrorDetails
         KubernetesErrorCategory.ResponseTooLarge => new(
             "response_too_large",
             "The Kubernetes response exceeded the configured size limit."),
+        KubernetesErrorCategory.CredentialDetected => new(
+            "credential_detected",
+            "The Kubernetes response was withheld because it appears to contain a credential."),
+        KubernetesErrorCategory.CredentialScanFailed => new(
+            "credential_scan_failed",
+            "The Kubernetes response was withheld because credential scanning did not complete."),
         _ => new(
             "internal_error",
             "The Kubernetes API request failed."),

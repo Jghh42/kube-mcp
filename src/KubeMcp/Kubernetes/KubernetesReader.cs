@@ -130,6 +130,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         try
         {
             var safeResult = await read(timeout.Token).ConfigureAwait(false);
+            ApplyCredentialScan(safeResult, timeout.Token);
             var json = safeResult.ToJsonString(SerializerOptions);
             if (Encoding.UTF8.GetByteCount(json) > options.MaxResponseBytes)
             {
@@ -175,6 +176,44 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
             throw new KubernetesReadException(
                 "The Kubernetes API request failed.",
                 KubernetesErrorCategory.Internal);
+        }
+    }
+
+    /// <summary>
+    /// Proof of concept: scans the final safe tree before the output-size guard,
+    /// so a redaction marker that grows the output is still bounded.
+    /// </summary>
+    private void ApplyCredentialScan(JsonNode safeResult, CancellationToken cancellationToken)
+    {
+        if (options.CredentialScannerMode == CredentialScannerMode.Off)
+        {
+            return;
+        }
+
+        var matches = KnownFormatSecretScanner.Scan(safeResult, cancellationToken);
+        if (matches.Count == 0)
+        {
+            return;
+        }
+
+        // Rule ids are a fixed set; paths and values are never logged.
+        logger.LogWarning(
+            "Credential scanner matched {MatchCount} value(s) with rules {RuleIds}; mode {ScannerMode}.",
+            matches.Count,
+            string.Join(',', matches.Select(match => match.RuleId).Distinct().Order(StringComparer.Ordinal)),
+            options.CredentialScannerMode);
+
+        if (options.CredentialScannerMode == CredentialScannerMode.Withhold)
+        {
+            throw new KubernetesReadException(
+                "The Kubernetes response appears to contain a credential.",
+                KubernetesErrorCategory.CredentialDetected);
+        }
+
+        // Replace each matching field once, naming the first matching rule.
+        foreach (var match in matches.DistinctBy(match => match.Node))
+        {
+            match.Node.ReplaceWith(KnownFormatSecretScanner.RedactionMarker(match.RuleId));
         }
     }
 

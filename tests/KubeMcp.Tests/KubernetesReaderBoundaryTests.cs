@@ -176,7 +176,8 @@ internal static class ReaderTestOptions
         int listPageSize = 50,
         int maxListPages = 20,
         int secretListPageSize = 10,
-        int kubernetesRequestTimeoutSeconds = 15) => new()
+        int kubernetesRequestTimeoutSeconds = 15,
+        CredentialScannerMode credentialScannerMode = CredentialScannerMode.Off) => new()
         {
             SecretHmacKey = HmacKey,
             AllowedResources = resources ?? new() { ["pods"] = R("", "v1", "pods", "Pod") },
@@ -187,7 +188,8 @@ internal static class ReaderTestOptions
             ListPageSize = listPageSize,
             MaxListPages = maxListPages,
             SecretListPageSize = secretListPageSize,
-            KubernetesRequestTimeoutSeconds = kubernetesRequestTimeoutSeconds
+            KubernetesRequestTimeoutSeconds = kubernetesRequestTimeoutSeconds,
+            CredentialScannerMode = credentialScannerMode
         };
 }
 
