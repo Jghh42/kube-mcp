@@ -60,17 +60,18 @@ public sealed class KubeMcpOptions
     public int OverallMcpRequestTimeoutSeconds { get; init; } = 30;
 
     /// <summary>
-    /// Proof of concept: scan final safe output for known-format credentials and
-    /// redact matching string values or withhold the whole result.
+    /// Last-resort scan of final safe output that redacts string values matching
+    /// known credential formats.
     /// </summary>
-    public CredentialScannerMode CredentialScannerMode { get; init; } = CredentialScannerMode.Off;
+    public CredentialScannerOptions CredentialScanner { get; init; } = new();
 }
 
-public enum CredentialScannerMode
+public sealed class CredentialScannerOptions
 {
-    Off,
-    Redact,
-    Withhold
+    public bool Enabled { get; init; } = true;
+
+    /// <summary>Rule ids to skip; every rule is enabled by default.</summary>
+    public string[] DisabledRules { get; init; } = [];
 }
 
 public sealed class KubernetesResourceOptions

@@ -7,8 +7,8 @@
 
 Secret sanitization covers only Kubernetes `Secret` objects. Credentials also show up in env values, ConfigMaps, annotations (including `kubectl.kubernetes.io/last-applied-configuration`), CRD specs such as HelmRelease values, container args, and labels. GET returns all of these to the agent, and therefore to the LLM provider. Three complementary layers are under discussion:
 
-1. Fingerprinting env and ConfigMap values by default (separate branch).
-2. **This POC:** a deterministic scanner for credentials in known formats, run on the final safe output.
+1. Fingerprinting the known leak paths: Secret data, literal container env values, ConfigMap `data`/`binaryData`, and the last-applied annotation (PR #76).
+2. **This POC:** a deterministic scanner for credentials in known formats, run on the final safe output. It is the last-resort layer for everything layer 1 does not structurally cover.
 3. An optional model-based credential gate (draft PR #48).
 
 The question this POC answers is whether layer 2 is precise, cheap, and useful enough to productionize, and which action it should take on a match.
@@ -17,17 +17,24 @@ The question this POC answers is whether layer 2 is precise, cheap, and useful e
 
 `KubernetesReader.ExecuteAsync` scans the final safe `JsonNode` tree of every read (k8s_get GET and LIST, and namespace discovery) after Secret sanitization and LIST summarization, and before the final output-size guard. The scanner reads only JSON **string values** and reports each match as a JSONPath, for example `$.spec.template.spec.containers[0].env[1].value`. A string that is itself a JSON document, such as the last-applied annotation, is parsed and scanned as a tree. Matches inside it are attributed to, and redact, the outer string.
 
-`KubeMcp:CredentialScannerMode` takes one of three values:
+Each matching string value is replaced in full with `[redacted:<rule-id>]`. A regex timeout fails closed: the whole result is withheld with `credential_scan_failed`. The per-match timeout is 250 ms, and the existing Kubernetes request deadline bounds the whole scan.
 
-| Mode | Behavior on a match |
-| --- | --- |
-| `Off` (default) | Not scanned; behavior unchanged. |
-| `Redact` | Each matching string value is replaced in full with `[redacted:<rule-id>]`. |
-| `Withhold` | The whole result fails with the fixed `credential_detected` category, as PR #48 does. |
+Configuration, with every rule on by default:
 
-In both modes a regex timeout fails closed with `credential_scan_failed`. The per-match timeout is 250 ms, and the existing Kubernetes request deadline bounds the whole scan. Logs carry only the match count, the fixed rule ids, and the mode, never values or paths. Values kube-mcp generates itself (`hmac-sha256:<32 hex>` fingerprints and redaction markers) are skipped before any rule runs. Without that exclusion a fingerprint under a `token` key would pass the generic filter (see the unit test).
+```json
+"CredentialScanner": { "Enabled": true, "DisabledRules": [] }
+```
+
+`DisabledRules` accepts the rule ids listed below, and startup validation rejects unknown ids. Each redaction logs one warning with the match count and up to 20 `rule-id JSONPath` pairs, for tuning. Paths are truncated to 256 characters and have control characters replaced. Values are never logged. A path can still contain an object key name, so a credential used *as* a key would reach the log. Values kube-mcp generates itself (`hmac-sha256:<32 hex>` fingerprints and redaction markers) are skipped before any rule runs. Without that exclusion a fingerprint under a `token` key would pass the generic filter (see the unit test).
 
 No dependency, tool, middleware, or service was added. All patterns use `[GeneratedRegex]` with a match timeout.
+
+## Decisions (owner, 2026-11-18)
+
+1. Matches are **redacted**; withholding the result is reserved for scan failures. The `Withhold` mode and the `credential_detected` category were removed.
+2. The scanner and **all rules, including the generic ones, are enabled by default**, and individual rules can be disabled through configuration.
+3. Match paths may be logged for tuning.
+4. A held-out run on the owner's homelab cluster was approved (results below).
 
 ## Rules and sources
 
@@ -184,7 +191,28 @@ The rules and filters were tuned on this same corpus, and the corpus was written
 - JSON-escaped `\n` inside the last-applied annotation broke `\b` anchors.
 - URL passwords with unencoded `@` or `#` were missed. That one was a corpus bug.
 
-The fixes are the digest-key, `namespace/name`, and env-reference exclusions, plus embedded-JSON parsing. The 100%/0 figures therefore show the rules work on the shapes they were designed for. They do not estimate real-cluster precision. A held-out run on real cluster output is the main missing evidence.
+The fixes are the digest-key, `namespace/name`, and env-reference exclusions, plus embedded-JSON parsing. The 100%/0 figures therefore show the rules work on the shapes they were designed for. They do not estimate real-cluster precision on their own.
+
+### Held-out run on a real homelab cluster
+
+Tool outputs were fetched from the deployed kube-mcp: every LIST and every listed object's GET, across 13 policy-admitted namespaces and 46 mapped resources. The deployed version fingerprints only Secret data, so env values, ConfigMaps, and last-applied annotations were raw. The outputs were scanned locally with `SecretScannerHeldOutEvaluation` (`KUBE_MCP_SCANNER_CORPUS_DIR=<dir>`) and never committed. Values were inspected only as masked shapes.
+
+| Outputs | String values | Matches | Scan p50 / p95 / max | Largest output |
+| ---: | ---: | ---: | --- | ---: |
+| 994 (526 GETs, 468 LISTs) | 32,383 | **0** | 0.06 / 0.66 / 8.2 ms | 157 KiB |
+
+The objects included 154 Events, 54 ConfigMaps, 53 Pods, 38 Secrets, 32 Kustomizations, 16 Deployments, 16 CNPG Backups, 8 HelmReleases, and cert-manager, Gateway API, and Traefik objects.
+
+**No false positives, and no true positives either:** this GitOps-managed cluster keeps its credentials in Secrets. The zero is not the scanner failing to fire. The run contained 9 values under secret-like keys and 4 keyword assignments inside text, and the filters rejected every one for the reasons they were designed for:
+
+- Kubernetes Secret names under `*Secret` keys, in CNPG status (`serverTLSSecret`, …) and CNPG plugin annotations;
+- Grafana `$__file{…}` placeholders, in HelmRelease values and `grafana.ini`;
+- a resourceVersion under a `…-credentials` key;
+- YAML and Python code mentioning `token:`.
+
+Six of those nine clear the 3.0 entropy threshold. The Kubernetes-name and placeholder filters, not entropy, carry precision on real data.
+
+One cluster is a small sample. It confirms that precision is good on this cluster's typical shapes; it says nothing about recall on real leaks.
 
 ## Analysis: what this layer cannot catch
 
@@ -218,23 +246,20 @@ The two modes share the same detector, so neither changes what is detected. They
 - **Redact** kept a median of 96–100% of response bytes per placement on true positives. Whole-field replacement of a large config blob or last-applied annotation can drop most of the object: the minimum kept was 29%. A false positive costs one field, and the marker tells the agent why the value is missing.
 - **Withhold** keeps 0%. Every false positive becomes an outage of that object for the agent. Its one security advantage is incidental: it also hides *undetected* credentials that happen to share an object with a detected one.
 
-**Recommendation: `Redact` as the production mode, with fail-closed `Withhold` behavior kept for scan errors and timeouts (as implemented).** The scanner is a best-effort backstop behind Secret sanitization, not a boundary. Its false-positive cost should stay small enough that the generic rules can remain enabled, and protecting co-located secrets is layer 1's job, not something to get by coincidence. Replace the whole field rather than a substring, because generic-rule match boundaries are approximate. Substring redaction could be considered later, only for exact-format rules such as PEM blocks and provider tokens, to keep the rest of large config files.
+**Decision: redact, and fail closed (withhold) only on scan errors and timeouts.** The scanner is a best-effort backstop behind Secret sanitization, not a boundary. Its false-positive cost should stay small enough that the generic rules can remain enabled, and protecting co-located secrets is layer 1's job, not something to get by coincidence. Replace the whole field rather than a substring, because generic-rule match boundaries are approximate. Substring redaction could be considered later, only for exact-format rules such as PEM blocks and provider tokens, to keep the rest of large config files.
 
 ## What production would require
 
-- **Held-out precision measurement** on real GET output from several clusters (scanned locally, never committed) before enabling it by default. Decide per rule whether the generic rules ship.
+- **More held-out data.** One clean cluster showed no false positives, but a cluster that actually leaks credentials would show recall on real leaks. Run the harness on more clusters before relying on these numbers.
 - **Rule governance:** a versioned rule list with per-rule tests, a periodic Gitleaks sync, and a third-party notice for the MIT-licensed patterns.
-- **Observability:** a low-cardinality audit field or metric for redaction counts per rule. Redactions currently surface only as a warning log. Decide whether paths may be logged; they are useful for tuning but high-cardinality.
+- **Observability:** a low-cardinality audit field or metric for redaction counts per rule. Redactions currently surface only as a warning log with paths.
 - **A dedicated scan budget.** Cancellation by the Kubernetes deadline currently reports `upstream_timeout`. Also bound embedded-JSON parsing explicitly, by depth and count.
 - **Size interplay.** A marker can be longer than the value it replaces. Scanning runs before the size guard, so growth can turn a near-limit response into `response_too_large`.
 - **Coordination with layer 1:** if layer 1 introduces another safe-value shape, extend `IsKubeMcpSafeValue`.
 - **Documentation and end-to-end coverage:** a kind e2e case with the scanner enabled, and security/configuration documentation beyond this POC's minimal entries.
-- **Possibly a per-rule disable list.** Add path or key allowlists only if real-cluster false positives require them; the simplicity mandate applies.
+- **Allowlists only if needed.** Per-rule disabling exists. Add path or key allowlists only if real false positives require them; the simplicity mandate applies.
 
 ## Open questions
 
-1. Should `Redact` be the production mode, or should the fail-closed posture of PR #48 win?
-2. Should the generic rules (`generic-assignment`, `generic-keyed-field`, `bearer-token`) ship, or only the exact-format rules? The generic rules carry the hard-negative false positives, and much of their env/ConfigMap value is already covered by layer 1.
-3. Is it acceptable to log or audit match paths (high-cardinality) for tuning?
-4. Should a held-out evaluation run against a real homelab cluster's GET output, scanned locally with only aggregate counts reported?
-5. Should namespace discovery and summary LISTs skip scanning? Today they are scanned, at negligible cost and with no expected matches.
+1. Should namespace discovery and summary LISTs skip scanning? Today they are scanned, at negligible cost and with no expected matches.
+2. Should exact-format rules redact only the matched substring, so the rest of a large config file survives? Today the whole field is replaced.

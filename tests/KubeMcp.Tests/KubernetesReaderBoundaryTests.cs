@@ -126,7 +126,11 @@ internal sealed class ReaderHost : IDisposable
     public FakeTimeProvider Time { get; }
     public KubernetesReader Reader { get; }
 
-    public ReaderHost(KubeMcpOptions options, FakeKubernetesApi? api = null, FakeTimeProvider? time = null)
+    public ReaderHost(
+        KubeMcpOptions options,
+        FakeKubernetesApi? api = null,
+        FakeTimeProvider? time = null,
+        Microsoft.Extensions.Logging.ILogger<KubernetesReader>? logger = null)
     {
         Options = options;
         Time = time ?? new FakeTimeProvider(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero));
@@ -145,7 +149,7 @@ internal sealed class ReaderHost : IDisposable
             namespacePolicy,
             Microsoft.Extensions.Options.Options.Create(options),
             new SimpleFactory(Api),
-            NullLogger<KubernetesReader>.Instance);
+            logger ?? NullLogger<KubernetesReader>.Instance);
     }
 
     public void Dispose() => Reader.Dispose();
@@ -177,7 +181,7 @@ internal static class ReaderTestOptions
         int maxListPages = 20,
         int secretListPageSize = 10,
         int kubernetesRequestTimeoutSeconds = 15,
-        CredentialScannerMode credentialScannerMode = CredentialScannerMode.Off) => new()
+        CredentialScannerOptions? credentialScanner = null) => new()
         {
             SecretHmacKey = HmacKey,
             AllowedResources = resources ?? new() { ["pods"] = R("", "v1", "pods", "Pod") },
@@ -189,7 +193,7 @@ internal static class ReaderTestOptions
             MaxListPages = maxListPages,
             SecretListPageSize = secretListPageSize,
             KubernetesRequestTimeoutSeconds = kubernetesRequestTimeoutSeconds,
-            CredentialScannerMode = credentialScannerMode
+            CredentialScanner = credentialScanner ?? new()
         };
 }
 

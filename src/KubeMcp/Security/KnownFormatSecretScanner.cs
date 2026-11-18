@@ -85,12 +85,19 @@ internal static partial class KnownFormatSecretScanner
         JsonNode? root,
         CancellationToken cancellationToken,
         double genericMinEntropy = DefaultGenericMinEntropy,
-        IReadOnlyList<ValueRule>? rules = null)
+        IReadOnlyList<ValueRule>? rules = null,
+        IReadOnlySet<string>? disabledRules = null)
     {
         var matches = new List<ScanMatch>();
+        var context = new ScanContext(
+            (rules ?? ValueRules).Where(rule => disabledRules?.Contains(rule.Id) != true).ToArray(),
+            disabledRules?.Contains(AwsSecretRuleId) != true,
+            disabledRules?.Contains(KeyedFieldRuleId) != true,
+            genericMinEntropy,
+            matches);
         try
         {
-            Visit(root, keyContext: null, owner: null, rules ?? ValueRules, genericMinEntropy, matches, cancellationToken);
+            Visit(root, keyContext: null, owner: null, context, cancellationToken);
         }
         catch (RegexMatchTimeoutException)
         {
@@ -110,9 +117,7 @@ internal static partial class KnownFormatSecretScanner
         JsonNode? node,
         string? keyContext,
         JsonNode? owner,
-        IReadOnlyList<ValueRule> rules,
-        double minEntropy,
-        List<ScanMatch> matches,
+        ScanContext context,
         CancellationToken cancellationToken)
     {
         switch (node)
@@ -124,7 +129,7 @@ internal static partial class KnownFormatSecretScanner
                     var childKey = name == "value" && StringValue(jsonObject["name"]) is { } siblingName
                         ? siblingName
                         : name;
-                    Visit(child, childKey, owner, rules, minEntropy, matches, cancellationToken);
+                    Visit(child, childKey, owner, context, cancellationToken);
                 }
 
                 break;
@@ -136,7 +141,7 @@ internal static partial class KnownFormatSecretScanner
                     var childKey = previous is { Length: > 1 } flag && flag[0] == '-' && !flag.Contains('=')
                         ? flag.TrimStart('-')
                         : null;
-                    Visit(child, childKey, owner, rules, minEntropy, matches, cancellationToken);
+                    Visit(child, childKey, owner, context, cancellationToken);
                     previous = StringValue(child);
                 }
 
@@ -147,11 +152,11 @@ internal static partial class KnownFormatSecretScanner
                 {
                     // For example kubectl.kubernetes.io/last-applied-configuration:
                     // scan it as a tree so keys and escaped newlines are decoded.
-                    Visit(embedded, keyContext: null, owner ?? node, rules, minEntropy, matches, cancellationToken);
+                    Visit(embedded, keyContext: null, owner ?? node, context, cancellationToken);
                 }
                 else
                 {
-                    ScanString(owner ?? node, value, keyContext, rules, minEntropy, matches, cancellationToken);
+                    ScanString(owner ?? node, value, keyContext, context, cancellationToken);
                 }
 
                 break;
@@ -162,9 +167,7 @@ internal static partial class KnownFormatSecretScanner
         JsonNode node,
         string value,
         string? keyContext,
-        IReadOnlyList<ValueRule> rules,
-        double minEntropy,
-        List<ScanMatch> matches,
+        ScanContext context,
         CancellationToken cancellationToken)
     {
         if (IsKubeMcpSafeValue(value))
@@ -172,7 +175,7 @@ internal static partial class KnownFormatSecretScanner
             return;
         }
 
-        foreach (var rule in rules)
+        foreach (var rule in context.Rules)
         {
             for (var match = rule.Pattern.Match(value); match.Success; match = match.NextMatch())
             {
@@ -180,9 +183,9 @@ internal static partial class KnownFormatSecretScanner
                 // deadline bounds the number of rejected candidates.
                 cancellationToken.ThrowIfCancellationRequested();
                 var group = match.Groups["value"];
-                if (rule.Accept(group.Success ? group.Value : match.Value, minEntropy))
+                if (rule.Accept(group.Success ? group.Value : match.Value, context.MinEntropy))
                 {
-                    matches.Add(new ScanMatch(node, rule.Id));
+                    context.Matches.Add(new ScanMatch(node, rule.Id));
                     break;
                 }
             }
@@ -193,16 +196,17 @@ internal static partial class KnownFormatSecretScanner
             return;
         }
 
-        if (AwsSecretKeyNameRegex().IsMatch(keyContext) && AwsSecretValueRegex().IsMatch(value))
+        if (context.AwsKeyedRule && AwsSecretKeyNameRegex().IsMatch(keyContext) && AwsSecretValueRegex().IsMatch(value))
         {
-            matches.Add(new ScanMatch(node, AwsSecretRuleId));
+            context.Matches.Add(new ScanMatch(node, AwsSecretRuleId));
         }
 
-        if (KeyedSecretNameRegex().IsMatch(keyContext) &&
+        if (context.KeyedFieldRule &&
+            KeyedSecretNameRegex().IsMatch(keyContext) &&
             !DigestKeyNameRegex().IsMatch(keyContext) &&
-            IsNonTrivialGenericValue(value, minEntropy))
+            IsNonTrivialGenericValue(value, context.MinEntropy))
         {
-            matches.Add(new ScanMatch(node, KeyedFieldRuleId));
+            context.Matches.Add(new ScanMatch(node, KeyedFieldRuleId));
         }
     }
 
@@ -223,6 +227,13 @@ internal static partial class KnownFormatSecretScanner
             return null;
         }
     }
+
+    private sealed record ScanContext(
+        ValueRule[] Rules,
+        bool AwsKeyedRule,
+        bool KeyedFieldRule,
+        double MinEntropy,
+        List<ScanMatch> Matches);
 
     private static string? StringValue(JsonNode? node) =>
         node is JsonValue value && value.GetValueKind() == JsonValueKind.String

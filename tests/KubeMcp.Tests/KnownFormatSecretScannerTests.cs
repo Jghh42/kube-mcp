@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using KubeMcp.Configuration;
 using KubeMcp.Kubernetes;
 using KubeMcp.Security;
+using Microsoft.Extensions.Logging;
 using Xunit.Abstractions;
 
 namespace KubeMcp.Tests;
@@ -155,15 +156,20 @@ public sealed class CredentialScannerReaderTests
 {
     private static readonly string GitHubToken = "gh" + "p_" + "Q7v9xLr2mZp4TkV9b2Qx7LmN4pR8sT1wYz3c";
 
-    private static ReaderHost Host(CredentialScannerMode mode, string configMapValue)
+    private static ReaderHost Host(
+        string configMapValue,
+        CredentialScannerOptions? scanner = null,
+        ILogger<KubernetesReader>? logger = null)
     {
-        var host = new ReaderHost(ReaderTestOptions.Options(
-            resources: new()
-            {
-                ["configmaps"] = ReaderTestOptions.R("", "v1", "configmaps", "ConfigMap"),
-                ["secrets"] = ReaderTestOptions.R("", "v1", "secrets", "Secret")
-            },
-            credentialScannerMode: mode));
+        var host = new ReaderHost(
+            ReaderTestOptions.Options(
+                resources: new()
+                {
+                    ["configmaps"] = ReaderTestOptions.R("", "v1", "configmaps", "ConfigMap"),
+                    ["secrets"] = ReaderTestOptions.R("", "v1", "secrets", "Secret")
+                },
+                credentialScanner: scanner),
+            logger: logger);
         host.Api.GetHandler = (descriptor, _, name, _, _) => Task.FromResult(descriptor.IsSecret
             ? KubernetesJson.SecretGetBody(name, configMapValue)
             : KubernetesJson.ConfigMapGetBody(name, configMapValue));
@@ -171,19 +177,10 @@ public sealed class CredentialScannerReaderTests
     }
 
     [Fact]
-    public async Task OffModeReturnsOutputUnchanged()
+    public async Task EnabledByDefaultAndRedactsOnlyTheMatchingFieldValue()
     {
-        using var host = Host(CredentialScannerMode.Off, GitHubToken);
-
-        var result = await host.Reader.ReadAsync("configmaps", "prod", "app", CancellationToken.None);
-
-        Assert.Contains(GitHubToken, result.Json);
-    }
-
-    [Fact]
-    public async Task RedactModeReplacesOnlyTheMatchingFieldValue()
-    {
-        using var host = Host(CredentialScannerMode.Redact, GitHubToken);
+        var logger = new ListLogger();
+        using var host = Host(GitHubToken, logger: logger);
 
         var result = await host.Reader.ReadAsync("configmaps", "prod", "app", CancellationToken.None);
 
@@ -192,40 +189,91 @@ public sealed class CredentialScannerReaderTests
         Assert.Equal("[redacted:github-token]", json.RootElement.GetProperty("data").GetProperty("key").GetString());
         Assert.Equal("app", json.RootElement.GetProperty("metadata").GetProperty("name").GetString());
         Assert.Equal(1, result.ObjectCount);
+        var message = Assert.Single(logger.Messages);
+        Assert.Contains("github-token $.data.key", message);
+        Assert.DoesNotContain(GitHubToken, message);
     }
 
     [Fact]
-    public async Task WithholdModeFailsWithFixedCategory()
+    public async Task DisabledScannerReturnsOutputUnchanged()
     {
-        using var host = Host(CredentialScannerMode.Withhold, GitHubToken);
+        using var host = Host(GitHubToken, new CredentialScannerOptions { Enabled = false });
 
-        var exception = await Assert.ThrowsAsync<KubernetesReadException>(() =>
-            host.Reader.ReadAsync("configmaps", "prod", "app", CancellationToken.None));
+        var result = await host.Reader.ReadAsync("configmaps", "prod", "app", CancellationToken.None);
 
-        Assert.Equal(KubernetesErrorCategory.CredentialDetected, exception.Category);
-        Assert.DoesNotContain(GitHubToken, exception.Message);
+        Assert.Contains(GitHubToken, result.Json);
     }
 
     [Fact]
-    public async Task SanitizedSecretGetWithKnownFormatValuesPassesWithhold()
+    public async Task DisabledRuleIsSkipped()
     {
-        using var host = Host(CredentialScannerMode.Withhold, GitHubToken);
+        using var host = Host(GitHubToken, new CredentialScannerOptions { DisabledRules = ["github-token"] });
+
+        var result = await host.Reader.ReadAsync("configmaps", "prod", "app", CancellationToken.None);
+
+        Assert.Contains(GitHubToken, result.Json);
+    }
+
+    [Fact]
+    public async Task LoggedPathsAreBoundedAndSanitized()
+    {
+        var logger = new ListLogger();
+        using var host = Host(GitHubToken, logger: logger);
+        var key = "line\nbreak" + new string('k', 400);
+        host.Api.GetHandler = (_, _, name, _, _) => Task.FromResult(new JsonObject
+        {
+            ["apiVersion"] = "v1",
+            ["kind"] = "ConfigMap",
+            ["metadata"] = new JsonObject { ["name"] = name, ["namespace"] = "prod" },
+            ["data"] = new JsonObject { [key] = GitHubToken }
+        }.ToJsonString());
+
+        await host.Reader.ReadAsync("configmaps", "prod", "app", CancellationToken.None);
+
+        var message = Assert.Single(logger.Messages);
+        Assert.Contains("github-token $.data['line", message);
+        Assert.DoesNotContain("\n", message);
+        Assert.DoesNotContain(new string('k', 300), message);
+    }
+
+    [Fact]
+    public async Task SanitizedSecretGetWithKnownFormatValuesIsUnchanged()
+    {
+        using var host = Host(GitHubToken);
 
         var result = await host.Reader.ReadAsync("secrets", "prod", "database", CancellationToken.None);
 
         Assert.DoesNotContain(GitHubToken, result.Json);
+        Assert.DoesNotContain("[redacted:", result.Json);
         Assert.Contains("hmac-sha256:", result.Json);
     }
 
     [Fact]
-    public void ValidatorRejectsUndefinedMode()
+    public void ValidatorRejectsUnknownDisabledRule()
     {
-        var options = ReaderTestOptions.Options(credentialScannerMode: (CredentialScannerMode)42);
+        var options = ReaderTestOptions.Options(
+            credentialScanner: new CredentialScannerOptions { DisabledRules = ["no-such-rule"] });
 
         var result = new KubeMcpOptionsValidator(new TestHostEnvironment("Production")).Validate(null, options);
 
         Assert.True(result.Failed);
-        Assert.Contains("CredentialScannerMode", result.FailureMessage);
+        Assert.Contains("DisabledRules", result.FailureMessage);
+    }
+
+    private sealed class ListLogger : ILogger<KubernetesReader>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
     }
 }
 
@@ -244,6 +292,93 @@ public sealed class SecretScannerEvaluationReport(ITestOutputHelper output)
         {
             File.WriteAllText(path, report);
         }
+    }
+}
+
+/// <summary>
+/// Held-out evaluation on real kube-mcp output. Set <c>KUBE_MCP_SCANNER_CORPUS_DIR</c>
+/// to a local directory of saved tool outputs (*.json, searched recursively); the
+/// report is written to <c>scan-report.md</c> in that directory. Values are shown
+/// only as masked shapes. Keep such directories out of the repository.
+/// </summary>
+public sealed class SecretScannerHeldOutEvaluation
+{
+    [Fact]
+    public void ScanSavedOutputs()
+    {
+        if (Environment.GetEnvironmentVariable("KUBE_MCP_SCANNER_CORPUS_DIR") is not { Length: > 0 } directory)
+        {
+            return;
+        }
+
+        var builder = new StringBuilder();
+        var timings = new List<(double Milliseconds, int Bytes)>();
+        var findings = new List<string>();
+        var perRule = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        var files = Directory.GetFiles(directory, "*.json", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray();
+        var strings = 0;
+        foreach (var file in files)
+        {
+            var text = File.ReadAllText(file);
+            var root = JsonNode.Parse(text)!;
+            strings += SecretScannerEvaluation.CountStrings(root);
+            KnownFormatSecretScanner.Scan(root, CancellationToken.None);
+            var stopwatch = Stopwatch.StartNew();
+            var matches = KnownFormatSecretScanner.Scan(root, CancellationToken.None);
+            timings.Add((stopwatch.Elapsed.TotalMilliseconds, Encoding.UTF8.GetByteCount(text)));
+            foreach (var match in matches)
+            {
+                perRule[match.RuleId] = perRule.GetValueOrDefault(match.RuleId) + 1;
+                findings.Add($"| {Path.GetFileNameWithoutExtension(file)} | `{match.RuleId}` | `{match.Path}` | {Describe(match)} |");
+            }
+        }
+
+        timings.Sort();
+        builder.AppendLine($"Files: {files.Length}; string values: {strings}; matches: {findings.Count}");
+        builder.AppendLine($"Scan ms p50 {timings[timings.Count / 2].Milliseconds:0.00}, p95 {timings[timings.Count * 95 / 100].Milliseconds:0.00}, max {timings[^1].Milliseconds:0.00} (largest output {timings.Max(timing => timing.Bytes) / 1024.0:0.#} KiB)");
+        builder.AppendLine();
+        builder.AppendLine("| Rule | Matches |");
+        builder.AppendLine("| --- | ---: |");
+        foreach (var (rule, count) in perRule)
+        {
+            builder.AppendLine($"| `{rule}` | {count} |");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("| Object | Rule | Path | Value shape |");
+        builder.AppendLine("| --- | --- | --- | --- |");
+        findings.ForEach(finding => builder.AppendLine(finding));
+        File.WriteAllText(Path.Combine(directory, "scan-report.md"), builder.ToString());
+    }
+
+    // Shape only: letters become a/A, digits 9; matches inside embedded JSON
+    // documents are re-scanned to name the inner leaf.
+    private static string Describe(KnownFormatSecretScanner.ScanMatch match)
+    {
+        var value = match.Node.GetValue<string>();
+        if (value.TrimStart().StartsWith('{') || value.TrimStart().StartsWith('['))
+        {
+            try
+            {
+                var inner = KnownFormatSecretScanner.Scan(JsonNode.Parse(value), CancellationToken.None)
+                    .Where(innerMatch => innerMatch.RuleId == match.RuleId)
+                    .Select(innerMatch => $"embedded `{innerMatch.Path}` {Mask(innerMatch.Node.GetValue<string>())}");
+                return string.Join("<br>", inner);
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
+        return Mask(value);
+    }
+
+    private static string Mask(string value)
+    {
+        var masked = string.Concat(value.Take(48).Select(c =>
+            char.IsAsciiLetterLower(c) ? 'a' : char.IsAsciiLetterUpper(c) ? 'A' : char.IsAsciiDigit(c) ? '9' :
+            char.IsWhiteSpace(c) ? '␣' : c == '|' ? '¦' : c));
+        return $"`{masked}{(value.Length > 48 ? "…" : "")}` len {value.Length}, H {KnownFormatSecretScanner.ShannonEntropy(value):0.0}";
     }
 }
 
@@ -288,7 +423,7 @@ internal static class SecretScannerEvaluation
     private static List<KnownFormatSecretScanner.ScanMatch> Scan(JsonNode root, double entropy = KnownFormatSecretScanner.DefaultGenericMinEntropy) =>
         KnownFormatSecretScanner.Scan(root, CancellationToken.None, entropy);
 
-    private static int CountStrings(JsonNode? node) => node switch
+    public static int CountStrings(JsonNode? node) => node switch
     {
         JsonObject jsonObject => jsonObject.Sum(property => CountStrings(property.Value)),
         JsonArray jsonArray => jsonArray.Sum(CountStrings),

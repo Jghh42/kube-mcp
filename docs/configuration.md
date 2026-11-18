@@ -20,7 +20,8 @@ Configuration follows standard ASP.NET Core conventions. Environment variable na
 | `KubeMcp:MaxListPages` | `20` | Maximum continuation pages per LIST. |
 | `KubeMcp:KubernetesRequestTimeoutSeconds` | `15` | Kubernetes operation timeout. |
 | `KubeMcp:OverallMcpRequestTimeoutSeconds` | `30` | End-to-end MCP deadline; must exceed the Kubernetes timeout. |
-| `KubeMcp:CredentialScannerMode` | `Off` | Proof of concept: `Off`, `Redact`, or `Withhold` for the known-format credential scanner. See [ADR 0002](adr/0002-known-format-credential-scanner-poc.md). |
+| `KubeMcp:CredentialScanner:Enabled` | `true` | Redacts string values in tool output that match known credential formats. See [ADR 0002](adr/0002-known-format-credential-scanner-poc.md). |
+| `KubeMcp:CredentialScanner:DisabledRules` | none | Scanner rule ids to skip, for example `generic-keyed-field`. Unknown ids fail startup validation. |
 | `KubeMcp:Authentication:Mode` | `ApiKey` | `ApiKey`, or `None` only when the host environment is `Development`. |
 | `KubeMcp:Authentication:ApiKey` | none | Static bearer key of at least 32 UTF-8 bytes. Required in API-key mode. |
 | `AllowedHosts` | local and service names | Semicolon-delimited ASP.NET Core host allowlist. |

@@ -35,6 +35,8 @@ Raw Kubernetes Secret values are never returned:
 - LIST uses a dedicated safe summary with the Secret name, type, key names, and age; it returns neither values nor fingerprints.
 - GET replaces each value with a keyed HMAC-SHA256 fingerprint.
 
+As a last resort, a deterministic [credential scanner](adr/0002-known-format-credential-scanner-poc.md) checks every tool output's string values for known credential formats and replaces matching values with `[redacted:<rule-id>]`. It recognizes formats only, so it cannot catch arbitrary passwords. If the scan cannot complete, the result is withheld.
+
 The HMAC key remains on the server. Keep it stable only when fingerprints need to be comparable across restarts. Logs and audit records never contain Secret values or fingerprints.
 
 ## Edge traffic controls
@@ -58,7 +60,7 @@ Policy and validation failures, and Kubernetes failures, are converted to fixed 
 - `upstream_malformed_response`
 - `response_too_large`
 - `upstream_timeout`
-- `credential_detected` and `credential_scan_failed` (only when the proof-of-concept [credential scanner](adr/0002-known-format-credential-scanner-poc.md) is enabled)
+- `credential_scan_failed`
 - `internal_error`
 
 Overall server deadlines use `server_timeout`; caller disconnects use `client_cancelled`. Upstream response bodies and arbitrary exception messages do not cross the Kubernetes boundary.

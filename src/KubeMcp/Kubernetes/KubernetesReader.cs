@@ -26,6 +26,8 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     private const string ListCount = "],\"count\":";
     private const string ListLimited = ",\"limited\":";
     private const string ListSuffix = "}";
+    private const int MaxLoggedCredentialMatches = 20;
+    private const int MaxLoggedPathLength = 256;
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -52,6 +54,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     private readonly NamespaceAccessPolicy namespacePolicy;
     private readonly KubeMcpOptions options;
     private readonly ILogger<KubernetesReader> logger;
+    private readonly HashSet<string> disabledCredentialRules;
 
     public KubernetesReader(
         SecretSanitizer secretSanitizer,
@@ -68,6 +71,7 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
         this.namespacePolicy = namespacePolicy;
         this.options = options.Value;
         this.logger = logger ?? NullLogger<KubernetesReader>.Instance;
+        disabledCredentialRules = this.options.CredentialScanner.DisabledRules.ToHashSet(StringComparer.Ordinal);
 
         var factory = clientFactory ?? new KubernetesClientFactory(this.options);
         api = factory.Create();
@@ -180,35 +184,33 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
     }
 
     /// <summary>
-    /// Proof of concept: scans the final safe tree before the output-size guard,
-    /// so a redaction marker that grows the output is still bounded.
+    /// Scans the final safe tree before the output-size guard, so a redaction
+    /// marker that grows the output is still bounded.
     /// </summary>
     private void ApplyCredentialScan(JsonNode safeResult, CancellationToken cancellationToken)
     {
-        if (options.CredentialScannerMode == CredentialScannerMode.Off)
+        if (!options.CredentialScanner.Enabled)
         {
             return;
         }
 
-        var matches = KnownFormatSecretScanner.Scan(safeResult, cancellationToken);
+        var matches = KnownFormatSecretScanner.Scan(
+            safeResult,
+            cancellationToken,
+            disabledRules: disabledCredentialRules);
         if (matches.Count == 0)
         {
             return;
         }
 
-        // Rule ids are a fixed set; paths and values are never logged.
+        // Rule ids and JSONPaths support rule tuning; values are never logged.
+        // Paths can carry object key names, so they are bounded and sanitized.
         logger.LogWarning(
-            "Credential scanner matched {MatchCount} value(s) with rules {RuleIds}; mode {ScannerMode}.",
+            "Credential scanner redacted {MatchCount} value(s): {Matches}",
             matches.Count,
-            string.Join(',', matches.Select(match => match.RuleId).Distinct().Order(StringComparer.Ordinal)),
-            options.CredentialScannerMode);
-
-        if (options.CredentialScannerMode == CredentialScannerMode.Withhold)
-        {
-            throw new KubernetesReadException(
-                "The Kubernetes response appears to contain a credential.",
-                KubernetesErrorCategory.CredentialDetected);
-        }
+            string.Join("; ", matches.Take(MaxLoggedCredentialMatches).Select(match =>
+                $"{match.RuleId} {SafeLogValue(match.Path)}")) +
+                (matches.Count > MaxLoggedCredentialMatches ? $"; +{matches.Count - MaxLoggedCredentialMatches} more" : ""));
 
         // Replace each matching field once, naming the first matching rule.
         foreach (var match in matches.DistinctBy(match => match.Node))
@@ -216,6 +218,10 @@ public sealed class KubernetesReader : IKubernetesReader, IDisposable
             match.Node.ReplaceWith(KnownFormatSecretScanner.RedactionMarker(match.RuleId));
         }
     }
+
+    private static string SafeLogValue(string value) =>
+        string.Concat(value[..Math.Min(value.Length, MaxLoggedPathLength)].Select(character =>
+            char.IsControl(character) ? ' ' : character));
 
     private async Task<JsonNode> GetAsync(
         KubernetesResourceDescriptor descriptor,
