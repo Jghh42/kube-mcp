@@ -9,7 +9,7 @@
 # multi-arch manifest-list digests published by MCR; the build resolves the
 # linux/amd64 variant. Update them (and the NuGet lock file) via Dependabot
 # rather than editing tags by hand.
-FROM mcr.microsoft.com/dotnet/sdk:10.0.404@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.404@sha256:2b1e13a22e46b55117f9cdb4b38e73172de08a30370166c8227d06cdaff82473 AS build
 WORKDIR /source
 
 # Restore is locked to the checked-in NuGet lock file (packages.lock.json) so a
